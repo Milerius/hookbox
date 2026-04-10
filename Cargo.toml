@@ -7,6 +7,7 @@ members = [
     "crates/hookbox-server",
     "crates/hookbox-cli",
     "crates/hookbox-verify",
+    "integration-tests",
 ]
 
 [workspace.package]

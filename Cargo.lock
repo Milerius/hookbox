@@ -980,6 +980,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "hookbox-integration-tests"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "hookbox",
+ "hookbox-postgres",
+ "hookbox-providers",
+ "hookbox-server",
+ "http",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tower",
+ "uuid",
+]
+
+[[package]]
 name = "hookbox-postgres"
 version = "0.1.0"
 dependencies = [

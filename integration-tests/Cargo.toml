@@ -1,0 +1,22 @@
+[package]
+name = "hookbox-integration-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+hookbox.workspace = true
+hookbox-postgres.workspace = true
+hookbox-providers.workspace = true
+hookbox-server.workspace = true
+axum.workspace = true
+bytes.workspace = true
+http.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tower.workspace = true
+uuid.workspace = true
