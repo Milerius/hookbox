@@ -4,7 +4,7 @@
 
 **Goal:** Implement the complete hookbox MVP — a durable webhook inbox library and standalone service that verifies, deduplicates, persists, replays, and audits webhook events.
 
-**Architecture:** Bottom-up build across 5 crates. Start with core domain types and traits (`hookbox`), then storage (`hookbox-postgres`), then provider adapters (`hookbox-providers`), then pipeline orchestration (back in `hookbox`), then HTTP server (`hookbox-server`), then CLI (`hookbox-cli`). Each task produces compiling, tested code.
+**Architecture:** Bottom-up build across 5 crates. Start with core domain types, traits, dedupe, and emitters (`hookbox`), then durable storage (`hookbox-postgres`) so the authoritative store exists early, then provider adapters (`hookbox-providers`), then pipeline orchestration (back in `hookbox`), then HTTP server (`hookbox-server`), then CLI (`hookbox-cli`). Each task produces compiling, tested code.
 
 **Tech Stack:** Rust 2024, Tokio, Axum 0.8, SQLx 0.8 (Postgres), tracing, metrics 0.24, clap 4, sha2 0.11, hmac 0.13, subtle 2, thiserror 2, anyhow 1, bolero 0.13.
 
@@ -572,7 +572,7 @@ git commit -m "feat(hookbox): add typed error types for storage, dedupe, emit, a
 //! Four traits define the hookbox extension surface. All are `Send + Sync`
 //! for safe use across async tasks.
 
-use bytes::Bytes;
+use async_trait::async_trait;
 use http::HeaderMap;
 use uuid::Uuid;
 
@@ -584,6 +584,7 @@ use crate::types::{NormalizedEvent, ReceiptFilter, WebhookReceipt};
 ///
 /// Implementations verify the authenticity of incoming webhooks
 /// using provider-specific mechanisms (HMAC, timestamp tolerance, etc.).
+#[async_trait]
 pub trait SignatureVerifier: Send + Sync {
     /// The provider name this verifier handles (e.g. "stripe").
     fn provider_name(&self) -> &str;
@@ -591,44 +592,45 @@ pub trait SignatureVerifier: Send + Sync {
     /// Verify the incoming request signature.
     ///
     /// Returns a structured result with status and machine-readable reason.
-    fn verify(
+    async fn verify(
         &self,
         headers: &HeaderMap,
         body: &[u8],
-    ) -> impl std::future::Future<Output = VerificationResult> + Send;
+    ) -> VerificationResult;
 }
 
 /// Durable webhook receipt persistence.
 ///
 /// `store()` is the authoritative dedupe answer — the Postgres unique
 /// constraint on `dedupe_key` decides truth.
+#[async_trait]
 pub trait Storage: Send + Sync {
     /// Store a new receipt. Returns `StoreResult::Duplicate` if the
     /// dedupe key already exists (authoritative duplicate detection).
-    fn store(
+    async fn store(
         &self,
         receipt: &WebhookReceipt,
-    ) -> impl std::future::Future<Output = Result<StoreResult, StorageError>> + Send;
+    ) -> Result<StoreResult, StorageError>;
 
     /// Get a receipt by its internal ID.
-    fn get(
+    async fn get(
         &self,
         id: Uuid,
-    ) -> impl std::future::Future<Output = Result<Option<WebhookReceipt>, StorageError>> + Send;
+    ) -> Result<Option<WebhookReceipt>, StorageError>;
 
     /// Update the processing state of a receipt.
-    fn update_state(
+    async fn update_state(
         &self,
         id: Uuid,
         state: crate::state::ProcessingState,
         error: Option<&str>,
-    ) -> impl std::future::Future<Output = Result<(), StorageError>> + Send;
+    ) -> Result<(), StorageError>;
 
     /// Query receipts by filter criteria.
-    fn query(
+    async fn query(
         &self,
         filter: ReceiptFilter,
-    ) -> impl std::future::Future<Output = Result<Vec<WebhookReceipt>, StorageError>> + Send;
+    ) -> Result<Vec<WebhookReceipt>, StorageError>;
 }
 
 /// Advisory fast-path duplicate detection.
@@ -636,32 +638,34 @@ pub trait Storage: Send + Sync {
 /// `DedupeStrategy` is advisory — the pipeline asks it for a hint before
 /// attempting storage. `Storage::store()` returning `StoreResult::Duplicate`
 /// is the authoritative final answer.
+#[async_trait]
 pub trait DedupeStrategy: Send + Sync {
     /// Check if this key/hash combination is a known duplicate.
-    fn check(
+    async fn check(
         &self,
         dedupe_key: &str,
         payload_hash: &str,
-    ) -> impl std::future::Future<Output = Result<DedupeDecision, DedupeError>> + Send;
+    ) -> Result<DedupeDecision, DedupeError>;
 
     /// Record a key/hash as seen (advisory, for fast-path caching).
-    fn record(
+    async fn record(
         &self,
         dedupe_key: &str,
         payload_hash: &str,
-    ) -> impl std::future::Future<Output = Result<(), DedupeError>> + Send;
+    ) -> Result<(), DedupeError>;
 }
 
 /// Downstream event forwarding after durable storage.
 ///
 /// Emit failure does NOT invalidate the stored receipt. The receipt
 /// is durable and accepted; emission has its own retry/DLQ lifecycle.
+#[async_trait]
 pub trait Emitter: Send + Sync {
     /// Emit a normalized event downstream.
-    fn emit(
+    async fn emit(
         &self,
         event: &NormalizedEvent,
-    ) -> impl std::future::Future<Output = Result<(), EmitError>> + Send;
+    ) -> Result<(), EmitError>;
 }
 ```
 
@@ -674,9 +678,9 @@ pub mod traits;
 pub use traits::*;
 ```
 
-- [ ] **Step 3: Remove `async-trait` dependency from hookbox Cargo.toml**
+- [ ] **Step 3: Verify `async-trait` dependency exists in hookbox Cargo.toml**
 
-Remove the `async-trait = "0.1"` line from `crates/hookbox/Cargo.toml` since we use Rust 2024 native async traits via `impl Future` return position.
+Confirm `async-trait = "0.1"` is present in `crates/hookbox/Cargo.toml`. We use `async-trait` for MVP smoothness — native async fn in traits can replace it later.
 
 - [ ] **Step 4: Run lint and test**
 
@@ -3297,21 +3301,30 @@ a real Postgres database. Marked #[ignore] for CI without Postgres."
 
 ## Summary
 
-| Task | Crate | What it builds |
-|------|-------|----------------|
-| 1 | hookbox | Domain types, enums, newtypes, payload hash |
-| 2 | hookbox | Error types (thiserror) |
-| 3 | hookbox | Core traits (SignatureVerifier, Storage, DedupeStrategy, Emitter) |
-| 4 | hookbox | InMemoryLruDedupe, LayeredDedupe |
-| 5 | hookbox | CallbackEmitter, ChannelEmitter |
-| 6 | hookbox | HookboxPipeline with builder |
-| 7 | hookbox-providers | GenericHmacVerifier |
-| 8 | hookbox-providers | StripeVerifier |
-| 9 | hookbox-postgres | SQL migration + module structure |
-| 10 | hookbox-postgres | PostgresStorage, StorageDedupe |
-| 11 | hookbox-server | Config, routes (ingest, health, admin), server wiring |
-| 12 | hookbox-cli | Clap CLI with serve command |
-| 13 | all | Full workspace lint/test pass |
-| 14 | integration-tests | Full pipeline test with real Postgres |
+**Recommended execution order** (reordered from task numbering to bring storage online earlier):
 
-Tasks 1-6 build bottom-up in `hookbox` core. Tasks 7-8 build provider adapters. Tasks 9-10 build storage. Tasks 11-12 build the server and CLI. Tasks 13-14 validate the whole thing works together.
+| Order | Task | Crate | What it builds |
+|-------|------|-------|----------------|
+| 1 | Task 1 | hookbox | Domain types, enums, newtypes, payload hash |
+| 2 | Task 2 | hookbox | Error types (thiserror) |
+| 3 | Task 3 | hookbox | Core traits (SignatureVerifier, Storage, DedupeStrategy, Emitter) |
+| 4 | Task 4 | hookbox | InMemoryLruDedupe, LayeredDedupe |
+| 5 | Task 5 | hookbox | CallbackEmitter, ChannelEmitter |
+| 6 | Task 9 | hookbox-postgres | SQL migration + module structure |
+| 7 | Task 10 | hookbox-postgres | PostgresStorage, StorageDedupe |
+| 8 | Task 7 | hookbox-providers | GenericHmacVerifier |
+| 9 | Task 8 | hookbox-providers | StripeVerifier |
+| 10 | Task 6 | hookbox | HookboxPipeline with builder |
+| 11 | Task 11 | hookbox-server | Config, routes (ingest, health, admin), server wiring |
+| 12 | Task 12 | hookbox-cli | Clap CLI with serve command |
+| 13 | Task 13 | all | Full workspace lint/test pass |
+| 14 | Task 14 | integration-tests | Full pipeline test with real Postgres |
+
+**Rationale:** Tasks 1-5 build core types/traits/impls. Tasks 9-10 (Postgres) come next so the authoritative durable store exists before pipeline wiring. Tasks 7-8 (providers) follow. Task 6 (pipeline) wires everything together. Tasks 11-14 build the server, CLI, and integration validation.
+
+## Implementation Notes
+
+- **Async traits:** Use `async-trait` crate for MVP smoothness. Native async fn in traits (Rust 2024) can replace it later.
+- **LRU naming:** `InMemoryLruDedupe` uses a simple bounded map. Rename to `InMemoryRecentDedupe` if the O(n) eviction is misleading. Acceptable for MVP.
+- **`exists_by_dedupe_key`:** Not in the core `Storage` trait. `StorageDedupe` in `hookbox-postgres` queries its own backing store directly — that's an implementation detail, not a trait method.
+- **`NormalizedEvent.parsed_payload`:** This is the parsed JSON projection, not raw bytes. The authoritative body is `WebhookReceipt.raw_body: Vec<u8>`. Naming matches the final spec.
