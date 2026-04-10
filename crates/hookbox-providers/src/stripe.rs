@@ -24,6 +24,7 @@ const DEFAULT_TOLERANCE_SECS: u64 = 300;
 /// Stripe signs webhooks with HMAC-SHA256 over `"{timestamp}.{body}"` and
 /// encodes the result as a hex string placed in the `v1=` field of the header.
 pub struct StripeVerifier {
+    provider: String,
     secret: String,
     tolerance: Duration,
 }
@@ -31,8 +32,9 @@ pub struct StripeVerifier {
 impl StripeVerifier {
     /// Create a new [`StripeVerifier`] with the default 300-second tolerance.
     #[must_use]
-    pub fn new(secret: String) -> Self {
+    pub fn new(provider: String, secret: String) -> Self {
         Self {
+            provider,
             secret,
             tolerance: Duration::from_secs(DEFAULT_TOLERANCE_SECS),
         }
@@ -62,8 +64,8 @@ impl StripeVerifier {
 
 #[async_trait]
 impl SignatureVerifier for StripeVerifier {
-    fn provider_name(&self) -> &'static str {
-        "stripe"
+    fn provider_name(&self) -> &str {
+        &self.provider
     }
 
     async fn verify(&self, headers: &HeaderMap, body: &[u8]) -> VerificationResult {
@@ -181,7 +183,7 @@ mod tests {
             return;
         };
 
-        let verifier = StripeVerifier::new(secret.to_owned());
+        let verifier = StripeVerifier::new("stripe".to_owned(), secret.to_owned());
 
         let mut headers = HeaderMap::new();
         headers.insert("Stripe-Signature", header_val);
@@ -206,7 +208,7 @@ mod tests {
             return;
         };
 
-        let verifier = StripeVerifier::new(secret.to_owned());
+        let verifier = StripeVerifier::new("stripe".to_owned(), secret.to_owned());
 
         let mut headers = HeaderMap::new();
         headers.insert("Stripe-Signature", header_val);
@@ -230,7 +232,7 @@ mod tests {
             return;
         };
 
-        let verifier = StripeVerifier::new("correct_secret".to_owned());
+        let verifier = StripeVerifier::new("stripe".to_owned(), "correct_secret".to_owned());
 
         let mut headers = HeaderMap::new();
         headers.insert("Stripe-Signature", header_val);
@@ -243,7 +245,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_stripe_header_fails() {
-        let verifier = StripeVerifier::new("whsec_test_secret".to_owned());
+        let verifier = StripeVerifier::new("stripe".to_owned(), "whsec_test_secret".to_owned());
 
         let result = verifier.verify(&HeaderMap::new(), b"irrelevant body").await;
 
@@ -266,8 +268,8 @@ mod tests {
             return;
         };
 
-        let verifier =
-            StripeVerifier::new(secret.to_owned()).with_tolerance(Duration::from_secs(60));
+        let verifier = StripeVerifier::new("stripe".to_owned(), secret.to_owned())
+            .with_tolerance(Duration::from_secs(60));
 
         let mut headers = HeaderMap::new();
         headers.insert("Stripe-Signature", header_val);

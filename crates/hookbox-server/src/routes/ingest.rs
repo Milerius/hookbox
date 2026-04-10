@@ -49,7 +49,7 @@ pub async fn ingest_webhook(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({
                     "status": "error",
-                    "reason": e.to_string(),
+                    "reason": "internal server error",
                 })),
             )
         }

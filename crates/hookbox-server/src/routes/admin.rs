@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use serde_json::json;
@@ -15,6 +15,38 @@ use hookbox::traits::{Emitter, Storage};
 use hookbox::types::{NormalizedEvent, ReceiptFilter};
 
 use crate::AppState;
+
+/// Check the `Authorization` header against the configured admin bearer token.
+///
+/// If no token is configured, all requests are allowed through.
+fn check_auth(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let Some(ref expected) = state.admin_token else {
+        return Ok(());
+    };
+    let Some(auth) = headers.get("authorization") else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "missing authorization header"})),
+        ));
+    };
+    let Ok(auth_str) = auth.to_str() else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "invalid authorization header"})),
+        ));
+    };
+    let expected_value = format!("Bearer {expected}");
+    if auth_str != expected_value {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "invalid token"})),
+        ));
+    }
+    Ok(())
+}
 
 /// Query parameters for listing receipts.
 #[derive(Debug, Default, Deserialize)]
@@ -32,8 +64,12 @@ pub struct ListReceiptsQuery {
 /// List webhook receipts with optional filters.
 pub async fn list_receipts(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(params): Query<ListReceiptsQuery>,
 ) -> impl IntoResponse {
+    if let Err(resp) = check_auth(&state, &headers) {
+        return resp.into_response();
+    }
     let filter = ReceiptFilter {
         provider_name: params.provider,
         processing_state: params.state,
@@ -58,8 +94,12 @@ pub async fn list_receipts(
 /// Get a single webhook receipt by ID.
 pub async fn get_receipt(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    if let Err(resp) = check_auth(&state, &headers) {
+        return resp.into_response();
+    }
     match state.pipeline.storage().get(id).await {
         Ok(Some(receipt)) => (StatusCode::OK, Json(json!(receipt))).into_response(),
         Ok(None) => (
@@ -82,8 +122,12 @@ pub async fn get_receipt(
 /// and transitioning the receipt to the `Replayed` state.
 pub async fn replay_receipt(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    if let Err(resp) = check_auth(&state, &headers) {
+        return resp.into_response();
+    }
     // Fetch the receipt.
     let receipt = match state.pipeline.storage().get(id).await {
         Ok(Some(r)) => r,
@@ -147,8 +191,12 @@ pub async fn replay_receipt(
 /// List dead-lettered receipts (receipts in the `DeadLettered` state).
 pub async fn list_dlq(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(params): Query<ListReceiptsQuery>,
 ) -> impl IntoResponse {
+    if let Err(resp) = check_auth(&state, &headers) {
+        return resp.into_response();
+    }
     let filter = ReceiptFilter {
         provider_name: params.provider,
         processing_state: Some(ProcessingState::DeadLettered),

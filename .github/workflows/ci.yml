@@ -149,7 +149,18 @@ jobs:
         env:
           DATABASE_URL: postgres://hookbox:hookbox@localhost:5432/hookbox_test
       - name: Branch coverage (lcov)
-        run: cargo +nightly llvm-cov --all-features --branch --lcov --output-path lcov.info || true
+        run: |
+          set +e
+          cargo +nightly llvm-cov --all-features --branch --lcov --output-path lcov.info 2>&1 | tee branch-cov.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            if grep -q "SIGSEGV" branch-cov.log; then
+              echo "Known llvm-cov SIGSEGV encountered; continuing."
+            else
+              exit "$status"
+            fi
+          fi
         env:
           DATABASE_URL: postgres://hookbox:hookbox@localhost:5432/hookbox_test
       - uses: codecov/codecov-action@v6

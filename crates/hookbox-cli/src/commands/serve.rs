@@ -80,7 +80,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
 
     for (name, provider) in &config.providers {
         if provider.verifier_type == "stripe" {
-            let mut verifier = StripeVerifier::new(provider.secret.clone());
+            let mut verifier = StripeVerifier::new(name.clone(), provider.secret.clone());
             if let Some(tolerance_secs) = provider.tolerance_seconds {
                 verifier = verifier.with_tolerance(Duration::from_secs(tolerance_secs));
             }
@@ -105,7 +105,11 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
 
     let pipeline = builder.build();
 
-    let state = Arc::new(AppState { pipeline, pool });
+    let state = Arc::new(AppState {
+        pipeline,
+        pool,
+        admin_token: config.admin.bearer_token.clone(),
+    });
 
     let router = build_router(state);
 

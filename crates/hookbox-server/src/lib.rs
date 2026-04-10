@@ -28,6 +28,8 @@ pub struct AppState {
     >,
     /// Database connection pool, used independently for health checks.
     pub pool: PgPool,
+    /// Optional bearer token for admin API authentication.
+    pub admin_token: Option<String>,
 }
 
 /// Build the Axum [`Router`] with all hookbox routes wired to the given state.

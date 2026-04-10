@@ -123,7 +123,7 @@ where
             );
         }
 
-        // ── Stage 4: Build receipt ────────────────────────────────────
+        // ── Stage 4: Store (build receipt + durable write) ───────────
         let parsed_payload: Option<serde_json::Value> = serde_json::from_slice(&body).ok();
         let raw_headers = headers_to_json(&headers);
         let now = Utc::now();
@@ -149,7 +149,7 @@ where
             metadata: json!({}),
         };
 
-        // ── Stage 5: Store durably ────────────────────────────────────
+        // ── (continued) Store durably ────────────────────────────────
         let store_result = self.storage.store(&receipt).await?;
         match store_result {
             crate::state::StoreResult::Duplicate { existing_id } => {
@@ -169,7 +169,7 @@ where
             }
         }
 
-        // ── Stage 6: Emit ─────────────────────────────────────────────
+        // ── Stage 5: Emit ─────────────────────────────────────────────
         let event = NormalizedEvent {
             receipt_id,
             provider_name: provider.to_owned(),

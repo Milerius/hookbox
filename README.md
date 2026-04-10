@@ -37,7 +37,7 @@ let pipeline = HookboxPipeline::builder()
     .emitter(CallbackEmitter::new(|event| async move {
         my_business_logic(event).await
     }))
-    .verifier(StripeVerifier::new(stripe_secret))
+    .verifier(StripeVerifier::new("stripe".to_owned(), stripe_secret))
     .verifier(GenericHmacVerifier::new("bvnk", config))
     .build();
 
