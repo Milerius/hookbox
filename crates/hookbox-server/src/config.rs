@@ -58,9 +58,16 @@ pub struct DatabaseConfig {
 }
 
 /// Per-provider webhook verification configuration.
+///
+/// The `type` field selects the verifier: `"stripe"` for Stripe-Signature
+/// header verification (with timestamp tolerance), or `"hmac-sha256"` (default)
+/// for generic HMAC-SHA256.
+///
+/// **Important:** Stripe providers MUST set `type = "stripe"` explicitly.
+/// The default `"hmac-sha256"` cannot validate Stripe's `t=...,v1=...` format.
 #[derive(Debug, Deserialize)]
 pub struct ProviderConfig {
-    /// Verification algorithm type (e.g. `"hmac-sha256"`).
+    /// Verification algorithm type: `"stripe"` or `"hmac-sha256"` (default).
     #[serde(rename = "type", default = "default_provider_type")]
     pub verifier_type: String,
     /// Shared secret used for signature verification.

@@ -63,6 +63,7 @@ url = "postgres://localhost/hookbox"
 max_connections = 10
 
 [providers.stripe]
+type = "stripe"
 secret = "whsec_..."
 tolerance_seconds = 300
 

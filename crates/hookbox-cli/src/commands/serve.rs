@@ -69,9 +69,11 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     let storage_dedupe = StorageDedupe::new(pool.clone());
     let dedupe = LayeredDedupe::new(lru, storage_dedupe);
 
-    // Build the downstream emitter (channel-based; receiver is intentionally
-    // dropped here since no consumer task is wired in the MVP).
-    let (emitter, _rx) = ChannelEmitter::new(1024);
+    // Build the downstream emitter (channel-based).
+    // Spawn a drain task so the receiver stays alive and emits don't fail.
+    // In production, this would be replaced with a real consumer.
+    let (emitter, rx) = ChannelEmitter::new(1024);
+    tokio::spawn(drain_emitter(rx));
 
     // Build pipeline and register provider verifiers from config.
     let mut builder = HookboxPipeline::builder()
@@ -126,4 +128,21 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
         .context("server encountered a fatal error")?;
 
     Ok(())
+}
+
+/// Drain the emitter channel, logging each received event.
+///
+/// In a real deployment this would forward events to a message broker,
+/// trigger downstream processing, etc. For the MVP standalone server it
+/// simply keeps the channel receiver alive so that emits don't fail.
+async fn drain_emitter(mut rx: tokio::sync::mpsc::Receiver<hookbox::NormalizedEvent>) {
+    while let Some(event) = rx.recv().await {
+        tracing::info!(
+            receipt_id = %event.receipt_id,
+            provider = %event.provider_name,
+            event_type = ?event.event_type,
+            "event emitted (no consumer wired — drain task)"
+        );
+    }
+    tracing::warn!("emitter channel closed — drain task exiting");
 }
