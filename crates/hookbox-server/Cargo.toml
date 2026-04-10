@@ -1,0 +1,12 @@
+[package]
+name = "hookbox-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Standalone Axum HTTP server for hookbox."
+
+[dependencies]
+hookbox = { path = "../hookbox" }
+hookbox-postgres = { path = "../hookbox-postgres" }
+hookbox-providers = { path = "../hookbox-providers" }

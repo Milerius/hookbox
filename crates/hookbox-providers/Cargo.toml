@@ -1,0 +1,16 @@
+[package]
+name = "hookbox-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Provider signature verification adapters for hookbox (Stripe, BVNK, generic HMAC)."
+
+[features]
+default = ["stripe", "bvnk", "generic-hmac"]
+stripe = []
+bvnk = []
+generic-hmac = []
+
+[dependencies]
+hookbox = { path = "../hookbox" }

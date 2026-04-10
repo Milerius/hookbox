@@ -1,0 +1,17 @@
+[package]
+name = "hookbox-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI and server binary for hookbox: inspect, replay, and serve."
+
+[[bin]]
+name = "hookbox"
+path = "src/main.rs"
+
+[dependencies]
+hookbox = { path = "../hookbox" }
+hookbox-server = { path = "../hookbox-server" }
+hookbox-postgres = { path = "../hookbox-postgres" }
+hookbox-providers = { path = "../hookbox-providers" }

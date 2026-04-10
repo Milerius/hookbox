@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hookbox",
+    "crates/hookbox-postgres",
+    "crates/hookbox-providers",
+    "crates/hookbox-server",
+    "crates/hookbox-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Milerius/hookbox"
+description = "A durable webhook inbox: verify, dedupe, persist, replay, and audit every event before business logic touches it."
