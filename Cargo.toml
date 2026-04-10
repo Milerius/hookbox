@@ -95,3 +95,5 @@ toml = "0.8.23"
 
 # Testing
 bolero = "0.13"
+cucumber = "0.22"
+futures = "0.3"
