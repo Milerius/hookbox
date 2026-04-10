@@ -28,16 +28,26 @@ multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
 skip = [
-    { crate = "syn@1", reason = "bolero-generator-derive depends on syn v1" },
-    { crate = "getrandom@0.2", reason = "transitive via bolero → rand 0.8 and ring" },
+    # crypto crate duplicates: sqlx still uses digest/sha2/hmac 0.10.x, we use 0.11.x/0.13.x
+    { crate = "block-buffer@0.10", reason = "sqlx depends on digest 0.10 → block-buffer 0.10" },
+    { crate = "cpufeatures@0.2", reason = "sqlx depends on sha2 0.10 → cpufeatures 0.2" },
+    { crate = "crypto-common@0.1", reason = "sqlx depends on digest 0.10 → crypto-common 0.1" },
+    { crate = "digest@0.10", reason = "sqlx depends on digest 0.10" },
+    { crate = "hmac@0.12", reason = "sqlx-postgres depends on hmac 0.12" },
+    { crate = "sha2@0.10", reason = "sqlx-core depends on sha2 0.10" },
+    # rand duplicates: sqlx uses rand 0.8, metrics uses rand 0.9
+    { crate = "getrandom@0.2", reason = "transitive via sqlx → rand 0.8 and ring" },
     { crate = "getrandom@0.3", reason = "transitive via metrics-util → rand 0.9" },
-    { crate = "rand@0.8", reason = "bolero and sqlx depend on rand 0.8" },
+    { crate = "rand@0.8", reason = "sqlx depends on rand 0.8" },
     { crate = "rand_core@0.6", reason = "transitive via rand 0.8" },
     { crate = "rand_chacha@0.3", reason = "transitive via rand 0.8" },
-    { crate = "rand_xoshiro@0.6", reason = "bolero-engine depends on rand_xoshiro 0.6" },
-    { crate = "hashbrown@0.15", reason = "sqlx-core and metrics-util depend on hashbrown 0.15" },
-    { crate = "thiserror@1", reason = "metrics-exporter-prometheus depends on thiserror 1.x" },
-    { crate = "thiserror-impl@1", reason = "transitive via thiserror 1.x" },
+    # hashbrown/foldhash duplicates: metrics-util uses 0.16, indexmap uses 0.17
+    { crate = "hashbrown@0.16", reason = "metrics-util depends on hashbrown 0.16" },
+    { crate = "hashbrown@0.15", reason = "sqlx depends on hashbrown 0.15 via hashlink" },
+    { crate = "foldhash@0.1", reason = "transitive via hashbrown 0.15 in sqlx" },
+    # bolero pulls old toml_edit/winnow via proc-macro-crate
+    { crate = "toml_edit@0.20", reason = "bolero → proc-macro-crate uses toml_edit 0.20" },
+    { crate = "winnow@0.5", reason = "transitive via toml_edit 0.20" },
 ]
 
 [sources]
