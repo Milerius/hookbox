@@ -45,7 +45,7 @@ All signature comparisons use **constant-time comparison** via the `subtle` crat
 use hookbox_providers::{StripeVerifier, GenericHmacVerifier};
 
 // Stripe: verifies Stripe-Signature header with timestamp tolerance
-let stripe = StripeVerifier::new(stripe_webhook_secret)
+let stripe = StripeVerifier::new("stripe".to_owned(), stripe_webhook_secret)
     .with_tolerance(Duration::from_secs(300));
 
 // Generic HMAC: works with most providers

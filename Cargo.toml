@@ -7,6 +7,7 @@ members = [
     "crates/hookbox-server",
     "crates/hookbox-cli",
     "crates/hookbox-verify",
+    "integration-tests",
 ]
 
 [workspace.package]
@@ -39,6 +40,7 @@ similar_names = "allow"
 [workspace.lints.rust]
 unsafe_code = "deny"
 missing_docs = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [workspace.dependencies]
 hookbox = { path = "crates/hookbox", version = "0.1.0" }
@@ -82,6 +84,7 @@ clap = { version = "4", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 bytes = "1"
+base64 = "0.22"
 
 # Error handling
 thiserror = "2"
@@ -92,3 +95,5 @@ toml = "0.8.23"
 
 # Testing
 bolero = "0.13"
+cucumber = "0.22"
+futures = "0.3"

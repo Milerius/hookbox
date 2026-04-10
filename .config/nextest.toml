@@ -1,5 +1,8 @@
 [profile.ci]
-default-filter = "all()"
+default-filter = "all() - binary(bdd)"
 
 [profile.ci.junit]
 path = "junit.xml"
+
+[profile.default]
+default-filter = "all() - binary(bdd)"

@@ -25,3 +25,8 @@ subtle.workspace = true
 http.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+chrono.workspace = true
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true }
