@@ -27,6 +27,18 @@ allow = [
 multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
+skip = [
+    { crate = "syn@1", reason = "bolero-generator-derive depends on syn v1" },
+    { crate = "getrandom@0.2", reason = "transitive via bolero → rand 0.8 and ring" },
+    { crate = "getrandom@0.3", reason = "transitive via metrics-util → rand 0.9" },
+    { crate = "rand@0.8", reason = "bolero and sqlx depend on rand 0.8" },
+    { crate = "rand_core@0.6", reason = "transitive via rand 0.8" },
+    { crate = "rand_chacha@0.3", reason = "transitive via rand 0.8" },
+    { crate = "rand_xoshiro@0.6", reason = "bolero-engine depends on rand_xoshiro 0.6" },
+    { crate = "hashbrown@0.15", reason = "sqlx-core and metrics-util depend on hashbrown 0.15" },
+    { crate = "thiserror@1", reason = "metrics-exporter-prometheus depends on thiserror 1.x" },
+    { crate = "thiserror-impl@1", reason = "transitive via thiserror 1.x" },
+]
 
 [sources]
 unknown-registry = "deny"
