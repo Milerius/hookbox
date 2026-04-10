@@ -997,6 +997,8 @@ dependencies = [
 name = "hookbox-providers"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "hex",
  "hmac 0.13.0",
  "hookbox",
@@ -1004,6 +1006,7 @@ dependencies = [
  "sha2 0.11.0",
  "subtle",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 
