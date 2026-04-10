@@ -1015,6 +1015,7 @@ name = "hookbox-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
  "chrono",
  "hookbox",
  "hookbox-postgres",
