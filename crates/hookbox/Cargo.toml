@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 async-trait = "0.1"
+base64 = "0.22"
 bytes.workspace = true
 chrono.workspace = true
 serde.workspace = true

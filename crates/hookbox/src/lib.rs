@@ -2,3 +2,13 @@
 //!
 //! Core library providing traits, types, and pipeline orchestration
 //! for webhook receipt, verification, deduplication, storage, and emission.
+
+pub mod error;
+pub mod hash;
+pub mod state;
+pub mod types;
+
+pub use error::*;
+pub use hash::compute_payload_hash;
+pub use state::*;
+pub use types::*;
