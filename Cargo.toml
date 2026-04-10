@@ -88,7 +88,7 @@ thiserror = "2"
 anyhow = "1"
 
 # Config
-toml = "0.8"
+toml = "1.1"
 
 # Testing
 bolero = "0.11"
