@@ -79,15 +79,16 @@ impl SignatureVerifier for StripeVerifier {
             return Self::failed("invalid_signature_header_encoding");
         };
 
-        // 3. Parse t=<timestamp>,v1=<signature> from comma-separated parts.
+        // 3. Parse t=<timestamp> and all v1=<signature> values from comma-separated
+        //    parts. Stripe can send multiple v1= signatures during secret rotation.
         let mut timestamp_str: Option<&str> = None;
-        let mut v1_sig: Option<&str> = None;
+        let mut v1_sigs: Vec<&str> = Vec::new();
 
         for part in header_str.split(',') {
             if let Some(ts) = part.strip_prefix("t=") {
                 timestamp_str = Some(ts);
             } else if let Some(sig) = part.strip_prefix("v1=") {
-                v1_sig = Some(sig);
+                v1_sigs.push(sig);
             }
         }
 
@@ -95,9 +96,9 @@ impl SignatureVerifier for StripeVerifier {
         let Some(ts_str) = timestamp_str else {
             return Self::failed("missing_timestamp");
         };
-        let Some(provided_hex) = v1_sig else {
+        if v1_sigs.is_empty() {
             return Self::failed("missing_v1_signature");
-        };
+        }
 
         let Ok(timestamp) = ts_str.parse::<u64>() else {
             return Self::failed("invalid_timestamp");
@@ -125,17 +126,18 @@ impl SignatureVerifier for StripeVerifier {
         mac.update(signed_payload.as_bytes());
         let expected = mac.finalize().into_bytes();
 
-        // 7. Hex-decode the provided signature.
-        let Ok(provided_sig) = hex::decode(provided_hex) else {
-            return Self::failed("invalid_hex_signature");
-        };
-
-        // Constant-time compare.
-        if expected.ct_eq(provided_sig.as_slice()).into() {
-            Self::verified("signature_valid")
-        } else {
-            Self::failed("signature_mismatch")
+        // 7. Check if any v1= signature matches (supports secret rotation).
+        for provided_hex in &v1_sigs {
+            let Ok(provided_sig) = hex::decode(provided_hex) else {
+                continue; // skip malformed sigs, try next
+            };
+            // Constant-time compare.
+            if expected.ct_eq(provided_sig.as_slice()).into() {
+                return Self::verified("signature_valid");
+            }
         }
+
+        Self::failed("signature_mismatch")
     }
 }
 
@@ -276,5 +278,35 @@ mod tests {
 
         let result = verifier.verify(&headers, body).await;
         assert_eq!(result.status, VerificationStatus::Verified);
+    }
+
+    #[tokio::test]
+    async fn multiple_v1_signatures_during_rotation() {
+        let old_secret = "whsec_old_secret";
+        let new_secret = "whsec_new_secret";
+        let body = b"{\"type\":\"charge.succeeded\"}";
+        let ts = now_secs();
+
+        let Some(old_sig) = compute_stripe_sig(old_secret, ts, body) else {
+            return;
+        };
+        let Some(new_sig) = compute_stripe_sig(new_secret, ts, body) else {
+            return;
+        };
+
+        // Stripe sends both signatures during rotation
+        let header_str = format!("t={ts},v1={old_sig},v1={new_sig}");
+        let Ok(header_val) = HeaderValue::from_str(&header_str) else {
+            return;
+        };
+
+        // Verifier configured with the NEW secret should accept
+        let verifier = StripeVerifier::new("stripe".to_owned(), new_secret.to_owned());
+        let mut headers = HeaderMap::new();
+        headers.insert("Stripe-Signature", header_val);
+
+        let result = verifier.verify(&headers, body).await;
+        assert_eq!(result.status, VerificationStatus::Verified);
+        assert_eq!(result.reason.as_deref(), Some("signature_valid"));
     }
 }
