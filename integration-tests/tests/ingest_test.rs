@@ -6,10 +6,10 @@
 #![expect(clippy::expect_used, reason = "expect is acceptable in test code")]
 
 use bytes::Bytes;
+use hookbox::HookboxPipeline;
 use hookbox::dedupe::InMemoryRecentDedupe;
 use hookbox::emitter::ChannelEmitter;
 use hookbox::state::IngestResult;
-use hookbox::HookboxPipeline;
 use hookbox_postgres::PostgresStorage;
 use http::HeaderMap;
 use sqlx::PgPool;
