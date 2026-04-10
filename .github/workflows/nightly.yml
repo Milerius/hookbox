@@ -31,13 +31,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Branch coverage (HTML)
-        run: cargo llvm-cov --all-features --branch --html
+        run: cargo +nightly llvm-cov --all-features --branch --html
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:
