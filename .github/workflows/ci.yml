@@ -95,7 +95,7 @@ jobs:
         run: cargo +nightly llvm-cov --all-features --codecov --output-path codecov.json
       - name: Branch coverage (lcov)
         run: cargo +nightly llvm-cov --all-features --branch --lcov --output-path lcov.info
-      - uses: codecov/codecov-action@v4
+      - uses: codecov/codecov-action@v6
         with:
           files: codecov.json
           fail_ci_if_error: false
