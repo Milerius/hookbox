@@ -1,3 +1,5 @@
+//! Hookbox CLI — inspect, replay, and serve.
+
 fn main() {
-    println!("hookbox");
+    // TODO(startup): wire up clap and subcommands
 }

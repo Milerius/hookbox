@@ -2,8 +2,24 @@
 name = "hookbox"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Core library: traits, types, pipeline orchestration, and lightweight built-in implementations for a durable webhook inbox."
 
+[lints]
+workspace = true
+
 [dependencies]
+async-trait = "0.1"
+bytes.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+http.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+uuid.workspace = true

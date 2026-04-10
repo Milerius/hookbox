@@ -2,11 +2,30 @@
 name = "hookbox-server"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Standalone Axum HTTP server for hookbox."
 
+[lints]
+workspace = true
+
 [dependencies]
-hookbox = { path = "../hookbox" }
-hookbox-postgres = { path = "../hookbox-postgres" }
-hookbox-providers = { path = "../hookbox-providers" }
+hookbox.workspace = true
+hookbox-postgres.workspace = true
+hookbox-providers.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tokio.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+toml.workspace = true
+thiserror.workspace = true

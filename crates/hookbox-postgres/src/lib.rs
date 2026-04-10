@@ -1,1 +1,1 @@
-//! PostgreSQL storage backend for hookbox.
+//! `PostgreSQL` storage backend for hookbox.

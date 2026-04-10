@@ -2,16 +2,29 @@
 name = "hookbox-cli"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "CLI and server binary for hookbox: inspect, replay, and serve."
+
+[lints]
+workspace = true
 
 [[bin]]
 name = "hookbox"
 path = "src/main.rs"
 
 [dependencies]
-hookbox = { path = "../hookbox" }
-hookbox-server = { path = "../hookbox-server" }
-hookbox-postgres = { path = "../hookbox-postgres" }
-hookbox-providers = { path = "../hookbox-providers" }
+hookbox.workspace = true
+hookbox-server.workspace = true
+hookbox-postgres.workspace = true
+hookbox-providers.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+toml.workspace = true
+thiserror.workspace = true

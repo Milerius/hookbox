@@ -2,9 +2,20 @@
 name = "hookbox-postgres"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "PostgreSQL storage backend for hookbox."
 
+[lints]
+workspace = true
+
 [dependencies]
-hookbox = { path = "../hookbox" }
+hookbox.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+serde_json.workspace = true

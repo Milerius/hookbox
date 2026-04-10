@@ -6,11 +6,88 @@ members = [
     "crates/hookbox-providers",
     "crates/hookbox-server",
     "crates/hookbox-cli",
+    "crates/hookbox-verify",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85.0"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Milerius/hookbox"
 description = "A durable webhook inbox: verify, dedupe, persist, replay, and audit every event before business logic touches it."
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+panic_in_result_fn = "deny"
+unimplemented = "deny"
+allow_attributes = "deny"
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+await_holding_lock = "deny"
+large_futures = "deny"
+exit = "deny"
+mem_forget = "deny"
+module_name_repetitions = "allow"
+similar_names = "allow"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.dependencies]
+hookbox = { path = "crates/hookbox", version = "0.1.0" }
+hookbox-postgres = { path = "crates/hookbox-postgres", version = "0.1.0" }
+hookbox-providers = { path = "crates/hookbox-providers", version = "0.1.0" }
+hookbox-server = { path = "crates/hookbox-server", version = "0.1.0" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP / web
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+hyper = { version = "1", features = ["full"] }
+http = "1"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Crypto
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+subtle = "2"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Types
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+bytes = "1"
+
+# Error handling
+thiserror = "2"
+
+# Config
+toml = "0.8"
+
+# Testing
+bolero = "0.11"
