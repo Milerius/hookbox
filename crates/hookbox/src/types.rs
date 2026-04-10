@@ -4,32 +4,26 @@ use std::fmt;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::state::{ProcessingState, VerificationStatus};
 
-/// Opaque, strongly-typed identifier for a [`WebhookReceipt`].
-///
-/// Wraps a [`Uuid`] v4 to prevent accidental use of arbitrary UUIDs in
-/// receipt-related APIs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ReceiptId(pub Uuid);
+pub use crate::state::ReceiptId;
 
-impl ReceiptId {
-    /// Create a new, randomly-generated [`ReceiptId`].
-    #[must_use]
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
+/// Stable key used for idempotent deduplication of webhook events.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DedupeKey(pub String);
+
+impl fmt::Display for DedupeKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
-impl Default for ReceiptId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// Hex-encoded SHA-256 hash of a webhook event's raw body bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PayloadHash(pub String);
 
-impl fmt::Display for ReceiptId {
+impl fmt::Display for PayloadHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -146,7 +140,12 @@ mod serde_bytes_base64 {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+    use serde_json::json;
+    use uuid::Uuid;
+
     use super::*;
+    use crate::state::{ProcessingState, VerificationStatus};
 
     #[test]
     fn receipt_id_new_is_unique() {
@@ -156,24 +155,44 @@ mod tests {
     }
 
     #[test]
-    fn receipt_id_display_is_uuid_format() {
-        let id = ReceiptId::new();
-        let displayed = id.to_string();
-        // UUID v4 format: 8-4-4-4-12 hex chars separated by hyphens (36 chars total)
-        assert_eq!(displayed.len(), 36);
-        let parts: Vec<&str> = displayed.split('-').collect();
-        assert_eq!(parts.len(), 5);
-        assert_eq!(parts[0].len(), 8);
-        assert_eq!(parts[1].len(), 4);
-        assert_eq!(parts[2].len(), 4);
-        assert_eq!(parts[3].len(), 4);
-        assert_eq!(parts[4].len(), 12);
-    }
-
-    #[test]
     fn receipt_id_display_matches_inner_uuid() {
         let uuid = Uuid::new_v4();
         let id = ReceiptId(uuid);
         assert_eq!(id.to_string(), uuid.to_string());
+    }
+
+    #[test]
+    fn webhook_receipt_raw_body_round_trips_via_serde() {
+        let raw_body = b"hello webhook payload".to_vec();
+        let receipt = WebhookReceipt {
+            receipt_id: ReceiptId::new(),
+            provider_name: "test-provider".to_string(),
+            provider_event_id: None,
+            external_reference: None,
+            dedupe_key: "key-abc".to_string(),
+            payload_hash: "deadbeef".to_string(),
+            raw_body: raw_body.clone(),
+            parsed_payload: None,
+            raw_headers: json!({}),
+            normalized_event_type: None,
+            verification_status: VerificationStatus::Skipped,
+            verification_reason: None,
+            processing_state: ProcessingState::Stored,
+            emit_count: 0,
+            last_error: None,
+            received_at: Utc::now(),
+            processed_at: None,
+            metadata: json!({}),
+        };
+
+        let serialized = serde_json::to_string(&receipt);
+        assert!(serialized.is_ok(), "serialization failed");
+        let deserialized = serialized
+            .ok()
+            .and_then(|s| serde_json::from_str::<WebhookReceipt>(&s).ok());
+        assert!(deserialized.is_some(), "deserialization failed");
+        if let Some(d) = deserialized {
+            assert_eq!(d.raw_body, raw_body);
+        }
     }
 }

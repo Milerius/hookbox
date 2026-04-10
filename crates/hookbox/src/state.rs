@@ -1,7 +1,36 @@
 //! Processing state types for the webhook ingest pipeline.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+/// Opaque, strongly-typed identifier for a [`crate::types::WebhookReceipt`].
+///
+/// Wraps a [`Uuid`] v4 to prevent accidental use of arbitrary UUIDs in
+/// receipt-related APIs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ReceiptId(pub Uuid);
+
+impl ReceiptId {
+    /// Create a new, randomly-generated [`ReceiptId`].
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for ReceiptId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for ReceiptId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 /// Lifecycle state of a webhook receipt through the ingest pipeline.
 ///
@@ -46,12 +75,12 @@ pub enum VerificationStatus {
 }
 
 /// Full result of a signature verification attempt, including an optional
-/// human-readable explanation.
+/// machine-readable explanation.
 #[derive(Debug, Clone)]
 pub struct VerificationResult {
     /// Whether verification passed, failed, or was skipped.
     pub status: VerificationStatus,
-    /// Optional human-readable explanation (e.g. error message on failure).
+    /// Optional machine-readable explanation (e.g. `"signature_valid"`, `"timestamp_expired"`).
     pub reason: Option<String>,
 }
 
@@ -75,7 +104,7 @@ pub enum StoreResult {
     /// A receipt with the same dedupe key already exists.
     Duplicate {
         /// The ID of the previously stored receipt.
-        existing_id: Uuid,
+        existing_id: ReceiptId,
     },
 }
 
@@ -85,12 +114,12 @@ pub enum IngestResult {
     /// The event was accepted and durably stored.
     Accepted {
         /// The ID assigned to the newly stored receipt.
-        receipt_id: Uuid,
+        receipt_id: ReceiptId,
     },
     /// The event is a duplicate of a previously stored receipt.
     Duplicate {
         /// The ID of the previously stored receipt.
-        existing_id: Uuid,
+        existing_id: ReceiptId,
     },
     /// The event was rejected because signature verification failed.
     VerificationFailed {
