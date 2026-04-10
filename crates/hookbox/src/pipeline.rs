@@ -20,9 +20,7 @@ use serde_json::json;
 
 use crate::error::IngestError;
 use crate::hash::compute_payload_hash;
-use crate::state::{
-    DedupeDecision, IngestResult, ProcessingState, ReceiptId, VerificationStatus,
-};
+use crate::state::{DedupeDecision, IngestResult, ProcessingState, ReceiptId, VerificationStatus};
 use crate::traits::{DedupeStrategy, Emitter, SignatureVerifier, Storage};
 use crate::types::{NormalizedEvent, WebhookReceipt};
 
@@ -76,7 +74,10 @@ where
     ///
     /// Returns [`IngestError`] if the storage, dedupe, or verification layer
     /// encounters an unexpected infrastructure failure.
-    #[expect(clippy::too_many_lines, reason = "pipeline stages are sequential and read best as one flow")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pipeline stages are sequential and read best as one flow"
+    )]
     #[tracing::instrument(skip(self, headers, body), fields(provider = %provider))]
     pub async fn ingest(
         &self,
@@ -123,8 +124,7 @@ where
         }
 
         // ── Stage 4: Build receipt ────────────────────────────────────
-        let parsed_payload: Option<serde_json::Value> =
-            serde_json::from_slice(&body).ok();
+        let parsed_payload: Option<serde_json::Value> = serde_json::from_slice(&body).ok();
         let raw_headers = headers_to_json(&headers);
         let now = Utc::now();
 
@@ -261,7 +261,10 @@ where
     /// # Panics
     ///
     /// Panics if `storage`, `dedupe`, or `emitter` have not been set.
-    #[expect(clippy::expect_used, reason = "builder panics by design when required fields are missing")]
+    #[expect(
+        clippy::expect_used,
+        reason = "builder panics by design when required fields are missing"
+    )]
     #[must_use]
     pub fn build(self) -> HookboxPipeline<S, D, E> {
         HookboxPipeline {

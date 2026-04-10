@@ -136,11 +136,7 @@ pub trait DedupeStrategy: Send + Sync {
     ///
     /// Must be called after a receipt is durably stored to keep the
     /// advisory cache in sync with the authoritative storage layer.
-    async fn record(
-        &self,
-        dedupe_key: &str,
-        payload_hash: &str,
-    ) -> Result<(), DedupeError>;
+    async fn record(&self, dedupe_key: &str, payload_hash: &str) -> Result<(), DedupeError>;
 }
 
 /// Forwards normalised webhook events to downstream consumers.

@@ -10,9 +10,9 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
+use hookbox::ProcessingState;
 use hookbox::traits::{Emitter, Storage};
 use hookbox::types::{NormalizedEvent, ReceiptFilter};
-use hookbox::ProcessingState;
 
 use crate::AppState;
 

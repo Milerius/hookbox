@@ -101,8 +101,8 @@ impl Emitter for ChannelEmitter {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     use chrono::Utc;
 
@@ -139,7 +139,11 @@ mod tests {
         let event = test_event();
         let result = emitter.emit(&event).await;
         assert!(result.is_ok(), "emit should succeed");
-        assert_eq!(counter.load(Ordering::SeqCst), 1, "handler should have been called once");
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "handler should have been called once"
+        );
     }
 
     #[tokio::test]

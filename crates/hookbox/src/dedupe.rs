@@ -73,11 +73,7 @@ impl DedupeStrategy for InMemoryRecentDedupe {
         }
     }
 
-    async fn record(
-        &self,
-        dedupe_key: &str,
-        payload_hash: &str,
-    ) -> Result<(), DedupeError> {
+    async fn record(&self, dedupe_key: &str, payload_hash: &str) -> Result<(), DedupeError> {
         let mut inner = self.inner.lock().await;
 
         // No-op if the key already exists.
@@ -92,7 +88,9 @@ impl DedupeStrategy for InMemoryRecentDedupe {
             }
         }
 
-        inner.map.insert(dedupe_key.to_owned(), payload_hash.to_owned());
+        inner
+            .map
+            .insert(dedupe_key.to_owned(), payload_hash.to_owned());
         inner.order.push_back(dedupe_key.to_owned());
 
         Ok(())
@@ -120,7 +118,10 @@ where
     /// Create a new [`LayeredDedupe`] from a fast-path and an authoritative
     /// strategy.
     pub fn new(fast: F, authoritative: A) -> Self {
-        Self { fast, authoritative }
+        Self {
+            fast,
+            authoritative,
+        }
     }
 }
 
@@ -142,11 +143,7 @@ where
         }
     }
 
-    async fn record(
-        &self,
-        dedupe_key: &str,
-        payload_hash: &str,
-    ) -> Result<(), DedupeError> {
+    async fn record(&self, dedupe_key: &str, payload_hash: &str) -> Result<(), DedupeError> {
         self.fast.record(dedupe_key, payload_hash).await?;
         self.authoritative.record(dedupe_key, payload_hash).await?;
         Ok(())

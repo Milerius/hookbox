@@ -143,8 +143,7 @@ mod tests {
     async fn invalid_signature_fails() {
         let secret = b"test-secret";
         let body = b"hello world";
-        let bad_sig =
-            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        let bad_sig = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
         let Ok(header_val) = HeaderValue::from_str(bad_sig) else {
             return;
         };

@@ -71,8 +71,8 @@ struct ReceiptRow {
 /// For example, `ProcessingState::Stored` serialises as `"stored"` in JSON,
 /// so after stripping quotes the stored TEXT value is `stored`.
 fn serialize_enum<T: Serialize>(value: &T) -> Result<String, StorageError> {
-    let json = serde_json::to_string(value)
-        .map_err(|e| StorageError::Serialization(e.to_string()))?;
+    let json =
+        serde_json::to_string(value).map_err(|e| StorageError::Serialization(e.to_string()))?;
     Ok(json.trim_matches('"').to_owned())
 }
 

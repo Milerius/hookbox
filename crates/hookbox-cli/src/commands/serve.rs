@@ -45,7 +45,10 @@ pub fn run(config_path: &str) -> anyhow::Result<()> {
 async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     // Initialise JSON tracing with an env-filter defaulting to INFO.
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().json().with_env_filter(filter).init();
+    tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(filter)
+        .init();
 
     tracing::info!("connecting to database");
 
@@ -89,11 +92,8 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                 .header
                 .clone()
                 .unwrap_or_else(|| format!("X-{name}-Signature"));
-            let verifier = GenericHmacVerifier::new(
-                name,
-                provider.secret.as_bytes().to_vec(),
-                header,
-            );
+            let verifier =
+                GenericHmacVerifier::new(name, provider.secret.as_bytes().to_vec(), header);
             tracing::info!(
                 provider = %name,
                 verifier_type = %provider.verifier_type,
@@ -105,10 +105,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
 
     let pipeline = builder.build();
 
-    let state = Arc::new(AppState {
-        pipeline,
-        pool,
-    });
+    let state = Arc::new(AppState { pipeline, pool });
 
     let router = build_router(state);
 

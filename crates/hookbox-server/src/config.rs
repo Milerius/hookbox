@@ -129,8 +129,7 @@ mod tests {
 [database]
 url = "postgres://localhost/hookbox"
 "#;
-        let config: HookboxConfig =
-            toml::from_str(toml_str).expect("minimal config should parse");
+        let config: HookboxConfig = toml::from_str(toml_str).expect("minimal config should parse");
 
         assert_eq!(config.server.host, "0.0.0.0");
         assert_eq!(config.server.port, 8080);
@@ -169,8 +168,7 @@ lru_capacity = 50000
 [admin]
 bearer_token = "supersecret"
 "#;
-        let config: HookboxConfig =
-            toml::from_str(toml_str).expect("full config should parse");
+        let config: HookboxConfig = toml::from_str(toml_str).expect("full config should parse");
 
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 9090);
@@ -191,9 +189,6 @@ bearer_token = "supersecret"
         assert!(github.tolerance_seconds.is_none());
 
         assert_eq!(config.dedupe.lru_capacity, 50_000);
-        assert_eq!(
-            config.admin.bearer_token.as_deref(),
-            Some("supersecret")
-        );
+        assert_eq!(config.admin.bearer_token.as_deref(), Some("supersecret"));
     }
 }

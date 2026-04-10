@@ -245,9 +245,7 @@ mod tests {
     async fn missing_stripe_header_fails() {
         let verifier = StripeVerifier::new("whsec_test_secret".to_owned());
 
-        let result = verifier
-            .verify(&HeaderMap::new(), b"irrelevant body")
-            .await;
+        let result = verifier.verify(&HeaderMap::new(), b"irrelevant body").await;
 
         assert_eq!(result.status, VerificationStatus::Failed);
         assert_eq!(result.reason.as_deref(), Some("missing_signature_header"));

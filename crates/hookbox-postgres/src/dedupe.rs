@@ -47,13 +47,12 @@ impl DedupeStrategy for StorageDedupe {
         dedupe_key: &str,
         payload_hash: &str,
     ) -> Result<DedupeDecision, DedupeError> {
-        let stored_hash: Option<String> = sqlx::query_scalar(
-            "SELECT payload_hash FROM webhook_receipts WHERE dedupe_key = $1",
-        )
-        .bind(dedupe_key)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| DedupeError::Internal(e.to_string()))?;
+        let stored_hash: Option<String> =
+            sqlx::query_scalar("SELECT payload_hash FROM webhook_receipts WHERE dedupe_key = $1")
+                .bind(dedupe_key)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| DedupeError::Internal(e.to_string()))?;
 
         match stored_hash {
             None => Ok(DedupeDecision::New),
@@ -66,11 +65,7 @@ impl DedupeStrategy for StorageDedupe {
     ///
     /// The authoritative dedupe row is written atomically during `store`, so
     /// there is nothing additional to record here.
-    async fn record(
-        &self,
-        _dedupe_key: &str,
-        _payload_hash: &str,
-    ) -> Result<(), DedupeError> {
+    async fn record(&self, _dedupe_key: &str, _payload_hash: &str) -> Result<(), DedupeError> {
         Ok(())
     }
 }
