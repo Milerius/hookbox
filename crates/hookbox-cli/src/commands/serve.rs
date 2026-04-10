@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use sqlx::PgPool;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -52,9 +51,11 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
 
     tracing::info!("connecting to database");
 
-    let pool = PgPool::connect(&config.database.url)
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(config.database.max_connections)
+        .connect(&config.database.url)
         .await
-        .context("failed to connect to Postgres")?;
+        .context("failed to connect to database")?;
 
     tracing::info!("running database migrations");
     let storage = PostgresStorage::new(pool.clone());
@@ -111,7 +112,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
         admin_token: config.admin.bearer_token.clone(),
     });
 
-    let router = build_router(state);
+    let router = build_router(state, config.server.body_limit);
 
     let bind_addr = format!("{}:{}", config.server.host, config.server.port);
     let listener = TcpListener::bind(&bind_addr)

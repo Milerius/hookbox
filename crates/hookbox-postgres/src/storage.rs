@@ -271,7 +271,7 @@ impl Storage for PostgresStorage {
         error: Option<&str>,
     ) -> Result<(), StorageError> {
         let state_str = serialize_enum(&state)?;
-        sqlx::query(
+        let result = sqlx::query(
             r"
             UPDATE webhook_receipts
             SET processing_state = $1,
@@ -285,6 +285,10 @@ impl Storage for PostgresStorage {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            tracing::warn!(receipt_id = %id, "update_state: no receipt found with this id");
+        }
 
         Ok(())
     }

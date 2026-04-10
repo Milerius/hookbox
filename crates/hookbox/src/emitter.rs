@@ -82,6 +82,10 @@ impl ChannelEmitter {
     /// Create a new [`ChannelEmitter`] with the given channel buffer capacity.
     ///
     /// Returns the emitter and the receiving half of the channel.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `buffer` is 0 (tokio mpsc requires capacity >= 1).
     #[must_use]
     pub fn new(buffer: usize) -> (Self, mpsc::Receiver<NormalizedEvent>) {
         let (sender, receiver) = mpsc::channel(buffer);

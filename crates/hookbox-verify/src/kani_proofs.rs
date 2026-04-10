@@ -89,9 +89,13 @@ mod proofs {
         assert!(!(is_pre_store && is_post_store));
     }
 
-    /// Prove that terminal and non-terminal states form a complete partition.
+    /// Prove that terminal states (VerificationFailed, Duplicate, Processed) and
+    /// delivery states (Emitted, EmitFailed, DeadLettered, Replayed) are disjoint.
+    ///
+    /// This verifies that the terminal/delivery partition is correct and that no
+    /// state can simultaneously be "done" and "in the delivery pipeline".
     #[kani::proof]
-    fn terminal_states_partition() {
+    fn terminal_states_are_not_delivery_states() {
         let state = any_state();
         let is_terminal = matches!(
             state,
@@ -99,7 +103,14 @@ mod proofs {
                 | ProcessingState::Duplicate
                 | ProcessingState::Processed
         );
-        let is_non_terminal = !is_terminal;
-        assert!(is_terminal || is_non_terminal);
+        let is_delivery = matches!(
+            state,
+            ProcessingState::Emitted
+                | ProcessingState::EmitFailed
+                | ProcessingState::DeadLettered
+                | ProcessingState::Replayed
+        );
+        // Terminal states and delivery states are disjoint
+        assert!(!(is_terminal && is_delivery));
     }
 }

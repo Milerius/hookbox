@@ -9,6 +9,7 @@ pub mod routes;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use sqlx::PgPool;
 
@@ -33,7 +34,10 @@ pub struct AppState {
 }
 
 /// Build the Axum [`Router`] with all hookbox routes wired to the given state.
-pub fn build_router(state: Arc<AppState>) -> Router {
+///
+/// `body_limit` sets the maximum request body size in bytes via
+/// [`DefaultBodyLimit::max`].
+pub fn build_router(state: Arc<AppState>, body_limit: usize) -> Router {
     Router::new()
         .route("/webhooks/{provider}", post(routes::ingest::ingest_webhook))
         .route("/healthz", get(routes::health::healthz))
@@ -46,4 +50,5 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/dlq", get(routes::admin::list_dlq))
         .with_state(state)
+        .layer(DefaultBodyLimit::max(body_limit))
 }
