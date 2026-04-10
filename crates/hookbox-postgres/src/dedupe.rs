@@ -5,7 +5,7 @@
 //! fast-path but provides a durable, cross-process view of already-seen keys.
 //!
 //! `record` is intentionally a no-op: persistence is handled by
-//! [`crate::storage::PostgresStorage::store`], which writes the authoritative
+//! [`PostgresStorage`](crate::PostgresStorage), which writes the authoritative
 //! row.  Calling `record` after a successful store therefore has no extra cost.
 
 use async_trait::async_trait;
@@ -61,7 +61,7 @@ impl DedupeStrategy for StorageDedupe {
         }
     }
 
-    /// No-op: persistence is handled by [`crate::storage::PostgresStorage::store`].
+    /// No-op: persistence is handled by [`PostgresStorage`](crate::PostgresStorage).
     ///
     /// The authoritative dedupe row is written atomically during `store`, so
     /// there is nothing additional to record here.
