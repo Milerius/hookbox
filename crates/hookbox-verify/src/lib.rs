@@ -6,4 +6,5 @@
 
 mod dedupe_props;
 mod hash_props;
+mod kani_proofs;
 mod state_props;
