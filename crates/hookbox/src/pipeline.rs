@@ -511,4 +511,34 @@ mod tests {
             "should be accepted with skipped verification, got {result:?}"
         );
     }
+
+    /// Emitter that always returns a downstream error.
+    struct FailEmitter;
+
+    #[async_trait]
+    impl Emitter for FailEmitter {
+        async fn emit(&self, _event: &NormalizedEvent) -> Result<(), EmitError> {
+            Err(EmitError::Downstream("test_failure".to_owned()))
+        }
+    }
+
+    #[tokio::test]
+    async fn ingest_accepted_even_when_emit_fails() {
+        let pipeline = HookboxPipeline::builder()
+            .storage(MemoryStorage::new())
+            .dedupe(InMemoryRecentDedupe::new(100))
+            .emitter(FailEmitter)
+            .verifier(PassVerifier)
+            .build();
+
+        let body = Bytes::from(r#"{"event":"payment.completed"}"#);
+        let result = pipeline
+            .ingest("test-provider", HeaderMap::new(), body)
+            .await;
+
+        assert!(
+            matches!(result, Ok(IngestResult::Accepted { .. })),
+            "pipeline should return Accepted even when the emitter fails, got {result:?}"
+        );
+    }
 }
