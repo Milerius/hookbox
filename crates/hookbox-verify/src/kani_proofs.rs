@@ -6,11 +6,29 @@
 mod proofs {
     use hookbox::state::ProcessingState;
 
-    /// Prove that all ProcessingState variants are distinct values
-    /// when serialized — no two variants produce the same string.
+    /// Map a u8 to a ProcessingState variant (wrapping around 10 variants).
+    fn any_state() -> ProcessingState {
+        let n: u8 = kani::any();
+        kani::assume(n < 10);
+        match n {
+            0 => ProcessingState::Received,
+            1 => ProcessingState::Verified,
+            2 => ProcessingState::VerificationFailed,
+            3 => ProcessingState::Duplicate,
+            4 => ProcessingState::Stored,
+            5 => ProcessingState::Emitted,
+            6 => ProcessingState::Processed,
+            7 => ProcessingState::EmitFailed,
+            8 => ProcessingState::DeadLettered,
+            _ => ProcessingState::Replayed,
+        }
+    }
+
+    /// Prove that all ProcessingState variants produce non-empty serialized names
+    /// and that the match is exhaustive.
     #[kani::proof]
     fn processing_state_variants_are_distinct() {
-        let state: ProcessingState = kani::any();
+        let state = any_state();
         let serialized = match state {
             ProcessingState::Received => "received",
             ProcessingState::Verified => "verified",
@@ -23,7 +41,6 @@ mod proofs {
             ProcessingState::DeadLettered => "dead_lettered",
             ProcessingState::Replayed => "replayed",
         };
-        // Kani verifies this match is exhaustive and each arm is reachable
         assert!(!serialized.is_empty());
     }
 
@@ -39,7 +56,6 @@ mod proofs {
             ProcessingState::Processed,
         ];
 
-        // Each state in the sequence is different from the previous
         let mut i = 0;
         while i < states.len() - 1 {
             assert!(states[i] != states[i + 1]);
@@ -47,12 +63,11 @@ mod proofs {
         }
     }
 
-    /// Prove that Stored is always reachable before any emit state.
-    /// The emit states (Emitted, EmitFailed, DeadLettered, Replayed)
-    /// should only occur after Stored in the lifecycle.
+    /// Prove that all 10 states partition cleanly into pre-store and post-store
+    /// sets with no overlap and no gaps. Stored is the acceptance boundary.
     #[kani::proof]
     fn stored_is_acceptance_boundary() {
-        let state: ProcessingState = kani::any();
+        let state = any_state();
         let is_post_store = matches!(
             state,
             ProcessingState::Emitted
@@ -69,17 +84,15 @@ mod proofs {
                 | ProcessingState::Duplicate
                 | ProcessingState::Stored
         );
-        // Every state is either pre-store or post-store (exhaustive partition)
+        // Exhaustive partition: every state is exactly one of pre-store or post-store
         assert!(is_pre_store || is_post_store);
-        // No state is both
         assert!(!(is_pre_store && is_post_store));
     }
 
-    /// Prove that terminal states don't have valid transitions to non-terminal states.
-    /// VerificationFailed and Duplicate are terminal (no further processing).
+    /// Prove that terminal and non-terminal states form a complete partition.
     #[kani::proof]
-    fn terminal_states_are_terminal() {
-        let state: ProcessingState = kani::any();
+    fn terminal_states_partition() {
+        let state = any_state();
         let is_terminal = matches!(
             state,
             ProcessingState::VerificationFailed
@@ -87,7 +100,6 @@ mod proofs {
                 | ProcessingState::Processed
         );
         let is_non_terminal = !is_terminal;
-        // At least one must be true (tautology, but Kani verifies exhaustiveness)
         assert!(is_terminal || is_non_terminal);
     }
 }
