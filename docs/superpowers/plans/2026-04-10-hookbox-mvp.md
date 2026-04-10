@@ -25,7 +25,7 @@
 | `state.rs` | `ProcessingState`, `VerificationStatus`, `VerificationResult`, `DedupeDecision`, `StoreResult`, `IngestResult` |
 | `error.rs` | `StorageError`, `DedupeError`, `EmitError`, `IngestError`, `VerificationError` |
 | `traits.rs` | `SignatureVerifier`, `Storage`, `DedupeStrategy`, `Emitter` |
-| `dedupe.rs` | `InMemoryLruDedupe`, `LayeredDedupe` |
+| `dedupe.rs` | `InMemoryRecentDedupe`, `LayeredDedupe` |
 | `emitter.rs` | `CallbackEmitter`, `ChannelEmitter` |
 | `pipeline.rs` | `HookboxPipeline`, `HookboxPipelineBuilder` |
 | `hash.rs` | `compute_payload_hash()` utility |
@@ -694,8 +694,7 @@ Expected: Clean.
 git add crates/hookbox/
 git commit -m "feat(hookbox): add core traits — SignatureVerifier, Storage, DedupeStrategy, Emitter
 
-Native async fn in traits via impl Future (Rust 2024 edition).
-Removes async-trait dependency."
+Uses async-trait for MVP smoothness. Four extension points, all Send + Sync."
 ```
 
 ---
@@ -708,7 +707,7 @@ Removes async-trait dependency."
 
 ### Steps
 
-- [ ] **Step 1: Write tests for `InMemoryLruDedupe`**
+- [ ] **Step 1: Write tests for `InMemoryRecentDedupe`**
 
 ```rust
 // At the bottom of crates/hookbox/src/dedupe.rs
@@ -719,14 +718,14 @@ mod tests {
 
     #[tokio::test]
     async fn lru_new_key_returns_new() {
-        let dedupe = InMemoryLruDedupe::new(100);
+        let dedupe = InMemoryRecentDedupe::new(100);
         let decision = dedupe.check("key1", "hash1").await.unwrap();
         assert_eq!(decision, DedupeDecision::New);
     }
 
     #[tokio::test]
     async fn lru_same_key_same_hash_returns_duplicate() {
-        let dedupe = InMemoryLruDedupe::new(100);
+        let dedupe = InMemoryRecentDedupe::new(100);
         dedupe.record("key1", "hash1").await.unwrap();
         let decision = dedupe.check("key1", "hash1").await.unwrap();
         assert_eq!(decision, DedupeDecision::Duplicate);
@@ -734,7 +733,7 @@ mod tests {
 
     #[tokio::test]
     async fn lru_same_key_different_hash_returns_conflict() {
-        let dedupe = InMemoryLruDedupe::new(100);
+        let dedupe = InMemoryRecentDedupe::new(100);
         dedupe.record("key1", "hash1").await.unwrap();
         let decision = dedupe.check("key1", "hash_different").await.unwrap();
         assert_eq!(decision, DedupeDecision::Conflict);
@@ -742,7 +741,7 @@ mod tests {
 
     #[tokio::test]
     async fn lru_eviction_makes_key_new_again() {
-        let dedupe = InMemoryLruDedupe::new(2);
+        let dedupe = InMemoryRecentDedupe::new(2);
         dedupe.record("key1", "h1").await.unwrap();
         dedupe.record("key2", "h2").await.unwrap();
         dedupe.record("key3", "h3").await.unwrap();
@@ -753,8 +752,8 @@ mod tests {
 
     #[tokio::test]
     async fn layered_returns_fast_path_duplicate() {
-        let fast = InMemoryLruDedupe::new(100);
-        let slow = InMemoryLruDedupe::new(100);
+        let fast = InMemoryRecentDedupe::new(100);
+        let slow = InMemoryRecentDedupe::new(100);
         fast.record("key1", "hash1").await.unwrap();
         let layered = LayeredDedupe::new(fast, slow);
         let decision = layered.check("key1", "hash1").await.unwrap();
@@ -763,8 +762,8 @@ mod tests {
 
     #[tokio::test]
     async fn layered_falls_through_to_authoritative() {
-        let fast = InMemoryLruDedupe::new(100);
-        let slow = InMemoryLruDedupe::new(100);
+        let fast = InMemoryRecentDedupe::new(100);
+        let slow = InMemoryRecentDedupe::new(100);
         slow.record("key1", "hash1").await.unwrap();
         let layered = LayeredDedupe::new(fast, slow);
         let decision = layered.check("key1", "hash1").await.unwrap();
@@ -773,8 +772,8 @@ mod tests {
 
     #[tokio::test]
     async fn layered_new_in_both_returns_new() {
-        let fast = InMemoryLruDedupe::new(100);
-        let slow = InMemoryLruDedupe::new(100);
+        let fast = InMemoryRecentDedupe::new(100);
+        let slow = InMemoryRecentDedupe::new(100);
         let layered = LayeredDedupe::new(fast, slow);
         let decision = layered.check("key1", "hash1").await.unwrap();
         assert_eq!(decision, DedupeDecision::New);
@@ -782,7 +781,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Implement `InMemoryLruDedupe` and `LayeredDedupe`**
+- [ ] **Step 2: Implement `InMemoryRecentDedupe` and `LayeredDedupe`**
 
 ```rust
 // crates/hookbox/src/dedupe.rs
@@ -801,7 +800,7 @@ use crate::traits::DedupeStrategy;
 /// Uses a simple `HashMap` with a capacity limit. When full, the oldest
 /// entry is evicted. This is a fast-path optimization to avoid hitting
 /// storage for recent duplicates.
-pub struct InMemoryLruDedupe {
+pub struct InMemoryRecentDedupe {
     cache: Mutex<LruMap>,
 }
 
@@ -811,7 +810,7 @@ struct LruMap {
     capacity: usize,
 }
 
-impl InMemoryLruDedupe {
+impl InMemoryRecentDedupe {
     /// Create a new LRU dedupe cache with the given capacity.
     #[must_use]
     pub fn new(capacity: usize) -> Self {
@@ -825,7 +824,7 @@ impl InMemoryLruDedupe {
     }
 }
 
-impl DedupeStrategy for InMemoryLruDedupe {
+impl DedupeStrategy for InMemoryRecentDedupe {
     async fn check(
         &self,
         dedupe_key: &str,
@@ -922,7 +921,7 @@ Add to `crates/hookbox/src/lib.rs`:
 
 ```rust
 pub mod dedupe;
-pub use dedupe::{InMemoryLruDedupe, LayeredDedupe};
+pub use dedupe::{InMemoryRecentDedupe, LayeredDedupe};
 ```
 
 - [ ] **Step 4: Run tests**
@@ -941,7 +940,7 @@ Expected: Clean.
 
 ```bash
 git add crates/hookbox/
-git commit -m "feat(hookbox): add InMemoryLruDedupe and LayeredDedupe implementations
+git commit -m "feat(hookbox): add InMemoryRecentDedupe and LayeredDedupe implementations
 
 LRU cache for fast-path advisory dedupe. LayeredDedupe composes fast
 path with authoritative fallback. Conflict detection for same key
@@ -1128,7 +1127,7 @@ tokio mpsc channel. Both implement the Emitter trait."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dedupe::InMemoryLruDedupe;
+    use crate::dedupe::InMemoryRecentDedupe;
     use crate::error::StorageError;
     use crate::state::{ProcessingState, StoreResult, VerificationResult, VerificationStatus};
     use crate::types::{ReceiptFilter, ReceiptId, WebhookReceipt};
@@ -1215,11 +1214,11 @@ mod tests {
         }
     }
 
-    fn build_pipeline_pass() -> HookboxPipeline<MemoryStorage, InMemoryLruDedupe, crate::emitter::ChannelEmitter> {
+    fn build_pipeline_pass() -> HookboxPipeline<MemoryStorage, InMemoryRecentDedupe, crate::emitter::ChannelEmitter> {
         let (emitter, _rx) = crate::emitter::ChannelEmitter::new(16);
         HookboxPipeline::builder()
             .storage(MemoryStorage::new())
-            .dedupe(InMemoryLruDedupe::new(100))
+            .dedupe(InMemoryRecentDedupe::new(100))
             .emitter(emitter)
             .verifier(PassVerifier)
             .build()
@@ -1257,7 +1256,7 @@ mod tests {
         let (emitter, _rx) = crate::emitter::ChannelEmitter::new(16);
         let pipeline = HookboxPipeline::builder()
             .storage(MemoryStorage::new())
-            .dedupe(InMemoryLruDedupe::new(100))
+            .dedupe(InMemoryRecentDedupe::new(100))
             .emitter(emitter)
             .verifier(FailVerifier)
             .build();
@@ -2892,7 +2891,7 @@ use axum::Router;
 use axum::routing::{get, post};
 use sqlx::PgPool;
 
-use hookbox::dedupe::{InMemoryLruDedupe, LayeredDedupe};
+use hookbox::dedupe::{InMemoryRecentDedupe, LayeredDedupe};
 use hookbox::emitter::ChannelEmitter;
 use hookbox::HookboxPipeline;
 use hookbox_postgres::{PostgresStorage, StorageDedupe};
@@ -2904,7 +2903,7 @@ pub mod routes;
 /// Shared application state.
 pub struct AppState {
     /// The ingest pipeline.
-    pub pipeline: HookboxPipeline<PostgresStorage, LayeredDedupe<InMemoryLruDedupe, StorageDedupe>, ChannelEmitter>,
+    pub pipeline: HookboxPipeline<PostgresStorage, LayeredDedupe<InMemoryRecentDedupe, StorageDedupe>, ChannelEmitter>,
     /// Database connection pool (for health checks).
     pub pool: PgPool,
 }
@@ -3054,7 +3053,7 @@ async fn run_server(config: hookbox_server::config::HookboxConfig) -> anyhow::Re
 
     // Build pipeline
     let dedupe = hookbox::dedupe::LayeredDedupe::new(
-        hookbox::dedupe::InMemoryLruDedupe::new(config.dedupe.lru_capacity),
+        hookbox::dedupe::InMemoryRecentDedupe::new(config.dedupe.lru_capacity),
         hookbox_postgres::StorageDedupe::new(pool.clone()),
     );
 
@@ -3224,7 +3223,7 @@ Add `"integration-tests"` to workspace members in root `Cargo.toml`.
 //! Example: DATABASE_URL=postgres://localhost/hookbox_test cargo test -p hookbox-integration-tests
 
 use bytes::Bytes;
-use hookbox::dedupe::InMemoryLruDedupe;
+use hookbox::dedupe::InMemoryRecentDedupe;
 use hookbox::emitter::ChannelEmitter;
 use hookbox::state::IngestResult;
 use hookbox::HookboxPipeline;
@@ -3256,7 +3255,7 @@ async fn ingest_stores_and_deduplicates() {
 
     let pipeline = HookboxPipeline::builder()
         .storage(storage)
-        .dedupe(InMemoryLruDedupe::new(100))
+        .dedupe(InMemoryRecentDedupe::new(100))
         .emitter(emitter)
         .build();
 
@@ -3308,7 +3307,7 @@ a real Postgres database. Marked #[ignore] for CI without Postgres."
 | 1 | Task 1 | hookbox | Domain types, enums, newtypes, payload hash |
 | 2 | Task 2 | hookbox | Error types (thiserror) |
 | 3 | Task 3 | hookbox | Core traits (SignatureVerifier, Storage, DedupeStrategy, Emitter) |
-| 4 | Task 4 | hookbox | InMemoryLruDedupe, LayeredDedupe |
+| 4 | Task 4 | hookbox | InMemoryRecentDedupe, LayeredDedupe |
 | 5 | Task 5 | hookbox | CallbackEmitter, ChannelEmitter |
 | 6 | Task 9 | hookbox-postgres | SQL migration + module structure |
 | 7 | Task 10 | hookbox-postgres | PostgresStorage, StorageDedupe |
@@ -3325,6 +3324,6 @@ a real Postgres database. Marked #[ignore] for CI without Postgres."
 ## Implementation Notes
 
 - **Async traits:** Use `async-trait` crate for MVP smoothness. Native async fn in traits (Rust 2024) can replace it later.
-- **LRU naming:** `InMemoryLruDedupe` uses a simple bounded map. Rename to `InMemoryRecentDedupe` if the O(n) eviction is misleading. Acceptable for MVP.
+- **LRU naming:** `InMemoryRecentDedupe` uses a simple bounded map. Rename to `InMemoryRecentDedupe` if the O(n) eviction is misleading. Acceptable for MVP.
 - **`exists_by_dedupe_key`:** Not in the core `Storage` trait. `StorageDedupe` in `hookbox-postgres` queries its own backing store directly — that's an implementation detail, not a trait method.
 - **`NormalizedEvent.parsed_payload`:** This is the parsed JSON projection, not raw bytes. The authoritative body is `WebhookReceipt.raw_body: Vec<u8>`. Naming matches the final spec.
