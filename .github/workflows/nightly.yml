@@ -20,7 +20,7 @@ jobs:
       - run: cargo install cargo-mutants --locked
       - run: cargo mutants --timeout 60
       - name: Upload mutation report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: mutants-report
@@ -39,7 +39,7 @@ jobs:
       - name: Branch coverage (HTML)
         run: cargo +nightly llvm-cov --all-features --branch --html
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-html
           path: target/llvm-cov/html/
@@ -77,7 +77,7 @@ jobs:
             cargo +nightly fuzz run "$target" -- -max_total_time=600 || true
           done
       - name: Upload fuzz artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: fuzz-artifacts
