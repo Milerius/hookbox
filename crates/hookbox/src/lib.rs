@@ -6,9 +6,11 @@
 pub mod error;
 pub mod hash;
 pub mod state;
+pub mod traits;
 pub mod types;
 
 pub use error::*;
 pub use hash::compute_payload_hash;
 pub use state::*;
+pub use traits::*;
 pub use types::*;
