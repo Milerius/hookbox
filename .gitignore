@@ -24,6 +24,6 @@ target
 .superpowers/
 
 # cargo-fuzz artifacts and corpus
-fuzz/corpus/
-fuzz/artifacts/
-fuzz/coverage/
+**/fuzz/corpus/
+**/fuzz/artifacts/
+**/fuzz/coverage/
