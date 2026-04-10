@@ -85,6 +85,7 @@ bytes = "1"
 
 # Error handling
 thiserror = "2"
+anyhow = "1"
 
 # Config
 toml = "0.8"

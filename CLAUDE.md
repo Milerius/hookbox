@@ -46,9 +46,26 @@ crates/hookbox-server/    hookbox-server     Standalone Axum HTTP server
 crates/hookbox-cli/       hookbox-cli        CLI binary (inspect, replay, serve)
 ```
 
-## Code Style
+## Error Handling
 
-- **Error handling**: use `Result` with typed errors, never `unwrap()` or `expect()` in library/production code. `unwrap()` is acceptable in tests.
+`thiserror` at trait boundaries, `anyhow` in leaf application code.
+
+| Crate | Strategy | Why |
+|-------|----------|-----|
+| `hookbox` (core) | `thiserror` | Consumers need typed errors they can `match` on |
+| `hookbox-postgres` | `thiserror` | Errors wrap SQLx errors with domain meaning |
+| `hookbox-providers` | `thiserror` | Verification errors are structured |
+| `hookbox-server` | `thiserror` + `anyhow` for startup | Request-path errors map to HTTP responses; startup failures just propagate |
+| `hookbox-cli` | `anyhow` | Application code — propagate with context, print for humans |
+| `hookbox-verify` | `anyhow` | Test code — errors are just reported |
+
+**Rules:**
+- Never `unwrap()` or `expect()` in library/production code. `unwrap()` is acceptable in tests.
+- Use `thiserror` wherever a consumer might need to `match` on the error variant.
+- Use `anyhow` only in code that is the final error handler (CLI output, test assertions).
+- Trait error types (e.g. `StorageError`, `EmitError`) must be enums with meaningful variants, not stringly-typed.
+
+## Code Style
 - **Newtypes over primitives**: `ReceiptId(Uuid)` not raw `Uuid` where the type carries domain meaning.
 - **`let...else` for early returns**: keep happy path unindented.
 - **No wildcard matches**: explicit destructuring on all enums.

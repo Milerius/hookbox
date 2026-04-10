@@ -912,6 +912,7 @@ dependencies = [
 name = "hookbox-cli"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap",
  "hookbox",
  "hookbox-postgres",
@@ -919,7 +920,6 @@ dependencies = [
  "hookbox-server",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
  "tokio",
  "toml",
  "tracing",
@@ -983,6 +983,7 @@ dependencies = [
 name = "hookbox-verify"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bolero",
  "hookbox",
 ]
