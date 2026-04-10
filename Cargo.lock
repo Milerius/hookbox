@@ -981,8 +981,10 @@ dependencies = [
 name = "hookbox-postgres"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "hookbox",
+ "serde",
  "serde_json",
  "sqlx",
  "thiserror",
