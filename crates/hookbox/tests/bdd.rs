@@ -4,13 +4,15 @@
 
 #![allow(clippy::unwrap_used, reason = "unwrap is acceptable in test code")]
 #![allow(clippy::panic, reason = "panic is acceptable in test assertions")]
+#![allow(clippy::unused_async, reason = "cucumber step functions must be async")]
+#![allow(clippy::len_zero, reason = "len >= N reads clearer in assertions")]
 #![allow(missing_docs, reason = "test code does not require docs")]
 
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use cucumber::{given, then, when, World};
+use cucumber::{World, given, then, when};
 use http::HeaderMap;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -342,7 +344,5 @@ fn assert_result_matches(result: &IngestResult, expected: &str) {
 
 #[tokio::main]
 async fn main() {
-    IngestWorld::cucumber()
-        .run("tests/features/")
-        .await;
+    IngestWorld::cucumber().run("tests/features/").await;
 }
