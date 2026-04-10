@@ -1062,6 +1062,8 @@ dependencies = [
  "anyhow",
  "bolero",
  "hookbox",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
