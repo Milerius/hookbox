@@ -71,6 +71,7 @@ hmac = "0.13"
 sha2 = "0.11"
 hex = "0.4"
 subtle = "2"
+rsa = { version = "0.9", features = ["sha2"] }
 
 # Observability
 tracing = "0.1"
