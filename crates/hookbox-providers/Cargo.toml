@@ -5,16 +5,19 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Provider signature verification adapters for hookbox (Stripe, BVNK, generic HMAC)."
+description = "Provider signature verification adapters for hookbox (Stripe, Adyen, BVNK, Triple-A, Walapay, Checkout.com, generic HMAC)."
 
 [lints]
 workspace = true
 
 [features]
-default = ["stripe", "bvnk", "generic-hmac"]
+default = ["stripe", "bvnk", "generic-hmac", "adyen", "triplea", "walapay"]
 stripe = []
 bvnk = []
 generic-hmac = []
+adyen = []
+triplea = ["dep:rsa"]
+walapay = []
 
 [dependencies]
 hookbox.workspace = true
@@ -27,6 +30,9 @@ thiserror.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 async-trait = "0.1"
+base64.workspace = true
+rsa = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+rand = "0.8"

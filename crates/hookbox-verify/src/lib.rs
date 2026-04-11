@@ -8,5 +8,6 @@ mod dedupe_props;
 mod hash_props;
 mod kani_proofs;
 mod metrics_props;
+mod provider_props;
 mod retry_props;
 mod state_props;

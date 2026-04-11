@@ -1,31 +1,60 @@
 # hookbox
 
-A durable webhook inbox for payment systems: verify, dedupe, persist, replay, and audit every event before business logic touches it.
+**Hookbox** is a durable webhook inbox for payment systems. It verifies, deduplicates, persists, replays, and audits every webhook **before** business logic touches it.
 
-## Problem
+Built for teams integrating payment providers, banking rails, and crypto infrastructure that need a safer boundary between external callbacks and internal systems.
 
-Payment providers and banking/crypto integrations send duplicate webhooks, delayed callbacks, out-of-order events, and inconsistent statuses. Most teams rebuild the same painful infrastructure: HMAC verification, deduplication, durable storage, replay, dead-letter handling, and auditability.
+## Why Hookbox exists
 
-Hookbox handles all of that so your business logic doesn't have to.
+Webhook delivery is messy by nature.
+
+Payment and banking providers send:
+- duplicate webhooks
+- delayed callbacks
+- out-of-order events
+- inconsistent statuses
+- retries at inconvenient times
+
+Most teams end up rebuilding the same infrastructure around that mess:
+- signature verification
+- deduplication
+- durable receipt storage
+- replay and redrive
+- dead-letter handling
+- auditability and observability
+
+Hookbox provides that boundary so your application can focus on business logic instead of callback correctness.
 
 ## How it works
 
 Every incoming webhook passes through a five-stage pipeline:
 
-```
+```text
 Provider webhook
     → Receive (assign receipt ID)
     → Verify (signature check via provider adapter)
-    → Dedupe (fast LRU + authoritative Postgres)
+    → Dedupe (fast in-memory path + authoritative Postgres)
     → Store durably (ACK provider only after this succeeds)
     → Emit downstream (callback, channel, or message broker)
 ```
 
-If verification fails, the receipt is stored but not forwarded. If emission fails, the receipt is accepted and enters retry/DLQ. The webhook is never lost.
+A few important rules:
 
-## Use it as a library or a service
+- **verification failure** → receipt is stored, but not forwarded
+- **duplicate receipt** → stored and marked, but not processed twice
+- **emit failure** → receipt remains accepted and enters retry / DLQ flow
+- **raw body is preserved immutably** → replay and re-verification stay possible
 
-**Embedded in your Axum app:**
+The result is a durable, replayable, auditable inbox between external webhook traffic and your internal systems.
+
+## Use it as a library or as a standalone service
+
+Hookbox is designed to work in two modes:
+
+- **embedded library** for teams that want to integrate it into an existing Rust/Axum service
+- **standalone service** for teams that want a dedicated webhook-ingestion boundary
+
+### Embedded in your Axum app
 
 ```rust
 let pipeline = HookboxPipeline::builder()
@@ -45,32 +74,58 @@ let app = Router::new()
     .route("/webhooks/:provider", post(hookbox::axum::handler(pipeline)));
 ```
 
-**Standalone service:**
+### Standalone service
 
 ```bash
 hookbox serve --config hookbox.toml
 ```
 
-## Features
+## What Hookbox gives you
 
-- **Signature verification** — pluggable trait with Stripe, BVNK, and generic HMAC adapters
-- **Deduplication** — configurable strategy with LRU fast path and Postgres as source of truth
-- **Durable storage** — raw body bytes preserved immutably; ACK only after durable write
-- **Replay & redrive** — re-emit any receipt via CLI or admin API
-- **Dead-letter queue** — failed emissions are captured, inspectable, and retryable
-- **Prometheus metrics** — counters and histograms at every pipeline stage, exposed at `/metrics`
-- **Retry worker** — background task retries failed emissions with configurable interval and max attempts
-- **Observability** — structured tracing, Prometheus metrics, health/readiness endpoints
-- **CLI tooling** — inspect receipts, replay failures, manage DLQ
+- **Signature verification**  
+  Pluggable verifier trait with Stripe, BVNK, Adyen, Triple-A (fiat RSA + crypto HMAC), Walapay/Svix, Checkout.com, and generic HMAC adapters.
+
+- **Deduplication**  
+  Configurable dedupe strategy with a fast in-memory path and Postgres as the source of truth.
+
+- **Durable receipt storage**  
+  Raw body bytes are preserved immutably. Providers are acknowledged only after durable write succeeds.
+
+- **Replay and redrive**  
+  Re-emit any receipt through the CLI or admin API.
+
+- **Dead-letter queue support**  
+  Failed emissions are captured, inspectable, and retryable.
+
+- **Retry worker**  
+  Background retries with configurable interval and max attempts.
+
+- **Observability by default**  
+  Structured tracing, Prometheus metrics, health/readiness endpoints, and operational visibility at every pipeline stage.
+
+- **CLI tooling**  
+  Inspect receipts, replay failures, and manage the dead-letter queue.
+
+## Who this is for
+
+Hookbox is useful for teams building or operating:
+- payment processors
+- payout systems
+- treasury / wallet infrastructure
+- banking integrations
+- crypto-to-fiat rails
+- webhook-heavy financial platforms
+
+If your system depends on external callbacks but correctness, replayability, and auditability matter, Hookbox is designed for that problem.
 
 ## Workspace
 
-```
+```text
 hookbox/
 ├── crates/
 │   ├── hookbox/              # core: traits, types, pipeline, lightweight impls
 │   ├── hookbox-postgres/     # PostgreSQL storage backend
-│   ├── hookbox-providers/    # Stripe, BVNK, generic HMAC verifiers
+│   ├── hookbox-providers/    # Stripe, BVNK, Adyen, Triple-A, Walapay, Checkout, generic HMAC verifiers
 │   ├── hookbox-server/       # standalone Axum HTTP server
 │   └── hookbox-cli/          # CLI binary (inspect, replay, serve)
 ├── integration-tests/
@@ -99,16 +154,56 @@ hookbox dlq inspect --database-url <url> <receipt_id>
 hookbox dlq retry --database-url <url> <receipt_id>
 ```
 
-All commands except `serve` accept `--database-url` or the `DATABASE_URL` environment variable for direct database access. The `serve` command uses `--config` with a TOML file instead.
+All commands except `serve` accept `--database-url` or the `DATABASE_URL` environment variable for direct database access.  
+The `serve` command uses `--config` with a TOML file instead.
 
 ## Design principles
 
-1. **Receive first, process second** — ACK provider only after durable write
-2. **Idempotent by default** — dedupe before business processing
-3. **Raw body immutable** — original bytes preserved exactly for replay verification
-4. **Replayable everything** — any receipt can be re-processed at any time
-5. **Provider-agnostic core** — traits in core, implementations in extension crates
-6. **Observable by default** — structured logs and metrics at every pipeline stage
+1. **Receive first, process second**  
+   ACK the provider only after durable write succeeds.
+
+2. **Idempotent by default**  
+   Dedupe before business processing.
+
+3. **Raw body immutable**  
+   Preserve original bytes exactly for replay and signature verification.
+
+4. **Replayable everything**  
+   Any receipt can be re-processed later.
+
+5. **Provider-agnostic core**  
+   Traits live in the core crate; implementations live in extension crates.
+
+6. **Observable by default**  
+   Every pipeline stage emits logs and metrics.
+
+## What Hookbox is not
+
+Hookbox is a **durable webhook inbox**, not a full payment platform.
+
+It is designed to sit at the boundary between external webhook traffic and your internal systems. It helps you receive, verify, deduplicate, persist, replay, and safely forward webhook events.
+
+Hookbox does **not** replace:
+
+- **Your ledger**  
+  Hookbox stores webhook receipts, not financial balances, journal entries, or accounting truth.
+
+- **Your payment orchestration engine**  
+  Hookbox does not manage multi-step payment workflows, retries across external providers, or business-level state machines for payouts, settlements, or conversions.
+
+- **Your reconciliation system**  
+  Hookbox does not compare internal records against provider statements, ledger balances, or settlement reports.
+
+- **Your queue or event bus**  
+  Hookbox can emit downstream events, but it is not a general-purpose message broker or stream-processing platform.
+
+- **Your provider SDKs or payment gateway**  
+  Hookbox does not create payments, submit payouts, fetch balances, or replace direct integration with payment APIs.
+
+- **Your compliance stack**  
+  Hookbox does not perform KYC, AML, sanctions screening, or case management.
+
+What Hookbox *does* replace is the repetitive, fragile webhook edge logic that teams otherwise rebuild in every service.
 
 ## Status
 

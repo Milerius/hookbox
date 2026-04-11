@@ -62,19 +62,29 @@ pub struct DatabaseConfig {
 
 /// Per-provider webhook verification configuration.
 ///
-/// The `type` field selects the verifier: `"stripe"` for Stripe-Signature
-/// header verification (with timestamp tolerance), or `"hmac-sha256"` (default)
-/// for generic HMAC-SHA256.
+/// Supported `type` values:
+/// - `"stripe"` — Stripe-Signature header with timestamp
+/// - `"hmac-sha256"` (default) — Generic HMAC-SHA256 with configurable header
+/// - `"adyen"` — Adyen HMAC-SHA256 with hex key and Base64 signature
+/// - `"bvnk"` — BVNK HMAC-SHA256 with Base64 signature in x-signature
+/// - `"triplea-fiat"` — Triple-A fiat RSA-SHA512 with public key
+/// - `"triplea-crypto"` — Triple-A crypto HMAC-SHA256 with timestamp
+/// - `"walapay"` — Walapay/Svix HMAC-SHA256 with svix-* headers
+/// - `"checkout"` — Checkout.com (alias for hmac-sha256 with Cko-Signature header)
 ///
 /// **Important:** Stripe providers MUST set `type = "stripe"` explicitly.
 /// The default `"hmac-sha256"` cannot validate Stripe's `t=...,v1=...` format.
 #[derive(Debug, Deserialize)]
 pub struct ProviderConfig {
-    /// Verification algorithm type: `"stripe"` or `"hmac-sha256"` (default).
+    /// Verification algorithm type: `"stripe"`, `"hmac-sha256"` (default), or one of the
+    /// provider-specific types listed above.
     #[serde(rename = "type", default = "default_provider_type")]
     pub verifier_type: String,
-    /// Shared secret used for signature verification.
-    pub secret: String,
+    /// Shared secret for HMAC-based providers. Optional for RSA providers.
+    #[serde(default)]
+    pub secret: Option<String>,
+    /// PEM-encoded public key (for RSA-based providers like Triple-A fiat).
+    pub public_key: Option<String>,
     /// HTTP header containing the provider signature.
     pub header: Option<String>,
     /// Maximum age of a signed request in seconds before it is rejected.
@@ -222,13 +232,13 @@ max_attempts = 3
 
         let stripe = config.providers.get("stripe").expect("stripe provider");
         assert_eq!(stripe.verifier_type, "hmac-sha256");
-        assert_eq!(stripe.secret, "whsec_test123");
+        assert_eq!(stripe.secret.as_deref(), Some("whsec_test123"));
         assert_eq!(stripe.header.as_deref(), Some("Stripe-Signature"));
         assert_eq!(stripe.tolerance_seconds, Some(300));
 
         let github = config.providers.get("github").expect("github provider");
         assert_eq!(github.verifier_type, "hmac-sha256");
-        assert_eq!(github.secret, "gh_secret");
+        assert_eq!(github.secret.as_deref(), Some("gh_secret"));
         assert!(github.header.is_none());
         assert!(github.tolerance_seconds.is_none());
 
@@ -236,5 +246,82 @@ max_attempts = 3
         assert_eq!(config.admin.bearer_token.as_deref(), Some("supersecret"));
         assert_eq!(config.retry.interval_seconds, 15);
         assert_eq!(config.retry.max_attempts, 3);
+    }
+
+    #[test]
+    fn parse_all_new_provider_types() {
+        let toml_str = r#"
+[database]
+url = "postgres://localhost/hookbox"
+
+[providers.my_stripe]
+type = "stripe"
+secret = "whsec_stripe"
+
+[providers.my_adyen]
+type = "adyen"
+secret = "0123456789abcdef"
+
+[providers.my_bvnk]
+type = "bvnk"
+secret = "bvnk_secret"
+
+[providers.my_triplea_fiat]
+type = "triplea-fiat"
+public_key = "-----BEGIN PUBLIC KEY-----\nMFwwDQYJKoZIhvcNAQEBBQAD\n-----END PUBLIC KEY-----"
+
+[providers.my_triplea_crypto]
+type = "triplea-crypto"
+secret = "notify_secret"
+tolerance_seconds = 300
+
+[providers.my_walapay]
+type = "walapay"
+secret = "whsec_walapay"
+
+[providers.my_checkout]
+type = "checkout"
+secret = "checkout_secret"
+"#;
+        let config: HookboxConfig =
+            toml::from_str(toml_str).expect("all-provider-types config should parse");
+
+        let adyen = config.providers.get("my_adyen").expect("adyen provider");
+        assert_eq!(adyen.verifier_type, "adyen");
+        assert_eq!(adyen.secret.as_deref(), Some("0123456789abcdef"));
+
+        let bvnk = config.providers.get("my_bvnk").expect("bvnk provider");
+        assert_eq!(bvnk.verifier_type, "bvnk");
+        assert_eq!(bvnk.secret.as_deref(), Some("bvnk_secret"));
+
+        let fiat = config
+            .providers
+            .get("my_triplea_fiat")
+            .expect("triplea-fiat provider");
+        assert_eq!(fiat.verifier_type, "triplea-fiat");
+        assert!(fiat.public_key.is_some());
+        assert!(fiat.secret.is_none());
+
+        let crypto = config
+            .providers
+            .get("my_triplea_crypto")
+            .expect("triplea-crypto provider");
+        assert_eq!(crypto.verifier_type, "triplea-crypto");
+        assert_eq!(crypto.secret.as_deref(), Some("notify_secret"));
+        assert_eq!(crypto.tolerance_seconds, Some(300));
+
+        let walapay = config
+            .providers
+            .get("my_walapay")
+            .expect("walapay provider");
+        assert_eq!(walapay.verifier_type, "walapay");
+        assert_eq!(walapay.secret.as_deref(), Some("whsec_walapay"));
+
+        let checkout = config
+            .providers
+            .get("my_checkout")
+            .expect("checkout provider");
+        assert_eq!(checkout.verifier_type, "checkout");
+        assert_eq!(checkout.secret.as_deref(), Some("checkout_secret"));
     }
 }

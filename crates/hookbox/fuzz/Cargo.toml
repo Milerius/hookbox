@@ -13,6 +13,8 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 hookbox = { path = ".." }
 serde_json = "1"
+base64 = "0.22"
+hex = "0.4"
 
 [[bin]]
 name = "fuzz_payload_hash"
@@ -22,4 +24,9 @@ doc = false
 [[bin]]
 name = "fuzz_receipt_serde"
 path = "fuzz_targets/fuzz_receipt_serde.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_provider_signature"
+path = "fuzz_targets/fuzz_provider_signature.rs"
 doc = false

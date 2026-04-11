@@ -7,6 +7,18 @@ targets = [
 
 [advisories]
 yanked = "deny"
+ignore = [
+    # RUSTSEC-2023-0071: Marvin Attack timing side-channel in rsa crate.
+    # No patched version available. Used only for signature *verification* (public-key
+    # operation) in TripleAFiatVerifier; the private key never touches this process,
+    # so key-recovery is not a practical risk in our deployment model.
+    { id = "RUSTSEC-2023-0071", reason = "verification-only use; private key absent from process; no fix available upstream" },
+    # RUSTSEC-2026-0097: rand 0.8 unsound with custom logger + thread_rng reseeding.
+    # Only affects rand 0.8 (dev-dependency for RSA test key generation in hookbox-providers).
+    # Not used in production code. Conditions (custom logger + thread_rng + reseed) don't
+    # apply in our test harness. Fix: upgrade to rand 0.9.3+ when rsa crate supports it.
+    { id = "RUSTSEC-2026-0097", reason = "dev-dependency only (RSA test keygen); conditions not met in test harness" },
+]
 
 [licenses]
 unused-allowed-license = "allow"
@@ -48,6 +60,10 @@ skip = [
     # bolero pulls old toml_edit/winnow via proc-macro-crate
     { crate = "toml_edit@0.20", reason = "bolero → proc-macro-crate uses toml_edit 0.20" },
     { crate = "winnow@0.5", reason = "transitive via toml_edit 0.20" },
+    # rsa 0.9 pulls der/spki/pkcs8 which depend on const-oid 0.9; workspace uses 0.10 via digest 0.11
+    { crate = "const-oid@0.9", reason = "rsa crate depends on older der stack with const-oid 0.9" },
+    # reqwest native-tls path pulls core-foundation 0.10; hyper-util pulls 0.9
+    { crate = "core-foundation@0.9", reason = "hyper-util depends on core-foundation 0.9; native-tls uses 0.10" },
 ]
 
 [sources]
