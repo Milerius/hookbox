@@ -4,7 +4,7 @@
 mod tests {
     use hookbox::state::{DedupeDecision, VerificationStatus};
     use hookbox::transitions::{
-        dedupe_decision_label, verification_status_label, INGEST_RESULT_LABELS,
+        INGEST_RESULT_LABELS, dedupe_decision_label, verification_status_label,
     };
 
     #[test]

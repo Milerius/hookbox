@@ -556,10 +556,7 @@ async fn list_receipts_with_provider_filter() {
     assert_eq!(list_resp.status(), StatusCode::OK);
     let json = body_json(list_resp).await;
     let receipts = json.as_array().unwrap();
-    assert!(
-        !receipts.is_empty(),
-        "expected at least one alpha receipt"
-    );
+    assert!(!receipts.is_empty(), "expected at least one alpha receipt");
     for receipt in receipts {
         assert_eq!(
             receipt["provider_name"], "alpha",

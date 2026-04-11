@@ -1,10 +1,10 @@
 //! Benchmark for the ingest pipeline throughput.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use http::HeaderMap;
 use std::sync::Mutex;
 
@@ -54,10 +54,7 @@ impl Storage for BenchStorage {
         Ok(())
     }
 
-    async fn query(
-        &self,
-        _filter: ReceiptFilter,
-    ) -> Result<Vec<WebhookReceipt>, StorageError> {
+    async fn query(&self, _filter: ReceiptFilter) -> Result<Vec<WebhookReceipt>, StorageError> {
         Ok(vec![])
     }
 }
@@ -70,9 +67,7 @@ fn bench_ingest(c: &mut Criterion) {
     for size in [64, 256, 1024, 4096] {
         group.bench_with_input(BenchmarkId::new("body_size", size), &size, |b, &size| {
             let (emitter, mut rx) = ChannelEmitter::new(65536);
-            rt.spawn(async move {
-                while rx.recv().await.is_some() {}
-            });
+            rt.spawn(async move { while rx.recv().await.is_some() {} });
 
             let pipeline = HookboxPipeline::builder()
                 .storage(BenchStorage::new())
@@ -83,9 +78,15 @@ fn bench_ingest(c: &mut Criterion) {
             let body = Bytes::from(vec![b'x'; size]);
 
             b.to_async(&rt).iter(|| {
-                let body = Bytes::from(format!("{}{}", uuid::Uuid::new_v4(), std::str::from_utf8(&body).unwrap_or("")));
+                let body = Bytes::from(format!(
+                    "{}{}",
+                    uuid::Uuid::new_v4(),
+                    std::str::from_utf8(&body).unwrap_or("")
+                ));
                 let headers = HeaderMap::new();
-                async { let _ = pipeline.ingest("bench", headers, body).await; }
+                async {
+                    let _ = pipeline.ingest("bench", headers, body).await;
+                }
             });
         });
     }

@@ -126,15 +126,27 @@ mod tests {
 
     #[test]
     fn verification_status_label_maps_all_variants() {
-        assert_eq!(verification_status_label(VerificationStatus::Verified), "verified");
-        assert_eq!(verification_status_label(VerificationStatus::Failed), "failed");
-        assert_eq!(verification_status_label(VerificationStatus::Skipped), "skipped");
+        assert_eq!(
+            verification_status_label(VerificationStatus::Verified),
+            "verified"
+        );
+        assert_eq!(
+            verification_status_label(VerificationStatus::Failed),
+            "failed"
+        );
+        assert_eq!(
+            verification_status_label(VerificationStatus::Skipped),
+            "skipped"
+        );
     }
 
     #[test]
     fn dedupe_decision_label_maps_all_variants() {
         assert_eq!(dedupe_decision_label(DedupeDecision::New), "new");
-        assert_eq!(dedupe_decision_label(DedupeDecision::Duplicate), "duplicate");
+        assert_eq!(
+            dedupe_decision_label(DedupeDecision::Duplicate),
+            "duplicate"
+        );
         assert_eq!(dedupe_decision_label(DedupeDecision::Conflict), "conflict");
     }
 

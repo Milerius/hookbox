@@ -8,7 +8,10 @@
 ///
 /// Panics if the OS signal handler cannot be installed. This is a fatal,
 /// non-recoverable condition — the process cannot function without signal handling.
-#[expect(clippy::expect_used, reason = "signal handler installation is fatal and non-recoverable")]
+#[expect(
+    clippy::expect_used,
+    reason = "signal handler installation is fatal and non-recoverable"
+)]
 pub async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()

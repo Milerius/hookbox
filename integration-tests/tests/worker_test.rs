@@ -13,7 +13,6 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use bytes::Bytes;
-use http::HeaderMap;
 use hookbox::HookboxPipeline;
 use hookbox::dedupe::InMemoryRecentDedupe;
 use hookbox::emitter::ChannelEmitter;
@@ -21,6 +20,7 @@ use hookbox::state::ProcessingState;
 use hookbox::traits::Storage;
 use hookbox_postgres::PostgresStorage;
 use hookbox_server::worker::RetryWorker;
+use http::HeaderMap;
 use sqlx::PgPool;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -185,7 +185,10 @@ async fn worker_promotes_to_dlq_after_max_attempts() {
         .await
         .expect("storage.get should succeed")
         .expect("receipt should exist");
-    assert_eq!(receipt.emit_count, 4, "emit_count should be 4 after 4 retries");
+    assert_eq!(
+        receipt.emit_count, 4,
+        "emit_count should be 4 after 4 retries"
+    );
     assert_eq!(
         receipt.processing_state,
         ProcessingState::EmitFailed,

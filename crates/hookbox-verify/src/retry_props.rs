@@ -24,11 +24,13 @@ mod tests {
 
     #[test]
     fn reset_is_always_findable_by_worker() {
-        bolero::check!().with_type::<u8>().for_each(|&max_attempts| {
-            let max_attempts = i32::from(max_attempts).max(1);
-            let (new_count, new_state) = reset_state();
-            assert!(is_findable_by_worker(new_count, new_state, max_attempts));
-        });
+        bolero::check!()
+            .with_type::<u8>()
+            .for_each(|&max_attempts| {
+                let max_attempts = i32::from(max_attempts).max(1);
+                let (new_count, new_state) = reset_state();
+                assert!(is_findable_by_worker(new_count, new_state, max_attempts));
+            });
     }
 
     #[test]
