@@ -4,7 +4,7 @@
 
 **Goal:** Add 4 new provider signature verifiers (Adyen, BVNK, Triple-A fiat, Walapay) and a Checkout.com config example to the hookbox-providers crate.
 
-**Architecture:** Each verifier is a separate module file with its own feature flag, following the existing `StripeVerifier` and `GenericHmacVerifier` patterns. All implement the `SignatureVerifier` trait via `#[async_trait]`. Tests co-located in each file. New dependencies: `base64` (for Adyen/BVNK/Walapay), `rsa` + `sha2` (for Triple-A RSA-SHA512).
+**Architecture:** Each verifier is a separate module file with its own feature flag, following the existing `StripeVerifier` and `GenericHmacVerifier` patterns. All implement the `SignatureVerifier` trait via `#[async_trait]`. Tests co-located in each file. New dependencies: `base64` (for Adyen/BVNK/Walapay), `rsa` + `sha2` (for Triple-A RSA-SHA512). Note: Checkout.com is a config-level alias only (wired in `serve.rs` as `GenericHmacVerifier`), not a separate module.
 
 **Tech Stack:** hmac 0.13, sha2 0.11, subtle 2 (constant-time), base64 0.22, rsa (for Triple-A), async-trait, http (HeaderMap).
 
@@ -64,20 +64,21 @@ crypto can use. This is Task 4b below.
 
 Add to `[workspace.dependencies]` in root `Cargo.toml`:
 ```toml
-rsa = "0.9"
+rsa = { version = "0.9", features = ["sha2"] }
 ```
+
+**Note:** `rsa 0.9` re-exports its own bundled `sha2 0.10` via `rsa::sha2`. The workspace uses `sha2 0.11`, which is a different version and is NOT compatible with `rsa`'s internal digest types. The implementing agent in Task 4 **must** use `rsa::sha2::Sha512` (not the workspace `sha2::Sha512`) to avoid type mismatches.
 
 - [ ] **Step 2: Update hookbox-providers Cargo.toml**
 
 Add new feature flags and dependencies:
 ```toml
 [features]
-default = ["stripe", "bvnk", "generic-hmac", "adyen", "checkout", "triplea", "walapay"]
+default = ["stripe", "bvnk", "generic-hmac", "adyen", "triplea", "walapay"]
 stripe = []
 bvnk = []
 generic-hmac = []
 adyen = []
-checkout = []
 triplea = ["dep:rsa"]
 walapay = []
 
@@ -87,7 +88,7 @@ base64.workspace = true
 rsa = { workspace = true, optional = true }
 ```
 
-Note: `base64` is already a workspace dep (used by hookbox core). `rsa` is optional, only pulled in by the `triplea` feature.
+Note: `base64` is already a workspace dep (used by hookbox core). `rsa` is optional, only pulled in by the `triplea` feature. There is no `checkout` feature flag — Checkout.com is a config-level alias wired in `serve.rs` (see Task 6), not a separate module.
 
 - [ ] **Step 3: Add module declarations to lib.rs**
 
@@ -121,9 +122,39 @@ pub use triplea::TripleAFiatVerifier;
 pub use walapay::WalapayVerifier;
 ```
 
-- [ ] **Step 4: Create empty stubs for compilation**
+- [ ] **Step 4: Create minimal stubs for compilation**
 
-Create each file with just a module doc comment so everything compiles. The implementing agent should create `adyen.rs`, `bvnk.rs`, `triplea.rs`, `walapay.rs` each with `//! <Provider> signature verifier.` as content.
+Create each file with a minimal pub struct so the `lib.rs` re-exports compile. The implementing agent should create `adyen.rs`, `bvnk.rs`, `triplea.rs`, `walapay.rs` with the following pattern (replace names accordingly):
+
+```rust
+// adyen.rs stub
+//! Adyen signature verifier.
+/// Adyen HMAC-SHA256 verifier (placeholder).
+pub struct AdyenVerifier;
+```
+
+```rust
+// bvnk.rs stub
+//! BVNK signature verifier.
+/// BVNK HMAC-SHA256 verifier (placeholder).
+pub struct BvnkVerifier;
+```
+
+```rust
+// triplea.rs stub
+//! Triple-A signature verifier.
+/// Triple-A fiat RSA-SHA512 verifier (placeholder).
+pub struct TripleAFiatVerifier;
+```
+
+```rust
+// walapay.rs stub
+//! Walapay signature verifier.
+/// Walapay/Svix HMAC-SHA256 verifier (placeholder).
+pub struct WalapayVerifier;
+```
+
+These stubs satisfy the re-exports in `lib.rs`. The actual implementation replaces them in later tasks.
 
 - [ ] **Step 5: Run lint**
 
@@ -146,28 +177,17 @@ git commit -m "feat(hookbox-providers): add feature flags and deps for new provi
 
 - Algorithm: HMAC-SHA256
 - Key: hex-encoded string → decode to binary bytes for HMAC
-- Signature location: `hmacSignature` field INSIDE the JSON payload (not a header)
+- Signature location: `HmacSignature` HTTP header
 - Signature encoding: Base64
 - Constant-time comparison required
 
-Adyen is unique: the signature is in the **payload body** as a field, not in a header. The verifier needs to:
-1. Parse the body as JSON
-2. Extract `hmacSignature` field
-3. Remove the `hmacSignature` field from the payload
-4. Compute HMAC-SHA256 over the remaining payload
-5. Base64-encode the result
-6. Constant-time compare
-
-Actually, Adyen signs a specific string constructed from the notification fields, not the raw body. The signed content is constructed by concatenating specific fields separated by colons. However, for a generic hookbox verifier, we'll sign the raw body (minus the signature field) which is the common integration pattern.
-
-**Simpler approach for hookbox:** Adyen sends the signature in the `HmacSignature` header in their newer API. Let's support both patterns — header-based is cleaner for hookbox.
+**Scope:** This verifier supports Adyen's header-based HMAC verification where the signature is sent in the `HmacSignature` HTTP header. The older payload-field approach (`hmacSignature` inside JSON) is not supported.
 
 The implementing agent should:
-1. Check the `HmacSignature` header first
-2. If not found, try parsing body JSON for `hmacSignature` field
-3. Compute HMAC-SHA256(hex_decoded_key, body)
-4. Base64-encode result
-5. Constant-time compare with provided signature
+1. Extract the `HmacSignature` header (return `Failed` if missing)
+2. Base64-decode the header value to get the provided signature bytes
+3. Compute HMAC-SHA256(hex_decoded_key, raw_body)
+4. Constant-time compare the computed MAC with the provided signature bytes
 
 ### Steps
 
@@ -481,7 +501,6 @@ impl SignatureVerifier for TripleAFiatVerifier {
             return Self::failed("invalid_base64_signature");
         };
 
-        use rsa::signature::SignatureEncoding;
         let Ok(signature) = rsa::pkcs1v15::Signature::try_from(sig_bytes.as_slice()) else {
             return Self::failed("invalid_rsa_signature_format");
         };
@@ -500,13 +519,20 @@ impl SignatureVerifier for TripleAFiatVerifier {
 - `rsa::signature::Verifier` trait for the `.verify()` method
 - `rsa::pkcs8::DecodePublicKey` trait for PEM parsing
 
-Tests should generate an RSA keypair, sign a body, and verify. Use `rsa::RsaPrivateKey::new()` for test key generation.
+Tests should generate an RSA keypair, sign a body, and verify. Use `rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048)` for test key generation.
 
 - [ ] **Step 2: Add tests**
 
 Generate a test RSA keypair, sign body with SHA-512 + PKCS1v15, Base64-encode, pass in `TripleA-Signature` header. Test: valid signature, wrong body, missing header.
 
-Add `rsa` to `[dev-dependencies]` if the feature gate means it's not available in tests by default. Actually since `triplea` is a default feature, it should be available.
+**Important:** RSA key generation requires an RNG. Add `rand` as a dev-dependency in `crates/hookbox-providers/Cargo.toml`:
+```toml
+[dev-dependencies]
+rand = "0.8"
+```
+Then use `rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048)` in tests.
+
+Also remember: use `rsa::sha2::Sha512` (NOT the workspace `sha2::Sha512`) for both the verifier implementation and test signing, as `rsa 0.9` pins `sha2 0.10` internally.
 
 - [ ] **Step 3: Run tests and lint**
 
@@ -775,6 +801,8 @@ Add a new optional field to `ProviderConfig`:
 /// PEM-encoded public key (for RSA-based providers like Triple-A fiat).
 pub public_key: Option<String>,
 ```
+
+**Note on `secret` for RSA providers:** The existing `pub secret: String` field in `ProviderConfig` is unused for RSA-based providers such as `triplea-fiat`. An empty string (`secret = ""`) is acceptable and must be handled gracefully. Config docs and the `triplea-fiat` dispatch branch must document this: "For `triplea-fiat`, `secret` is unused — set it to an empty string or any placeholder value; only `public_key` is required."
 
 - [ ] **Step 2: Update serve.rs provider dispatch**
 
