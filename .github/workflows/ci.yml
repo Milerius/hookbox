@@ -150,9 +150,11 @@ jobs:
           DATABASE_URL: postgres://hookbox:hookbox@localhost:5432/hookbox_test
       - name: Branch coverage (per-crate, avoids llvm-cov SIGSEGV)
         run: |
-          # Branch coverage crashes llvm-cov when async-trait macro-expanded code
-          # is present (hookbox, hookbox-postgres, hookbox-providers).
-          # Run branch coverage only for crates that work, merge manually.
+          # Branch coverage crashes llvm-cov for crates using async-trait macros.
+          # Root cause: https://github.com/llvm/llvm-project/issues/189169
+          # Fix merged in LLVM: https://github.com/llvm/llvm-project/pull/189270
+          # TODO: switch back to workspace-wide --branch once Rust nightly ships
+          # an LLVM version containing the fix.
           # Line coverage (above) covers the full workspace for codecov.
           cargo +nightly llvm-cov --branch -p hookbox-server --tests --lcov --output-path lcov-server.info || true
           cargo +nightly llvm-cov --branch -p hookbox-verify --lib --lcov --output-path lcov-verify.info || true
