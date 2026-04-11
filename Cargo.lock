@@ -1374,11 +1374,14 @@ name = "hookbox-providers"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "chrono",
  "hex",
  "hmac 0.13.0",
  "hookbox",
  "http",
+ "rand 0.8.5",
+ "rsa",
  "sha2 0.11.0",
  "subtle",
  "thiserror",
@@ -2635,6 +2638,7 @@ dependencies = [
  "pkcs1",
  "pkcs8",
  "rand_core 0.6.4",
+ "sha2 0.10.9",
  "signature",
  "spki",
  "subtle",

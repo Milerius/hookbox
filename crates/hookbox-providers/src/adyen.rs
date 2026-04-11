@@ -141,9 +141,8 @@ mod tests {
         let hex_key = "deadbeefdeadbeef";
         let body = b"{\"live\":\"false\"}";
         // Wrong signature — just some valid base64.
-        let header_val =
-            HeaderValue::from_str("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
-                .expect("valid header value");
+        let header_val = HeaderValue::from_str("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+            .expect("valid header value");
 
         let verifier = AdyenVerifier::new("adyen", hex_key).expect("valid hex key");
 
@@ -158,8 +157,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_header_fails() {
-        let verifier =
-            AdyenVerifier::new("adyen", "deadbeefdeadbeef").expect("valid hex key");
+        let verifier = AdyenVerifier::new("adyen", "deadbeefdeadbeef").expect("valid hex key");
 
         let result = verifier.verify(&HeaderMap::new(), b"irrelevant body").await;
 
@@ -177,8 +175,7 @@ mod tests {
     async fn invalid_base64_signature_fails() {
         let hex_key = "deadbeefdeadbeef";
         // Header value contains characters that are not valid base64.
-        let header_val =
-            HeaderValue::from_str("!!!not-base64!!!").expect("valid header bytes");
+        let header_val = HeaderValue::from_str("!!!not-base64!!!").expect("valid header bytes");
 
         let verifier = AdyenVerifier::new("adyen", hex_key).expect("valid hex key");
 
@@ -193,8 +190,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_name_returns_configured() {
-        let verifier =
-            AdyenVerifier::new("adyen-prod", "deadbeefdeadbeef").expect("valid hex key");
+        let verifier = AdyenVerifier::new("adyen-prod", "deadbeefdeadbeef").expect("valid hex key");
         assert_eq!(verifier.provider_name(), "adyen-prod");
     }
 }

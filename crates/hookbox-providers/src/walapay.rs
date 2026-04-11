@@ -135,7 +135,11 @@ impl SignatureVerifier for WalapayVerifier {
                 continue; // ignore unknown version prefixes
             };
             // Constant-time compare of the base64 strings.
-            if expected_b64.as_bytes().ct_eq(provided_b64.as_bytes()).into() {
+            if expected_b64
+                .as_bytes()
+                .ct_eq(provided_b64.as_bytes())
+                .into()
+            {
                 return Self::verified("signature_valid");
             }
         }
@@ -186,8 +190,7 @@ mod tests {
         let sig = compute_sig(TEST_KEY, msg_id, ts, body);
         let header_sig = format!("v1,{sig}");
 
-        let verifier =
-            WalapayVerifier::new("walapay", TEST_SECRET).expect("valid secret format");
+        let verifier = WalapayVerifier::new("walapay", TEST_SECRET).expect("valid secret format");
         let mut headers = HeaderMap::new();
         headers.insert("svix-id", HeaderValue::from_str(msg_id).expect("valid"));
         headers.insert(
@@ -206,8 +209,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_svix_id_fails() {
-        let verifier =
-            WalapayVerifier::new("walapay", TEST_SECRET).expect("valid secret format");
+        let verifier = WalapayVerifier::new("walapay", TEST_SECRET).expect("valid secret format");
         let ts = now_secs();
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -226,8 +228,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_svix_timestamp_fails() {
-        let verifier =
-            WalapayVerifier::new("walapay", TEST_SECRET).expect("valid secret format");
+        let verifier = WalapayVerifier::new("walapay", TEST_SECRET).expect("valid secret format");
         let mut headers = HeaderMap::new();
         headers.insert("svix-id", HeaderValue::from_str("msg_abc").expect("valid"));
         headers.insert(
@@ -252,8 +253,7 @@ mod tests {
         let sig = compute_sig(TEST_KEY, msg_id, ts, body);
         let header_sig = format!("v1,{sig}");
 
-        let verifier =
-            WalapayVerifier::new("walapay", TEST_SECRET).expect("valid secret format");
+        let verifier = WalapayVerifier::new("walapay", TEST_SECRET).expect("valid secret format");
         let mut headers = HeaderMap::new();
         headers.insert("svix-id", HeaderValue::from_str(msg_id).expect("valid"));
         headers.insert(
@@ -279,8 +279,7 @@ mod tests {
         let wrong_sig = compute_sig(b"wrong_key", msg_id, ts, body);
         let header_sig = format!("v1,{wrong_sig}");
 
-        let verifier =
-            WalapayVerifier::new("walapay", TEST_SECRET).expect("valid secret format");
+        let verifier = WalapayVerifier::new("walapay", TEST_SECRET).expect("valid secret format");
         let mut headers = HeaderMap::new();
         headers.insert("svix-id", HeaderValue::from_str(msg_id).expect("valid"));
         headers.insert(
@@ -308,8 +307,7 @@ mod tests {
         // Put the good sig second.
         let header_sig = format!("v1,{bad_sig} v1,{good_sig}");
 
-        let verifier =
-            WalapayVerifier::new("walapay", TEST_SECRET).expect("valid secret format");
+        let verifier = WalapayVerifier::new("walapay", TEST_SECRET).expect("valid secret format");
         let mut headers = HeaderMap::new();
         headers.insert("svix-id", HeaderValue::from_str(msg_id).expect("valid"));
         headers.insert(

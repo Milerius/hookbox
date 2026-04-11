@@ -135,8 +135,7 @@ mod tests {
         let body = b"{\"payout_id\":\"abc123\",\"status\":\"completed\"}";
         let sig_b64 = sign_body(&signing_key, body);
 
-        let verifier =
-            TripleAFiatVerifier::new("triplea-fiat", &pem).expect("valid PEM");
+        let verifier = TripleAFiatVerifier::new("triplea-fiat", &pem).expect("valid PEM");
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -158,8 +157,7 @@ mod tests {
         // Sign the wrong body so the signature won't match.
         let sig_b64 = sign_body(&signing_key, wrong_body);
 
-        let verifier =
-            TripleAFiatVerifier::new("triplea-fiat", &pem).expect("valid PEM");
+        let verifier = TripleAFiatVerifier::new("triplea-fiat", &pem).expect("valid PEM");
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -176,8 +174,7 @@ mod tests {
     #[tokio::test]
     async fn missing_header_fails() {
         let (pem, _signing_key) = test_keypair();
-        let verifier =
-            TripleAFiatVerifier::new("triplea-fiat", &pem).expect("valid PEM");
+        let verifier = TripleAFiatVerifier::new("triplea-fiat", &pem).expect("valid PEM");
 
         let result = verifier.verify(&HeaderMap::new(), b"body").await;
 
@@ -194,8 +191,7 @@ mod tests {
     #[tokio::test]
     async fn provider_name_returns_configured() {
         let (pem, _signing_key) = test_keypair();
-        let verifier =
-            TripleAFiatVerifier::new("triplea-prod", &pem).expect("valid PEM");
+        let verifier = TripleAFiatVerifier::new("triplea-prod", &pem).expect("valid PEM");
         assert_eq!(verifier.provider_name(), "triplea-prod");
     }
 }

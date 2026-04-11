@@ -47,7 +47,10 @@ pub fn run(config_path: &str) -> anyhow::Result<()> {
 }
 
 /// Async server startup: tracing, database, migrations, pipeline, and HTTP serve.
-#[expect(clippy::too_many_lines, reason = "provider dispatch match arms require all types inline")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "provider dispatch match arms require all types inline"
+)]
 async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     anyhow::ensure!(
         config.retry.interval_seconds >= 1,
@@ -129,9 +132,10 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                 builder = builder.verifier(verifier);
             }
             "bvnk" => {
-                let secret = provider.secret.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!("bvnk provider '{name}' requires a secret")
-                })?;
+                let secret = provider
+                    .secret
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("bvnk provider '{name}' requires a secret"))?;
                 let verifier = BvnkVerifier::new(name, secret.as_bytes().to_vec());
                 tracing::info!(provider = %name, "registering BvnkVerifier");
                 builder = builder.verifier(verifier);
@@ -152,11 +156,9 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                         "triplea-crypto provider '{name}' requires a secret (notify_secret)"
                     )
                 })?;
-                let mut verifier =
-                    TripleACryptoVerifier::new(name.clone(), secret.to_owned());
+                let mut verifier = TripleACryptoVerifier::new(name.clone(), secret.to_owned());
                 if let Some(tolerance) = provider.tolerance_seconds {
-                    verifier =
-                        verifier.with_tolerance(std::time::Duration::from_secs(tolerance));
+                    verifier = verifier.with_tolerance(std::time::Duration::from_secs(tolerance));
                 }
                 tracing::info!(provider = %name, "registering TripleACryptoVerifier");
                 builder = builder.verifier(verifier);
@@ -181,8 +183,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                     .header
                     .clone()
                     .unwrap_or_else(|| "Cko-Signature".to_owned());
-                let verifier =
-                    GenericHmacVerifier::new(name, secret.as_bytes().to_vec(), header);
+                let verifier = GenericHmacVerifier::new(name, secret.as_bytes().to_vec(), header);
                 tracing::info!(provider = %name, "registering GenericHmacVerifier (Checkout.com)");
                 builder = builder.verifier(verifier);
             }
@@ -195,8 +196,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                     .header
                     .clone()
                     .unwrap_or_else(|| format!("X-{name}-Signature"));
-                let verifier =
-                    GenericHmacVerifier::new(name, secret.as_bytes().to_vec(), header);
+                let verifier = GenericHmacVerifier::new(name, secret.as_bytes().to_vec(), header);
                 tracing::info!(
                     provider = %name,
                     verifier_type = %provider.verifier_type,

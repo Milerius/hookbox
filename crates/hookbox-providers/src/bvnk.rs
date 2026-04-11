@@ -140,9 +140,8 @@ mod tests {
         let secret = b"bvnk-test-secret";
         let body = b"{\"type\":\"PAYMENT_RECEIVED\"}";
         // Wrong signature — valid base64 but wrong HMAC.
-        let header_val =
-            HeaderValue::from_str("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
-                .expect("valid header value");
+        let header_val = HeaderValue::from_str("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+            .expect("valid header value");
 
         let verifier = BvnkVerifier::new("bvnk", secret.to_vec());
 
@@ -168,8 +167,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_base64_signature_fails() {
         let secret = b"bvnk-test-secret";
-        let header_val =
-            HeaderValue::from_str("!!!not-base64!!!").expect("valid header bytes");
+        let header_val = HeaderValue::from_str("!!!not-base64!!!").expect("valid header bytes");
 
         let verifier = BvnkVerifier::new("bvnk", secret.to_vec());
 

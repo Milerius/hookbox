@@ -310,7 +310,10 @@ secret = "checkout_secret"
         assert_eq!(crypto.secret.as_deref(), Some("notify_secret"));
         assert_eq!(crypto.tolerance_seconds, Some(300));
 
-        let walapay = config.providers.get("my_walapay").expect("walapay provider");
+        let walapay = config
+            .providers
+            .get("my_walapay")
+            .expect("walapay provider");
         assert_eq!(walapay.verifier_type, "walapay");
         assert_eq!(walapay.secret.as_deref(), Some("whsec_walapay"));
 

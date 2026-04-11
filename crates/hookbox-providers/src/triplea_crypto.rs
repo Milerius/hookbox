@@ -171,7 +171,8 @@ mod tests {
     async fn official_sample_data_verifies() {
         let body = br#"{"txs":[{"txid":"33d5d9af65fe63b12e1a4d67f6b05fcf01428764db840463aba621daa65323d3","status":"good","t3a_id":"164f404b07bd6c1868f35e8e70d3c2a245b6be14ec067f0ab50c9f0785b0b3cf","vout_n":0,"status_date":"2021-05-17T10:22:42.949Z","payment_tier":"good","order_currency":"USD","payment_amount":10,"receive_amount":10,"payment_currency":"USD","payment_tier_date":"2021-05-17T10:22:42.949Z","payment_crypto_amount":0.00023271}],"cart":{"items":[{"sku":"2736829","label":"A tale of 2 cities","amount":10.99,"quantity":1}],"tax_cost":0.73,"shipping_cost":2.57,"shipping_discount":0},"event":"payment","api_id":"HA1587722191gQKF_t","status":"good","status_date":"2021-05-17T10:22:42.954Z","order_amount":10,"payment_tier":"good","webhook_data":{"order_id":"ABC12345-2"},"crypto_amount":0.00023271,"exchange_rate":42971.44,"crypto_address":"n3XE3iEc2nyB44N43166XyzhEuKpcse9aQ","order_currency":"USD","payment_amount":10,"receive_amount":10,"crypto_currency":"testBTC","payment_currency":"USD","payment_reference":"PMA-401443-PMT","payment_tier_date":"2021-05-17T10:22:42.954Z","payment_crypto_amount":0.00023271}"#;
         let secret = "Cf9mx4nAvRuy5vwBY2FCtaKr!@#";
-        let header = "t=1621246963,v1=a0749b4b490e15701ab2c488037da9367e8421d8cbddf2450071758e2c6c9f7d";
+        let header =
+            "t=1621246963,v1=a0749b4b490e15701ab2c488037da9367e8421d8cbddf2450071758e2c6c9f7d";
 
         // Use MAX tolerance because the timestamp is from 2021.
         let verifier = TripleACryptoVerifier::new("triplea".to_owned(), secret.to_owned())
@@ -286,8 +287,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_name_returns_configured_name() {
-        let verifier =
-            TripleACryptoVerifier::new("triplea-prod".to_owned(), "secret".to_owned());
+        let verifier = TripleACryptoVerifier::new("triplea-prod".to_owned(), "secret".to_owned());
         assert_eq!(verifier.provider_name(), "triplea-prod");
     }
 }
