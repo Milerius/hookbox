@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Provider signature verification adapters for hookbox (Stripe, BVNK, generic HMAC)."
+description = "Provider signature verification adapters for hookbox (Stripe, Adyen, BVNK, Triple-A, Walapay, Checkout.com, generic HMAC)."
 
 [lints]
 workspace = true

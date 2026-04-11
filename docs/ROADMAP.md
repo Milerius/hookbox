@@ -6,6 +6,7 @@ Tracking next steps after the MVP and MVP gaps milestones.
 
 - [x] **PR #9 — MVP Implementation**: Core pipeline, Postgres storage, Stripe + HMAC providers, Axum server, CLI serve command, 6 verification tiers
 - [x] **PR #10 — MVP Gaps**: Prometheus metrics, 8 CLI subcommands, retry worker, generic AppState, HTTP route tests, documentation
+- [x] **Provider adapter pack**: Adyen (HMAC-SHA256, hex key), BVNK new hook service (Base64 HMAC-SHA256), Triple-A fiat (RSA-SHA512), Triple-A crypto (HMAC-SHA256, timestamped), Walapay/Svix (HMAC-SHA256)
 
 ---
 
@@ -51,13 +52,12 @@ Drain in-flight retries and emits before process exit. Currently the server and 
 
 ## Phase 2: Features
 
-### 1. Provider adapter pack
-New provider-specific `SignatureVerifier` implementations beyond Stripe and generic HMAC.
+### 1. ~~Provider adapter pack~~ (done)
+Completed: Adyen, BVNK new hook service, Triple-A fiat (RSA-SHA512), Triple-A crypto (HMAC-SHA256 timestamped), Walapay/Svix — all as feature flags in `hookbox-providers`.
 
-- Adyen (HMAC-SHA256 with Base64 encoding)
+Remaining from original scope:
 - Checkout.com (HMAC-SHA256)
 - PayPal (certificate-based verification)
-- Each as a feature flag in `hookbox-providers`
 
 ### 2. Kafka / NATS / SQS emitter adapters
 Replace the `ChannelEmitter` drain task with real message broker delivery.

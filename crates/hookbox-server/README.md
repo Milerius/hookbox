@@ -68,9 +68,34 @@ secret = "whsec_..."
 tolerance_seconds = 300
 
 [providers.bvnk]
-type = "hmac-sha256"
+type = "bvnk"
 secret = "..."
-header = "X-Webhook-Signature"
+
+[providers.adyen]
+type = "adyen"
+# Hex-encoded HMAC key from the Adyen Customer Area
+hex_key = "abc123..."
+
+[providers.triplea_fiat]
+type = "triplea-fiat"
+# RSA public key in PEM format
+public_key = """
+-----BEGIN PUBLIC KEY-----
+...
+-----END PUBLIC KEY-----
+"""
+
+[providers.triplea_crypto]
+type = "triplea-crypto"
+# notify_secret from the Triple-A developer portal
+secret = "..."
+tolerance_seconds = 300
+
+[providers.walapay]
+type = "walapay"
+# whsec_<base64> format secret from the Walapay dashboard
+secret = "whsec_..."
+tolerance_seconds = 300
 
 [dedupe]
 lru_capacity = 10000

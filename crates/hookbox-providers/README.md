@@ -7,24 +7,40 @@ Implements the `SignatureVerifier` trait from `hookbox` core for real-world webh
 ## Adapters
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  hookbox-providers                                          │
-│                                                             │
-│  StripeVerifier ─────────── Stripe-Signature header         │
-│    • HMAC-SHA256 with timestamp tolerance                   │
-│    • Configurable tolerance window (default: 5 min)         │
-│    • Supports secret rotation (multiple active secrets)     │
-│                                                             │
-│  BvnkVerifier ───────────── BVNK-style HMAC                │
-│    • HMAC-SHA256 over raw body                              │
-│    • Configurable header name and encoding                  │
-│                                                             │
-│  GenericHmacVerifier ────── Configurable HMAC               │
-│    • SHA-256 or SHA-512                                     │
-│    • Configurable: header name, signing key, encoding       │
-│    • Covers most HMAC-based webhook providers               │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  hookbox-providers                                              │
+│                                                                 │
+│  StripeVerifier ──────────── Stripe-Signature header            │
+│    • HMAC-SHA256 with timestamp tolerance                       │
+│    • Configurable tolerance window (default: 5 min)             │
+│    • Supports secret rotation (multiple active secrets)         │
+│                                                                 │
+│  BvnkVerifier ────────────── x-signature header                 │
+│    • HMAC-SHA256 over raw body, Base64-encoded signature        │
+│    • BVNK new hook service                                      │
+│                                                                 │
+│  GenericHmacVerifier ─────── Configurable HMAC                  │
+│    • SHA-256 or SHA-512                                         │
+│    • Configurable: header name, signing key, encoding           │
+│    • Covers most HMAC-based webhook providers                   │
+│                                                                 │
+│  AdyenVerifier ───────────── HmacSignature header               │
+│    • HMAC-SHA256, hex-encoded key, Base64-encoded signature     │
+│                                                                 │
+│  TripleAFiatVerifier ─────── TripleA-Signature header           │
+│    • RSA-SHA512 (PKCS#1 v1.5), PEM public key                  │
+│    • Base64-encoded signature over raw body                     │
+│                                                                 │
+│  TripleACryptoVerifier ────── triplea-signature header          │
+│    • HMAC-SHA256 over "{timestamp}.{body}"                      │
+│    • Timestamped t=<ts>,v1=<hex-sig> format, replay protection  │
+│                                                                 │
+│  WalapayVerifier ─────────── svix-* headers                     │
+│    • Svix HMAC-SHA256, whsec_<base64> secret format             │
+│    • Signed payload: "{svix-id}.{svix-timestamp}.{body}"        │
+│    • Timestamp tolerance + multi-signature support              │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Feature Flags
@@ -32,8 +48,11 @@ Implements the `SignatureVerifier` trait from `hookbox` core for real-world webh
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `stripe` | yes | Stripe webhook signature verification |
-| `bvnk` | yes | BVNK-style HMAC verification |
+| `bvnk` | yes | BVNK new hook service (Base64 HMAC-SHA256, x-signature) |
 | `generic-hmac` | yes | Configurable HMAC-SHA256/SHA512 verifier |
+| `adyen` | yes | Adyen HMAC-SHA256 (hex key, Base64 sig, HmacSignature header) |
+| `triplea` | yes | Triple-A fiat (RSA-SHA512) and crypto (HMAC-SHA256) verifiers |
+| `walapay` | yes | Walapay/Svix HMAC-SHA256 (svix-* headers) |
 
 ## Security
 
