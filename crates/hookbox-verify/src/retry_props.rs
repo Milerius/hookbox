@@ -17,7 +17,7 @@ mod tests {
                 if new_count >= max_attempts {
                     assert_eq!(new_state, ProcessingState::DeadLettered);
                 } else {
-                    assert_eq!(new_state, ProcessingState::Emitted);
+                    assert_eq!(new_state, ProcessingState::EmitFailed);
                 }
             });
     }
