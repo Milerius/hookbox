@@ -136,8 +136,15 @@ async fn worker_retries_emit_failed_receipt() {
     );
     let handle = worker.spawn();
 
-    // --- Step 5: wait for worker to retry ---
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // --- Step 5: wait for worker to retry (bounded poll instead of fixed sleep) ---
+    let expected_state = ProcessingState::Emitted;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let receipt = storage.get(id).await.unwrap().unwrap();
+        if receipt.processing_state == expected_state {
+            break;
+        }
+    }
     handle.abort();
 
     // --- Step 6: verify receipt is now Emitted ---
@@ -208,8 +215,15 @@ async fn worker_promotes_to_dlq_after_max_attempts() {
     );
     let handle = worker.spawn();
 
-    // --- Step 6: wait for worker to attempt one more retry ---
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // --- Step 6: wait for worker to attempt one more retry (bounded poll) ---
+    let expected_state = ProcessingState::DeadLettered;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let receipt = storage.get(id).await.unwrap().unwrap();
+        if receipt.processing_state == expected_state {
+            break;
+        }
+    }
     handle.abort();
 
     // --- Step 7: verify receipt is DeadLettered with emit_count 5 ---

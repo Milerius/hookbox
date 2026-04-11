@@ -10,7 +10,7 @@
 )]
 #![allow(clippy::panic)]
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use axum::body::Body;
@@ -25,8 +25,17 @@ use hookbox_server::build_router;
 use http::{HeaderMap, Request, StatusCode};
 use sqlx::PgPool;
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 use tower::ServiceExt as _;
 use uuid::Uuid;
+
+/// Global mutex so http tests do not interfere with ingest/worker tests when run
+/// in the default multi-test-thread mode (specifically, serialises DB truncation).
+static HTTP_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn http_test_lock() -> &'static Mutex<()> {
+    HTTP_TEST_LOCK.get_or_init(|| Mutex::new(()))
+}
 
 /// Verifier that always rejects — used in the `ingest_verification_failed_returns_401` test.
 struct AlwaysFailVerifier;
@@ -64,6 +73,7 @@ async fn drain(mut rx: tokio::sync::mpsc::Receiver<hookbox::NormalizedEvent>) {
 
 #[tokio::test]
 async fn full_http_flow() {
+    let _guard = http_test_lock().lock().await;
     // Setup
     let pool = setup_pool().await;
     let storage = PostgresStorage::new(pool.clone());

@@ -71,14 +71,14 @@ pub fn dedupe_decision_label(decision: DedupeDecision) -> &'static str {
 
 // ── Retry state specification model ──────────────────────────────────────────
 
-/// Compute the next `(emit_count, state)` after a successful retry emission.
+/// Compute the next `(emit_count, state)` after a failed retry emission.
 ///
 /// This mirrors the SQL `CASE` expression in `PostgresStorage::retry_failed`:
 ///
 /// ```sql
 /// CASE
 ///   WHEN emit_count + 1 >= max_attempts THEN 'dead_lettered'
-///   ELSE 'emitted'
+///   ELSE 'emit_failed'
 /// END
 /// ```
 ///
@@ -90,7 +90,7 @@ pub fn retry_next_state(emit_count: i32, max_attempts: i32) -> (i32, ProcessingS
     let new_state = if new_count >= max_attempts {
         ProcessingState::DeadLettered
     } else {
-        ProcessingState::Emitted
+        ProcessingState::EmitFailed
     };
     (new_count, new_state)
 }
@@ -152,10 +152,10 @@ mod tests {
 
     #[test]
     fn retry_next_state_emits_before_exhaustion() {
-        // emit_count=0, max=3 → still has retries left
+        // emit_count=0, max=3 → still has retries left → stays EmitFailed
         let (count, state) = retry_next_state(0, 3);
         assert_eq!(count, 1);
-        assert_eq!(state, ProcessingState::Emitted);
+        assert_eq!(state, ProcessingState::EmitFailed);
     }
 
     #[test]
