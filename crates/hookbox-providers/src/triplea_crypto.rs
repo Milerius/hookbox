@@ -111,16 +111,16 @@ impl SignatureVerifier for TripleACryptoVerifier {
             return Self::failed("timestamp_expired");
         }
 
-        // 6. Compute expected HMAC over "{timestamp}.{body}".
-        let Ok(body_str) = std::str::from_utf8(body) else {
-            return Self::failed("invalid_body_encoding");
-        };
-        let signed_payload = format!("{ts_str}.{body_str}");
+        // 6. Compute expected HMAC over "{timestamp}.{body}" using raw bytes.
+        let mut signed_content = Vec::with_capacity(ts_str.len() + 1 + body.len());
+        signed_content.extend_from_slice(ts_str.as_bytes());
+        signed_content.push(b'.');
+        signed_content.extend_from_slice(body);
 
         let Ok(mut mac) = HmacSha256::new_from_slice(self.secret.as_bytes()) else {
             return Self::failed("invalid_secret_length");
         };
-        mac.update(signed_payload.as_bytes());
+        mac.update(&signed_content);
         let expected = mac.finalize().into_bytes();
 
         // 7. Check if any v1= signature matches.

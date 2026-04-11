@@ -83,7 +83,7 @@ hookbox serve --config hookbox.toml
 ## What Hookbox gives you
 
 - **Signature verification**  
-  Pluggable verifier trait with Stripe, BVNK, and generic HMAC adapters.
+  Pluggable verifier trait with Stripe, BVNK, Adyen, Triple-A (fiat RSA + crypto HMAC), Walapay/Svix, Checkout.com, and generic HMAC adapters.
 
 - **Deduplication**  
   Configurable dedupe strategy with a fast in-memory path and Postgres as the source of truth.
@@ -125,7 +125,7 @@ hookbox/
 ├── crates/
 │   ├── hookbox/              # core: traits, types, pipeline, lightweight impls
 │   ├── hookbox-postgres/     # PostgreSQL storage backend
-│   ├── hookbox-providers/    # Stripe, BVNK, generic HMAC verifiers
+│   ├── hookbox-providers/    # Stripe, BVNK, Adyen, Triple-A, Walapay, Checkout, generic HMAC verifiers
 │   ├── hookbox-server/       # standalone Axum HTTP server
 │   └── hookbox-cli/          # CLI binary (inspect, replay, serve)
 ├── integration-tests/

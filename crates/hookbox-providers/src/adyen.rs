@@ -33,6 +33,9 @@ impl AdyenVerifier {
     /// Returns `None` if `hex_key` cannot be decoded as a valid hex string.
     #[must_use]
     pub fn new(provider: &str, hex_key: &str) -> Option<Self> {
+        if hex_key.is_empty() {
+            return None;
+        }
         let key_bytes = hex::decode(hex_key).ok()?;
         Some(Self {
             provider: provider.to_owned(),
@@ -168,6 +171,12 @@ mod tests {
     #[tokio::test]
     async fn invalid_hex_key_returns_none() {
         let result = AdyenVerifier::new("adyen", "not-valid-hex!!");
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn empty_hex_key_returns_none() {
+        let result = AdyenVerifier::new("adyen", "");
         assert!(result.is_none());
     }
 

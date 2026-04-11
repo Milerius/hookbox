@@ -47,6 +47,9 @@ impl WalapayVerifier {
     pub fn new(provider: &str, secret: &str) -> Option<Self> {
         let b64 = secret.strip_prefix("whsec_")?;
         let key = STANDARD.decode(b64).ok()?;
+        if key.is_empty() {
+            return None;
+        }
         Some(Self {
             provider: provider.to_owned(),
             key,
@@ -343,6 +346,13 @@ mod tests {
     #[tokio::test]
     async fn invalid_secret_bad_base64_returns_none() {
         let result = WalapayVerifier::new("walapay", "whsec_!!!not_valid_base64!!!");
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn empty_whsec_key_returns_none() {
+        // "whsec_" with nothing after decodes to empty key bytes.
+        let result = WalapayVerifier::new("walapay", "whsec_");
         assert!(result.is_none());
     }
 

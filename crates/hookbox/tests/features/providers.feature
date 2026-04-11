@@ -5,7 +5,7 @@ Feature: Provider Signature Verification
     When I ingest a webhook from "test" with body '{"event":"provider_test"}'
     Then the result should be "accepted"
 
-  Scenario: Reject webhook with unknown provider
+  Scenario: Accept webhook even with unknown provider (verification skipped)
     Given a pipeline with a passing verifier for "stripe"
     When I ingest a webhook from "unknown_provider" with body '{"event":"test"}'
     Then the result should be "accepted"

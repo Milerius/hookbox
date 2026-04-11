@@ -74,7 +74,7 @@ secret = "..."
 [providers.adyen]
 type = "adyen"
 # Hex-encoded HMAC key from the Adyen Customer Area
-hex_key = "abc123..."
+secret = "abc123..."
 
 [providers.triplea_fiat]
 type = "triplea-fiat"

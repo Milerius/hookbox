@@ -111,7 +111,10 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                 let secret = provider
                     .secret
                     .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("provider '{name}' requires a secret"))?;
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("provider '{name}' requires a non-empty secret")
+                    })?;
                 let mut verifier = StripeVerifier::new(name.clone(), secret.to_owned());
                 if let Some(tolerance_secs) = provider.tolerance_seconds {
                     verifier = verifier.with_tolerance(Duration::from_secs(tolerance_secs));
@@ -120,11 +123,15 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                 builder = builder.verifier(verifier);
             }
             "adyen" => {
-                let secret = provider.secret.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "adyen provider '{name}' requires a secret (hex-encoded HMAC key)"
-                    )
-                })?;
+                let secret = provider
+                    .secret
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "adyen provider '{name}' requires a non-empty secret (hex-encoded HMAC key)"
+                        )
+                    })?;
                 let Some(verifier) = AdyenVerifier::new(name, secret) else {
                     anyhow::bail!("invalid hex key for Adyen provider '{name}'");
                 };
@@ -135,15 +142,24 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                 let secret = provider
                     .secret
                     .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("bvnk provider '{name}' requires a secret"))?;
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("bvnk provider '{name}' requires a non-empty secret")
+                    })?;
                 let verifier = BvnkVerifier::new(name, secret.as_bytes().to_vec());
                 tracing::info!(provider = %name, "registering BvnkVerifier");
                 builder = builder.verifier(verifier);
             }
             "triplea-fiat" => {
-                let pem = provider.public_key.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!("triplea-fiat provider '{name}' requires public_key")
-                })?;
+                let pem = provider
+                    .public_key
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "triplea-fiat provider '{name}' requires a non-empty public_key"
+                        )
+                    })?;
                 let Some(verifier) = TripleAFiatVerifier::new(name, pem) else {
                     anyhow::bail!("invalid PEM public key for Triple-A fiat provider '{name}'");
                 };
@@ -151,11 +167,15 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                 builder = builder.verifier(verifier);
             }
             "triplea-crypto" => {
-                let secret = provider.secret.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "triplea-crypto provider '{name}' requires a secret (notify_secret)"
-                    )
-                })?;
+                let secret = provider
+                    .secret
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "triplea-crypto provider '{name}' requires a non-empty secret (notify_secret)"
+                        )
+                    })?;
                 let mut verifier = TripleACryptoVerifier::new(name.clone(), secret.to_owned());
                 if let Some(tolerance) = provider.tolerance_seconds {
                     verifier = verifier.with_tolerance(std::time::Duration::from_secs(tolerance));
@@ -164,9 +184,15 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                 builder = builder.verifier(verifier);
             }
             "walapay" => {
-                let secret = provider.secret.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!("walapay provider '{name}' requires a secret (whsec_...)")
-                })?;
+                let secret = provider
+                    .secret
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "walapay provider '{name}' requires a non-empty secret (whsec_...)"
+                        )
+                    })?;
                 let Some(mut verifier) = WalapayVerifier::new(name, secret) else {
                     anyhow::bail!(
                         "invalid Svix secret for Walapay provider '{name}' (expected whsec_...)"
@@ -179,9 +205,13 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                 builder = builder.verifier(verifier);
             }
             "checkout" => {
-                let secret = provider.secret.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!("checkout provider '{name}' requires a secret")
-                })?;
+                let secret = provider
+                    .secret
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("checkout provider '{name}' requires a non-empty secret")
+                    })?;
                 let header = provider
                     .header
                     .clone()
@@ -194,7 +224,10 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                 let secret = provider
                     .secret
                     .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("provider '{name}' requires a secret"))?;
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("provider '{name}' requires a non-empty secret")
+                    })?;
                 let header = provider
                     .header
                     .clone()
@@ -212,7 +245,10 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                 let secret = provider
                     .secret
                     .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("provider '{name}' requires a secret"))?;
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("provider '{name}' requires a non-empty secret")
+                    })?;
                 let header = provider
                     .header
                     .clone()
