@@ -13,6 +13,11 @@ ignore = [
     # operation) in TripleAFiatVerifier; the private key never touches this process,
     # so key-recovery is not a practical risk in our deployment model.
     { id = "RUSTSEC-2023-0071", reason = "verification-only use; private key absent from process; no fix available upstream" },
+    # RUSTSEC-2026-0097: rand 0.8 unsound with custom logger + thread_rng reseeding.
+    # Only affects rand 0.8 (dev-dependency for RSA test key generation in hookbox-providers).
+    # Not used in production code. Conditions (custom logger + thread_rng + reseed) don't
+    # apply in our test harness. Fix: upgrade to rand 0.9.3+ when rsa crate supports it.
+    { id = "RUSTSEC-2026-0097", reason = "dev-dependency only (RSA test keygen); conditions not met in test harness" },
 ]
 
 [licenses]
