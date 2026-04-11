@@ -12,7 +12,10 @@ use hookbox::dedupe::{InMemoryRecentDedupe, LayeredDedupe};
 use hookbox::emitter::ChannelEmitter;
 use hookbox::pipeline::HookboxPipeline;
 use hookbox_postgres::{PostgresStorage, StorageDedupe};
-use hookbox_providers::{GenericHmacVerifier, StripeVerifier};
+use hookbox_providers::{
+    AdyenVerifier, BvnkVerifier, GenericHmacVerifier, StripeVerifier, TripleACryptoVerifier,
+    TripleAFiatVerifier, WalapayVerifier,
+};
 use hookbox_server::ServerAppState;
 use hookbox_server::build_router;
 use hookbox_server::config::HookboxConfig;
@@ -44,6 +47,7 @@ pub fn run(config_path: &str) -> anyhow::Result<()> {
 }
 
 /// Async server startup: tracing, database, migrations, pipeline, and HTTP serve.
+#[expect(clippy::too_many_lines, reason = "provider dispatch match arms require all types inline")]
 async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     anyhow::ensure!(
         config.retry.interval_seconds >= 1,
@@ -99,27 +103,110 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
         .emitter(emitter);
 
     for (name, provider) in &config.providers {
-        if provider.verifier_type == "stripe" {
-            let mut verifier = StripeVerifier::new(name.clone(), provider.secret.clone());
-            if let Some(tolerance_secs) = provider.tolerance_seconds {
-                verifier = verifier.with_tolerance(Duration::from_secs(tolerance_secs));
+        match provider.verifier_type.as_str() {
+            "stripe" => {
+                let secret = provider
+                    .secret
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("provider '{name}' requires a secret"))?;
+                let mut verifier = StripeVerifier::new(name.clone(), secret.to_owned());
+                if let Some(tolerance_secs) = provider.tolerance_seconds {
+                    verifier = verifier.with_tolerance(Duration::from_secs(tolerance_secs));
+                }
+                tracing::info!(provider = %name, "registering StripeVerifier");
+                builder = builder.verifier(verifier);
             }
-            tracing::info!(provider = %name, "registering StripeVerifier");
-            builder = builder.verifier(verifier);
-        } else {
-            // "hmac-sha256" or any unknown type falls back to the generic verifier.
-            let header = provider
-                .header
-                .clone()
-                .unwrap_or_else(|| format!("X-{name}-Signature"));
-            let verifier =
-                GenericHmacVerifier::new(name, provider.secret.as_bytes().to_vec(), header);
-            tracing::info!(
-                provider = %name,
-                verifier_type = %provider.verifier_type,
-                "registering GenericHmacVerifier"
-            );
-            builder = builder.verifier(verifier);
+            "adyen" => {
+                let secret = provider.secret.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "adyen provider '{name}' requires a secret (hex-encoded HMAC key)"
+                    )
+                })?;
+                let Some(verifier) = AdyenVerifier::new(name, secret) else {
+                    anyhow::bail!("invalid hex key for Adyen provider '{name}'");
+                };
+                tracing::info!(provider = %name, "registering AdyenVerifier");
+                builder = builder.verifier(verifier);
+            }
+            "bvnk" => {
+                let secret = provider.secret.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("bvnk provider '{name}' requires a secret")
+                })?;
+                let verifier = BvnkVerifier::new(name, secret.as_bytes().to_vec());
+                tracing::info!(provider = %name, "registering BvnkVerifier");
+                builder = builder.verifier(verifier);
+            }
+            "triplea-fiat" => {
+                let pem = provider.public_key.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("triplea-fiat provider '{name}' requires public_key")
+                })?;
+                let Some(verifier) = TripleAFiatVerifier::new(name, pem) else {
+                    anyhow::bail!("invalid PEM public key for Triple-A fiat provider '{name}'");
+                };
+                tracing::info!(provider = %name, "registering TripleAFiatVerifier");
+                builder = builder.verifier(verifier);
+            }
+            "triplea-crypto" => {
+                let secret = provider.secret.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "triplea-crypto provider '{name}' requires a secret (notify_secret)"
+                    )
+                })?;
+                let mut verifier =
+                    TripleACryptoVerifier::new(name.clone(), secret.to_owned());
+                if let Some(tolerance) = provider.tolerance_seconds {
+                    verifier =
+                        verifier.with_tolerance(std::time::Duration::from_secs(tolerance));
+                }
+                tracing::info!(provider = %name, "registering TripleACryptoVerifier");
+                builder = builder.verifier(verifier);
+            }
+            "walapay" => {
+                let secret = provider.secret.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("walapay provider '{name}' requires a secret (whsec_...)")
+                })?;
+                let Some(verifier) = WalapayVerifier::new(name, secret) else {
+                    anyhow::bail!(
+                        "invalid Svix secret for Walapay provider '{name}' (expected whsec_...)"
+                    );
+                };
+                tracing::info!(provider = %name, "registering WalapayVerifier");
+                builder = builder.verifier(verifier);
+            }
+            "checkout" => {
+                let secret = provider.secret.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("checkout provider '{name}' requires a secret")
+                })?;
+                let header = provider
+                    .header
+                    .clone()
+                    .unwrap_or_else(|| "Cko-Signature".to_owned());
+                let verifier =
+                    GenericHmacVerifier::new(name, secret.as_bytes().to_vec(), header);
+                tracing::info!(provider = %name, "registering GenericHmacVerifier (Checkout.com)");
+                builder = builder.verifier(verifier);
+            }
+            "hmac-sha256" => {
+                let secret = provider
+                    .secret
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("provider '{name}' requires a secret"))?;
+                let header = provider
+                    .header
+                    .clone()
+                    .unwrap_or_else(|| format!("X-{name}-Signature"));
+                let verifier =
+                    GenericHmacVerifier::new(name, secret.as_bytes().to_vec(), header);
+                tracing::info!(
+                    provider = %name,
+                    verifier_type = %provider.verifier_type,
+                    "registering GenericHmacVerifier"
+                );
+                builder = builder.verifier(verifier);
+            }
+            other => {
+                anyhow::bail!("unknown provider type '{other}' for provider '{name}'");
+            }
         }
     }
 
