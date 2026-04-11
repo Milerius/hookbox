@@ -46,6 +46,11 @@ pub enum ReceiptsCommand {
     },
 
     /// Search receipts by external reference.
+    ///
+    /// Note: `external_reference` is only populated by provider-specific
+    /// adapters that extract business references from the payload. The
+    /// generic ingestion pipeline leaves this field `None`, so searches
+    /// will return no results unless a custom adapter sets it.
     Search {
         /// Database connection URL.
         #[arg(long, env = "DATABASE_URL")]
@@ -136,6 +141,12 @@ pub async fn run(command: ReceiptsCommand) -> anyhow::Result<()> {
             let receipts = storage
                 .query_by_external_reference(&external_ref, Some(limit))
                 .await?;
+
+            if receipts.is_empty() {
+                tracing::warn!(
+                    "no results — external_reference is only populated by provider-specific adapters"
+                );
+            }
 
             for r in &receipts {
                 tracing::info!(

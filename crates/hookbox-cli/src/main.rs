@@ -1,6 +1,7 @@
 //! Hookbox CLI — inspect, replay, and serve.
 
 use clap::{Parser, Subcommand};
+use tracing_subscriber::EnvFilter;
 
 mod commands;
 mod db;
@@ -41,18 +42,28 @@ enum Commands {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        // `serve` installs its own JSON tracing subscriber.
         Commands::Serve => commands::serve::run(&cli.config),
-        Commands::Receipts { command } => tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?
-            .block_on(commands::receipts::run(command)),
-        Commands::Replay { command } => tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?
-            .block_on(commands::replay::run(command)),
-        Commands::Dlq { command } => tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?
-            .block_on(commands::dlq::run(command)),
+        other => {
+            init_cli_tracing();
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            match other {
+                Commands::Receipts { command } => rt.block_on(commands::receipts::run(command)),
+                Commands::Replay { command } => rt.block_on(commands::replay::run(command)),
+                Commands::Dlq { command } => rt.block_on(commands::dlq::run(command)),
+                Commands::Serve => unreachable!(),
+            }
+        }
     }
+}
+
+/// Install a plain-text tracing subscriber for CLI (non-serve) commands.
+fn init_cli_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .without_time()
+        .init();
 }

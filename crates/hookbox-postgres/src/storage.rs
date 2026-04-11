@@ -424,7 +424,9 @@ impl PostgresStorage {
         .map_err(|e| StorageError::Internal(e.to_string()))?;
 
         if result.rows_affected() == 0 {
-            tracing::warn!(receipt_id = %id, "reset_for_retry: no receipt found with this id");
+            return Err(StorageError::Internal(format!(
+                "no receipt found with id {id}"
+            )));
         }
 
         Ok(())

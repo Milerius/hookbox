@@ -76,15 +76,23 @@ impl RetryWorker {
 
         match self.emitter.emit(&event).await {
             Ok(()) => {
-                tracing::info!(receipt_id = %receipt.receipt_id, "retry: emit succeeded");
-                let _ = self
+                if let Err(e) = self
                     .storage
                     .update_state(
                         receipt.receipt_id.0,
                         hookbox::ProcessingState::Emitted,
                         None,
                     )
-                    .await;
+                    .await
+                {
+                    tracing::error!(
+                        receipt_id = %receipt.receipt_id,
+                        error = %e,
+                        "retry: emit succeeded but state update failed — receipt may be re-emitted (at-least-once)"
+                    );
+                } else {
+                    tracing::info!(receipt_id = %receipt.receipt_id, "retry: emit succeeded");
+                }
             }
             Err(e) => {
                 tracing::warn!(
@@ -92,10 +100,17 @@ impl RetryWorker {
                     error = %e,
                     "retry: emit failed"
                 );
-                let _ = self
+                if let Err(db_err) = self
                     .storage
                     .retry_failed(receipt.receipt_id.0, self.max_attempts)
-                    .await;
+                    .await
+                {
+                    tracing::error!(
+                        receipt_id = %receipt.receipt_id,
+                        error = %db_err,
+                        "retry: failed to update emit_count — receipt stuck in emit_failed"
+                    );
+                }
             }
         }
     }
