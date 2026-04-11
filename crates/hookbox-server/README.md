@@ -102,6 +102,48 @@ lru_capacity = 10000
 
 [admin]
 bearer_token = "..."
+
+# Emitter backend (default: "channel")
+# Options: "channel", "kafka", "nats", "sqs"
+[emitter]
+type = "channel"
+```
+
+### Kafka emitter
+
+```toml
+[emitter]
+type = "kafka"
+
+[emitter.kafka]
+brokers = "localhost:9092"
+topic = "hookbox-events"
+client_id = "hookbox"       # optional, default: "hookbox"
+acks = "all"                # optional, default: "all"
+timeout_ms = 5000           # optional, default: 5000
+```
+
+### NATS emitter
+
+```toml
+[emitter]
+type = "nats"
+
+[emitter.nats]
+url = "nats://localhost:4222"
+subject = "hookbox.events"
+```
+
+### SQS emitter
+
+```toml
+[emitter]
+type = "sqs"
+
+[emitter.sqs]
+queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/hookbox-events"
+region = "us-east-1"   # optional
+fifo = false           # set true for FIFO queues
 ```
 
 ## Metrics

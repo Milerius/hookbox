@@ -5,6 +5,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 mod dedupe_props;
+mod emitter_props;
 mod hash_props;
 mod kani_proofs;
 mod metrics_props;

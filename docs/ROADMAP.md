@@ -59,13 +59,56 @@ Remaining from original scope:
 - Checkout.com (HMAC-SHA256)
 - PayPal (certificate-based verification)
 
-### 2. Kafka / NATS / SQS emitter adapters
+### 2. Emitter adapters (in progress)
 Replace the `ChannelEmitter` drain task with real message broker delivery.
 
-- New crates: `hookbox-emitter-kafka`, `hookbox-emitter-nats`, `hookbox-emitter-sqs`
-- Each implements the `Emitter` trait
-- Config-driven selection in `hookbox.toml`
-- Delivery guarantees documented per adapter
+**V1 (current batch — 3 adapters):**
+- `hookbox-emitter-kafka` — rdkafka with static linking, FutureProducer
+- `hookbox-emitter-nats` — async-nats, publish to subject
+- `hookbox-emitter-sqs` — aws-sdk-sqs, FIFO support with dedup
+
+Config-driven selection via `[emitter]` section in `hookbox.toml`. Single emitter per instance. JSON serialization.
+
+**V2 (next batch):**
+- `hookbox-emitter-redis` — Redis Streams via XADD (most likely next)
+
+**Deferred:**
+- `hookbox-emitter-rabbitmq` — lapin, AMQP publish to exchange (legacy compatibility, sharp-edged exchange pre-existence)
+- `hookbox-emitter-pulsar` — Apache Pulsar producer (sophisticated users can wait)
+
+**Rejected for emitter family:**
+- gRPC — breaks the "emit JSON to broker" model, different contract shape (proto vs JSON), semantic mismatch. Better suited as a separate integration/transport mode.
+
+**Tier 2 / future broker adapters:**
+- Google Cloud Pub/Sub
+- AWS SNS
+- Azure Service Bus
+- AWS EventBridge
+- Azure Event Hubs (Kafka-compatible — covered by Kafka emitter)
+- HTTP/Webhook relay (reqwest POST)
+- AWS Kinesis
+
+**Future emitter architecture improvements:**
+- Fan-out to multiple emitters (`[[emitters]]` array)
+- Per-emitter retry policies
+- Emitter health reporting to `/readyz`
+- Emitter-level metrics
+- Dead-letter per emitter
+
+**Future serialization formats:**
+- CloudEvents envelope
+- Protobuf with schema registry
+- Avro with schema registry
+- MessagePack
+
+**Future Kafka enhancements:**
+- Schema Registry (Confluent/Redpanda)
+- Transactions / exactly-once
+- Custom partitioner
+
+**Future NATS enhancements:**
+- JetStream for guaranteed delivery
+- NATS KV for state
 
 ### 3. Replay UI
 Web dashboard for inspecting receipts, replaying, and managing the DLQ.

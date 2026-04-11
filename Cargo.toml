@@ -7,6 +7,9 @@ members = [
     "crates/hookbox-server",
     "crates/hookbox-cli",
     "crates/hookbox-verify",
+    "crates/hookbox-emitter-kafka",
+    "crates/hookbox-emitter-nats",
+    "crates/hookbox-emitter-sqs",
     "integration-tests",
 ]
 
@@ -48,6 +51,9 @@ hookbox-postgres = { path = "crates/hookbox-postgres", version = "0.1.0" }
 hookbox-providers = { path = "crates/hookbox-providers", version = "0.1.0" }
 hookbox-server = { path = "crates/hookbox-server", version = "0.1.0" }
 hookbox-cli = { path = "crates/hookbox-cli", version = "0.1.0" }
+hookbox-emitter-kafka = { path = "crates/hookbox-emitter-kafka", version = "0.1.0" }
+hookbox-emitter-nats = { path = "crates/hookbox-emitter-nats", version = "0.1.0" }
+hookbox-emitter-sqs = { path = "crates/hookbox-emitter-sqs", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -94,6 +100,12 @@ anyhow = "1"
 
 # Config
 toml = "0.8.23"
+
+# Emitter backends
+rdkafka = { version = "0.36", features = ["cmake-build"] }
+async-nats = "0.38"
+aws-sdk-sqs = "1"
+aws-config = { version = "1", features = ["behavior-version-latest", "credentials-login"] }
 
 # Testing
 reqwest = { version = "0.12", features = ["json"] }

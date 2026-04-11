@@ -28,3 +28,6 @@ anyhow.workspace = true
 chrono.workspace = true
 hookbox-cli.workspace = true
 tracing-subscriber.workspace = true
+hookbox-emitter-kafka.workspace = true
+hookbox-emitter-nats.workspace = true
+hookbox-emitter-sqs.workspace = true

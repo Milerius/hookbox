@@ -17,7 +17,6 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use sqlx::PgPool;
 
 use hookbox::dedupe::{InMemoryRecentDedupe, LayeredDedupe};
-use hookbox::emitter::ChannelEmitter;
 use hookbox::pipeline::HookboxPipeline;
 use hookbox::traits::{DedupeStrategy, Emitter, Storage};
 use hookbox_postgres::{PostgresStorage, StorageDedupe};
@@ -37,8 +36,15 @@ pub struct AppState<S: Storage, D: DedupeStrategy, E: Emitter> {
 }
 
 /// Concrete [`AppState`] used by the production server binary.
-pub type ServerAppState =
-    AppState<PostgresStorage, LayeredDedupe<InMemoryRecentDedupe, StorageDedupe>, ChannelEmitter>;
+///
+/// The emitter is erased to `Arc<dyn Emitter + Send + Sync>` so that the
+/// server can select the emitter backend at runtime from configuration
+/// without changing the type signature of the router or handlers.
+pub type ServerAppState = AppState<
+    PostgresStorage,
+    LayeredDedupe<InMemoryRecentDedupe, StorageDedupe>,
+    Arc<dyn Emitter + Send + Sync>,
+>;
 
 /// Build the Axum [`Router`] with all hookbox routes wired to the given state.
 ///

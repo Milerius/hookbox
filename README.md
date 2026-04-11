@@ -100,6 +100,9 @@ hookbox serve --config hookbox.toml
 - **Retry worker**  
   Background retries with configurable interval and max attempts.
 
+- **Emitter adapters**  
+  Pluggable downstream forwarding: built-in channel emitter, plus Kafka, NATS, and SQS adapters for production message broker integration.
+
 - **Observability by default**  
   Structured tracing, Prometheus metrics, health/readiness endpoints, and operational visibility at every pipeline stage.
 
@@ -127,7 +130,11 @@ hookbox/
 │   ├── hookbox-postgres/     # PostgreSQL storage backend
 │   ├── hookbox-providers/    # Stripe, BVNK, Adyen, Triple-A, Walapay, Checkout, generic HMAC verifiers
 │   ├── hookbox-server/       # standalone Axum HTTP server
-│   └── hookbox-cli/          # CLI binary (inspect, replay, serve)
+│   ├── hookbox-cli/          # CLI binary (inspect, replay, serve)
+│   ├── hookbox-verify/       # Bolero property tests and Kani proofs
+│   ├── hookbox-emitter-kafka/  # Kafka emitter adapter (rdkafka)
+│   ├── hookbox-emitter-nats/   # NATS emitter adapter (async-nats)
+│   └── hookbox-emitter-sqs/    # AWS SQS emitter adapter
 ├── integration-tests/
 ├── examples/
 └── docs/
