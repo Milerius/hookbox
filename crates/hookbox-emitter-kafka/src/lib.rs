@@ -74,7 +74,14 @@ impl Emitter for KafkaEmitter {
         self.producer
             .send(record, self.timeout)
             .await
-            .map_err(|(err, _)| EmitError::Downstream(err.to_string()))?;
+            .map_err(|(e, _)| {
+                let msg = format!("kafka send failed: {e}");
+                if e.to_string().contains("timed out") || e.to_string().contains("Timed out") {
+                    EmitError::Timeout(msg)
+                } else {
+                    EmitError::Downstream(msg)
+                }
+            })?;
 
         tracing::debug!(
             receipt_id = %event.receipt_id,

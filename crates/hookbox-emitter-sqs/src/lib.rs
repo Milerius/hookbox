@@ -4,11 +4,16 @@
 //! standard and FIFO queues — when `fifo` is enabled the emitter sets
 //! `MessageGroupId` and `MessageDeduplicationId` derived from the event.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
+use tokio::time::timeout;
 
 use hookbox::error::EmitError;
 use hookbox::traits::Emitter;
 use hookbox::types::NormalizedEvent;
+
+const SQS_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// An SQS-backed [`Emitter`] that sends events to an Amazon SQS queue.
 ///
@@ -74,9 +79,15 @@ impl Emitter for SqsEmitter {
                 .message_deduplication_id(event.receipt_id.to_string());
         }
 
-        request.send().await.map_err(|e| {
-            EmitError::Downstream(format!("sqs send failed: {e:?}"))
-        })?;
+        match timeout(SQS_TIMEOUT, request.send()).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(EmitError::Downstream(format!("sqs send failed: {e:?}"))),
+            Err(_) => {
+                return Err(EmitError::Timeout(
+                    "sqs send timed out after 10s".to_owned(),
+                ));
+            }
+        }
 
         tracing::debug!(
             receipt_id = %event.receipt_id,

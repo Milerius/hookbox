@@ -104,7 +104,6 @@ brokers = "localhost:9092"
 topic = "hookbox-events"
 client_id = "hookbox"          # optional
 acks = "all"                   # optional: all | 1 | 0
-compression = "lz4"            # optional: none | gzip | snappy | lz4 | zstd
 timeout_ms = 5000              # optional
 
 [emitter.nats]

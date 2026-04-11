@@ -200,6 +200,7 @@ fn default_emitter_type() -> String {
 
 /// Kafka emitter configuration.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KafkaEmitterConfig {
     /// Comma-separated list of Kafka broker addresses (e.g. `"localhost:9092"`).
     pub brokers: String,
@@ -230,6 +231,7 @@ const fn default_kafka_timeout() -> u64 {
 
 /// NATS emitter configuration.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NatsEmitterConfig {
     /// NATS server URL (e.g. `"nats://localhost:4222"`).
     pub url: String,
@@ -239,6 +241,7 @@ pub struct NatsEmitterConfig {
 
 /// SQS emitter configuration.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SqsEmitterConfig {
     /// Full SQS queue URL.
     pub queue_url: String,
