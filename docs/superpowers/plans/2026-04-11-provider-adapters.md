@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add 4 new provider signature verifiers (Adyen, BVNK, Triple-A fiat, Walapay) and a Checkout.com config example to the hookbox-providers crate.
+**Goal:** Add 5 new provider signature verifiers (Adyen, BVNK, Triple-A fiat, Triple-A crypto, Walapay) and a Checkout.com config example to the hookbox-providers crate.
 
-**Architecture:** Each verifier is a separate module file with its own feature flag, following the existing `StripeVerifier` and `GenericHmacVerifier` patterns. All implement the `SignatureVerifier` trait via `#[async_trait]`. Tests co-located in each file. New dependencies: `base64` (for Adyen/BVNK/Walapay), `rsa` + `sha2` (for Triple-A RSA-SHA512). Note: Checkout.com is a config-level alias only (wired in `serve.rs` as `GenericHmacVerifier`), not a separate module.
+**Architecture:** Each verifier is a separate module file with its own feature flag, following the existing `StripeVerifier` and `GenericHmacVerifier` patterns. All implement the `SignatureVerifier` trait via `#[async_trait]`. Tests co-located in each file. New dependencies: `base64` (for Adyen/BVNK/Walapay), `rsa` + `sha2` (for Triple-A RSA-SHA512). Note: Checkout.com is a config-level alias only (wired in `serve.rs` as `GenericHmacVerifier`), not a separate module. Both `TripleAFiatVerifier` and `TripleACryptoVerifier` share the `triplea` feature flag.
 
 **Tech Stack:** hmac 0.13, sha2 0.11, subtle 2 (constant-time), base64 0.22, rsa (for Triple-A), async-trait, http (HeaderMap).
 
@@ -309,7 +309,7 @@ git commit -m "feat(hookbox-providers): add AdyenVerifier — HMAC-SHA256 with h
 
 ---
 
-## Task 3: BVNK Verifier
+## Task 3: BVNK Verifier (New Hook Service — Base64 HMAC)
 
 **Files:**
 - Create: `crates/hookbox-providers/src/bvnk.rs`
@@ -322,6 +322,8 @@ git commit -m "feat(hookbox-providers): add AdyenVerifier — HMAC-SHA256 with h
 - Signature encoding: Base64
 - Signed content: raw JSON body
 
+> **Note:** This handles BVNK's new hook service (Base64 HMAC). The older Standard Webhooks format uses hex — use `GenericHmacVerifier` for that.
+
 ### Steps
 
 - [ ] **Step 1: Implement BvnkVerifier**
@@ -329,10 +331,11 @@ git commit -m "feat(hookbox-providers): add AdyenVerifier — HMAC-SHA256 with h
 ```rust
 // crates/hookbox-providers/src/bvnk.rs
 
-//! BVNK webhook signature verifier.
+//! BVNK webhook signature verifier — new hook service (Base64 HMAC).
 //!
-//! BVNK signs webhooks with HMAC-SHA256 over the raw body. The signature is
+//! This handles BVNK's new hook service: HMAC-SHA256 over the raw body,
 //! Base64-encoded and sent in the `x-signature` header.
+//! The older Standard Webhooks format uses hex — use `GenericHmacVerifier` for that.
 //!
 //! Reference: <https://docs.bvnk.com/bvnk/references/webhook-validator/>
 
@@ -446,8 +449,8 @@ git commit -m "feat(hookbox-providers): add BvnkVerifier — HMAC-SHA256 with Ba
 //!
 //! Reference: <https://developers.triple-a.io/docs/fiat-payout-api-doc/519646ce696e6-webhook-notifications>
 //!
-//! Note: Triple-A crypto payments use NaCl `crypto_box` authenticated encryption
-//! (not RSA). That requires a separate verifier with `sodiumoxide` — see roadmap.
+//! Note: Triple-A crypto payments use HMAC-SHA256 with timestamped signatures
+//! — see `TripleACryptoVerifier`.
 
 use async_trait::async_trait;
 use http::HeaderMap;
@@ -802,7 +805,7 @@ Add a new optional field to `ProviderConfig`:
 pub public_key: Option<String>,
 ```
 
-**Note on `secret` for RSA providers:** The existing `pub secret: String` field in `ProviderConfig` is unused for RSA-based providers such as `triplea-fiat`. An empty string (`secret = ""`) is acceptable and must be handled gracefully. Config docs and the `triplea-fiat` dispatch branch must document this: "For `triplea-fiat`, `secret` is unused — set it to an empty string or any placeholder value; only `public_key` is required."
+**Note on `secret` for RSA providers:** Change the existing `pub secret: String` field in `ProviderConfig` to `#[serde(default)] pub secret: Option<String>`. In all dispatch branches that need the secret, extract it with `.as_deref().ok_or_else(|| anyhow::anyhow!("provider '{name}' requires a secret"))`. For `triplea-fiat`, the secret is not needed — omit the extraction entirely. This is cleaner than requiring `secret = ""`.
 
 - [ ] **Step 2: Update serve.rs provider dispatch**
 
@@ -812,16 +815,21 @@ In `crates/hookbox-cli/src/commands/serve.rs`, find the provider registration lo
 match provider.verifier_type.as_str() {
     "stripe" => { /* existing */ }
     "adyen" => {
-        let Some(verifier) = hookbox_providers::AdyenVerifier::new(name, &provider.secret) else {
+        let secret = provider.secret.as_deref()
+            .ok_or_else(|| anyhow::anyhow!("adyen provider '{name}' requires a secret (hex key)"))?;
+        let Some(verifier) = hookbox_providers::AdyenVerifier::new(name, secret) else {
             anyhow::bail!("invalid hex key for Adyen provider '{name}'");
         };
         builder = builder.verifier(verifier);
     }
     "bvnk" => {
-        let verifier = hookbox_providers::BvnkVerifier::new(name, provider.secret.as_bytes().to_vec());
+        let secret = provider.secret.as_deref()
+            .ok_or_else(|| anyhow::anyhow!("bvnk provider '{name}' requires a secret"))?;
+        let verifier = hookbox_providers::BvnkVerifier::new(name, secret.as_bytes().to_vec());
         builder = builder.verifier(verifier);
     }
     "triplea-fiat" => {
+        // No secret needed — RSA public key only.
         let pem = provider.public_key.as_deref()
             .ok_or_else(|| anyhow::anyhow!("triplea-fiat provider '{name}' requires public_key"))?;
         let Some(verifier) = hookbox_providers::TripleAFiatVerifier::new(name, pem) else {
@@ -830,24 +838,33 @@ match provider.verifier_type.as_str() {
         builder = builder.verifier(verifier);
     }
     "triplea-crypto" => {
-        let mut verifier = hookbox_providers::TripleACryptoVerifier::new(name.clone(), provider.secret.clone());
+        let secret = provider.secret.as_deref()
+            .ok_or_else(|| anyhow::anyhow!("triplea-crypto provider '{name}' requires a secret (notify_secret)"))?;
+        let mut verifier = hookbox_providers::TripleACryptoVerifier::new(name.clone(), secret.to_owned());
         if let Some(tolerance) = provider.tolerance_seconds {
             verifier = verifier.with_tolerance(Duration::from_secs(tolerance));
         }
         builder = builder.verifier(verifier);
     }
     "walapay" => {
-        let Some(verifier) = hookbox_providers::WalapayVerifier::new(name, &provider.secret) else {
+        let secret = provider.secret.as_deref()
+            .ok_or_else(|| anyhow::anyhow!("walapay provider '{name}' requires a secret (whsec_...)"))?;
+        let Some(verifier) = hookbox_providers::WalapayVerifier::new(name, secret) else {
             anyhow::bail!("invalid Svix secret for Walapay provider '{name}' (expected whsec_...)");
         };
         builder = builder.verifier(verifier);
     }
     "checkout" => {
+        let secret = provider.secret.as_deref()
+            .ok_or_else(|| anyhow::anyhow!("checkout provider '{name}' requires a secret"))?;
         let header = provider.header.clone().unwrap_or_else(|| "Cko-Signature".to_owned());
-        let verifier = hookbox_providers::GenericHmacVerifier::new(name, provider.secret.as_bytes().to_vec(), header);
+        let verifier = hookbox_providers::GenericHmacVerifier::new(name, secret.as_bytes().to_vec(), header);
         builder = builder.verifier(verifier);
     }
-    "hmac-sha256" | _ => { /* existing generic HMAC fallback */ }
+    "hmac-sha256" => { /* existing generic HMAC fallback */ }
+    other => {
+        anyhow::bail!("unknown provider type '{other}' for provider '{name}'");
+    }
 }
 ```
 
@@ -865,7 +882,6 @@ secret = "my_bvnk_secret"
 
 [providers.triplea_fiat_test]
 type = "triplea-fiat"
-secret = "unused_for_rsa"
 public_key = "-----BEGIN PUBLIC KEY-----\nMIICIjAN..."
 
 [providers.walapay_test]
@@ -908,7 +924,7 @@ Add config examples for each provider type in the Configuration section.
 
 - [ ] **Step 3: Update ROADMAP**
 
-Mark "Provider adapter pack" as complete. Add note about Triple-A crypto (NaCl) as future work.
+Mark "Provider adapter pack" as complete. Add note: Triple-A crypto is now covered by `TripleACryptoVerifier`. The old WooCommerce plugin (API v1) used NaCl — that pattern is not supported.
 
 - [ ] **Step 4: Commit**
 
