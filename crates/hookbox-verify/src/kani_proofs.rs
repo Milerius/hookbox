@@ -115,26 +115,25 @@ mod proofs {
     }
 
     #[kani::proof]
-    fn retry_failed_always_reaches_valid_state() {
+    fn retry_next_state_always_valid() {
+        use hookbox::transitions::retry_next_state;
         let emit_count: i32 = kani::any();
-        kani::assume(emit_count >= 0 && emit_count < 100);
+        kani::assume(emit_count >= 0 && emit_count < i32::MAX);
         let max_attempts: i32 = kani::any();
-        kani::assume(max_attempts >= 1 && max_attempts <= 100);
-        let new_count = emit_count + 1;
-        // Encode state as bool: true = dead_lettered, false = emit_failed
-        let is_dead_lettered = new_count >= max_attempts;
-        // Exactly one of the two outcomes must hold (always true by construction)
-        assert!(is_dead_lettered || !is_dead_lettered);
-        // More specifically: the chosen state is consistent with the threshold
-        assert!(is_dead_lettered == (new_count >= max_attempts));
+        kani::assume(max_attempts >= 1);
+        let (_new_count, new_state) = retry_next_state(emit_count, max_attempts);
+        assert!(matches!(
+            new_state,
+            ProcessingState::DeadLettered | ProcessingState::Emitted
+        ));
     }
 
     #[kani::proof]
-    fn reset_for_retry_always_findable_by_worker() {
+    fn reset_always_findable() {
+        use hookbox::transitions::{is_findable_by_worker, reset_state};
         let max_attempts: i32 = kani::any();
-        kani::assume(max_attempts >= 1 && max_attempts <= 1000);
-        let reset_count: i32 = 0;
-        // After reset, count is 0 which is always less than any valid max_attempts (>= 1)
-        assert!(reset_count < max_attempts);
+        kani::assume(max_attempts >= 1);
+        let (new_count, new_state) = reset_state();
+        assert!(is_findable_by_worker(new_count, new_state, max_attempts));
     }
 }
