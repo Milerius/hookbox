@@ -7,6 +7,9 @@ members = [
     "crates/hookbox-server",
     "crates/hookbox-cli",
     "crates/hookbox-verify",
+    "crates/hookbox-emitter-kafka",
+    "crates/hookbox-emitter-nats",
+    "crates/hookbox-emitter-sqs",
     "integration-tests",
 ]
 

@@ -1,0 +1,20 @@
+[package]
+name = "hookbox-emitter-nats"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "NATS emitter adapter for hookbox."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+hookbox.workspace = true
+async-nats.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+bytes.workspace = true
