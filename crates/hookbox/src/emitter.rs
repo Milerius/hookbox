@@ -103,6 +103,20 @@ impl Emitter for ChannelEmitter {
     }
 }
 
+#[async_trait]
+impl<T: Emitter + ?Sized + Send + Sync> Emitter for Box<T> {
+    async fn emit(&self, event: &NormalizedEvent) -> Result<(), EmitError> {
+        (**self).emit(event).await
+    }
+}
+
+#[async_trait]
+impl<T: Emitter + ?Sized + Send + Sync> Emitter for Arc<T> {
+    async fn emit(&self, event: &NormalizedEvent) -> Result<(), EmitError> {
+        (**self).emit(event).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -148,6 +162,17 @@ mod tests {
             1,
             "handler should have been called once"
         );
+    }
+
+    #[tokio::test]
+    async fn arc_emitter_delegates_to_inner() {
+        let (emitter, mut rx) = ChannelEmitter::new(16);
+        let arc_emitter: Arc<dyn Emitter + Send + Sync> = Arc::new(emitter);
+        let event = test_event();
+        let result = arc_emitter.emit(&event).await;
+        assert!(result.is_ok());
+        let received = rx.try_recv();
+        assert!(received.is_ok());
     }
 
     #[tokio::test]

@@ -11,6 +11,7 @@ use tracing_subscriber::EnvFilter;
 use hookbox::dedupe::{InMemoryRecentDedupe, LayeredDedupe};
 use hookbox::emitter::ChannelEmitter;
 use hookbox::pipeline::HookboxPipeline;
+use hookbox::traits::Emitter;
 use hookbox_postgres::{PostgresStorage, StorageDedupe};
 use hookbox_providers::{
     AdyenVerifier, BvnkVerifier, GenericHmacVerifier, StripeVerifier, TripleACryptoVerifier,
@@ -98,6 +99,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     // In production, this would be replaced with a real consumer.
     let (emitter, rx) = ChannelEmitter::new(1024);
     tokio::spawn(drain_emitter(rx));
+    let emitter: std::sync::Arc<dyn Emitter + Send + Sync> = std::sync::Arc::new(emitter);
 
     // Build pipeline and register provider verifiers from config.
     let mut builder = HookboxPipeline::builder()
@@ -264,10 +266,11 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     // Retry worker: separate emitter channel + drain task.
     let (worker_emitter, worker_rx) = ChannelEmitter::new(256);
     tokio::spawn(drain_emitter(worker_rx));
+    let worker_emitter: Box<dyn Emitter + Send + Sync> = Box::new(worker_emitter);
 
     let retry_worker = RetryWorker::new(
         PostgresStorage::new(pool.clone()),
-        Box::new(worker_emitter),
+        worker_emitter,
         Duration::from_secs(config.retry.interval_seconds),
         config.retry.max_attempts,
     );

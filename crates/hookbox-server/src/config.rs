@@ -24,6 +24,9 @@ pub struct HookboxConfig {
     /// Retry worker settings.
     #[serde(default)]
     pub retry: RetryConfig,
+    /// Emitter backend settings.
+    #[serde(default)]
+    pub emitter: EmitterConfig,
 }
 
 /// HTTP server bind and limit settings.
@@ -166,6 +169,86 @@ const fn default_max_attempts() -> i32 {
     5
 }
 
+/// Emitter backend configuration.
+#[derive(Debug, Deserialize)]
+pub struct EmitterConfig {
+    /// Which emitter backend to use: `"channel"` (default), `"kafka"`, `"nats"`, or `"sqs"`.
+    #[serde(rename = "type", default = "default_emitter_type")]
+    pub emitter_type: String,
+    /// Kafka emitter settings (required when `type = "kafka"`).
+    pub kafka: Option<KafkaEmitterConfig>,
+    /// NATS emitter settings (required when `type = "nats"`).
+    pub nats: Option<NatsEmitterConfig>,
+    /// SQS emitter settings (required when `type = "sqs"`).
+    pub sqs: Option<SqsEmitterConfig>,
+}
+
+impl Default for EmitterConfig {
+    fn default() -> Self {
+        Self {
+            emitter_type: default_emitter_type(),
+            kafka: None,
+            nats: None,
+            sqs: None,
+        }
+    }
+}
+
+fn default_emitter_type() -> String {
+    "channel".to_owned()
+}
+
+/// Kafka emitter configuration.
+#[derive(Debug, Deserialize)]
+pub struct KafkaEmitterConfig {
+    /// Comma-separated list of Kafka broker addresses (e.g. `"localhost:9092"`).
+    pub brokers: String,
+    /// Kafka topic to produce events to.
+    pub topic: String,
+    /// Kafka client identifier (default: `"hookbox"`).
+    #[serde(default = "default_kafka_client_id")]
+    pub client_id: String,
+    /// Required acknowledgements: `"all"`, `"1"`, or `"0"` (default: `"all"`).
+    #[serde(default = "default_kafka_acks")]
+    pub acks: String,
+    /// Produce timeout in milliseconds (default: 5000).
+    #[serde(default = "default_kafka_timeout")]
+    pub timeout_ms: u64,
+}
+
+fn default_kafka_client_id() -> String {
+    "hookbox".to_owned()
+}
+
+fn default_kafka_acks() -> String {
+    "all".to_owned()
+}
+
+const fn default_kafka_timeout() -> u64 {
+    5000
+}
+
+/// NATS emitter configuration.
+#[derive(Debug, Deserialize)]
+pub struct NatsEmitterConfig {
+    /// NATS server URL (e.g. `"nats://localhost:4222"`).
+    pub url: String,
+    /// NATS subject to publish events to.
+    pub subject: String,
+}
+
+/// SQS emitter configuration.
+#[derive(Debug, Deserialize)]
+pub struct SqsEmitterConfig {
+    /// Full SQS queue URL.
+    pub queue_url: String,
+    /// AWS region override (uses default region chain if `None`).
+    pub region: Option<String>,
+    /// Whether the queue is a FIFO queue (default: `false`).
+    #[serde(default)]
+    pub fifo: bool,
+}
+
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "expect is acceptable in test code")]
 mod tests {
@@ -189,6 +272,140 @@ url = "postgres://localhost/hookbox"
         assert!(config.admin.bearer_token.is_none());
         assert_eq!(config.retry.interval_seconds, 30);
         assert_eq!(config.retry.max_attempts, 5);
+        assert_eq!(config.emitter.emitter_type, "channel");
+        assert!(config.emitter.kafka.is_none());
+        assert!(config.emitter.nats.is_none());
+        assert!(config.emitter.sqs.is_none());
+    }
+
+    #[test]
+    fn parse_emitter_default() {
+        let toml_str = r#"
+[database]
+url = "postgres://localhost/hookbox"
+"#;
+        let config: HookboxConfig =
+            toml::from_str(toml_str).expect("default emitter config should parse");
+        assert_eq!(config.emitter.emitter_type, "channel");
+        assert!(config.emitter.kafka.is_none());
+        assert!(config.emitter.nats.is_none());
+        assert!(config.emitter.sqs.is_none());
+    }
+
+    #[test]
+    fn parse_emitter_kafka() {
+        let toml_str = r#"
+[database]
+url = "postgres://localhost/hookbox"
+
+[emitter]
+type = "kafka"
+
+[emitter.kafka]
+brokers = "localhost:9092"
+topic = "hookbox-events"
+"#;
+        let config: HookboxConfig =
+            toml::from_str(toml_str).expect("kafka emitter config should parse");
+        assert_eq!(config.emitter.emitter_type, "kafka");
+        let kafka = config.emitter.kafka.expect("kafka config should be present");
+        assert_eq!(kafka.brokers, "localhost:9092");
+        assert_eq!(kafka.topic, "hookbox-events");
+        assert_eq!(kafka.client_id, "hookbox");
+        assert_eq!(kafka.acks, "all");
+        assert_eq!(kafka.timeout_ms, 5000);
+    }
+
+    #[test]
+    fn parse_emitter_kafka_full() {
+        let toml_str = r#"
+[database]
+url = "postgres://localhost/hookbox"
+
+[emitter]
+type = "kafka"
+
+[emitter.kafka]
+brokers = "broker1:9092,broker2:9092"
+topic = "my-topic"
+client_id = "my-client"
+acks = "1"
+timeout_ms = 3000
+"#;
+        let config: HookboxConfig =
+            toml::from_str(toml_str).expect("full kafka emitter config should parse");
+        let kafka = config.emitter.kafka.expect("kafka config should be present");
+        assert_eq!(kafka.brokers, "broker1:9092,broker2:9092");
+        assert_eq!(kafka.topic, "my-topic");
+        assert_eq!(kafka.client_id, "my-client");
+        assert_eq!(kafka.acks, "1");
+        assert_eq!(kafka.timeout_ms, 3000);
+    }
+
+    #[test]
+    fn parse_emitter_nats() {
+        let toml_str = r#"
+[database]
+url = "postgres://localhost/hookbox"
+
+[emitter]
+type = "nats"
+
+[emitter.nats]
+url = "nats://localhost:4222"
+subject = "hookbox.events"
+"#;
+        let config: HookboxConfig =
+            toml::from_str(toml_str).expect("nats emitter config should parse");
+        assert_eq!(config.emitter.emitter_type, "nats");
+        let nats = config.emitter.nats.expect("nats config should be present");
+        assert_eq!(nats.url, "nats://localhost:4222");
+        assert_eq!(nats.subject, "hookbox.events");
+    }
+
+    #[test]
+    fn parse_emitter_sqs() {
+        let toml_str = r#"
+[database]
+url = "postgres://localhost/hookbox"
+
+[emitter]
+type = "sqs"
+
+[emitter.sqs]
+queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/hookbox-events"
+"#;
+        let config: HookboxConfig =
+            toml::from_str(toml_str).expect("sqs emitter config should parse");
+        assert_eq!(config.emitter.emitter_type, "sqs");
+        let sqs = config.emitter.sqs.expect("sqs config should be present");
+        assert_eq!(
+            sqs.queue_url,
+            "https://sqs.us-east-1.amazonaws.com/123456789012/hookbox-events"
+        );
+        assert!(sqs.region.is_none());
+        assert!(!sqs.fifo);
+    }
+
+    #[test]
+    fn parse_emitter_sqs_full() {
+        let toml_str = r#"
+[database]
+url = "postgres://localhost/hookbox"
+
+[emitter]
+type = "sqs"
+
+[emitter.sqs]
+queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/hookbox-events.fifo"
+region = "us-east-1"
+fifo = true
+"#;
+        let config: HookboxConfig =
+            toml::from_str(toml_str).expect("full sqs emitter config should parse");
+        let sqs = config.emitter.sqs.expect("sqs config should be present");
+        assert_eq!(sqs.region.as_deref(), Some("us-east-1"));
+        assert!(sqs.fifo);
     }
 
     #[test]

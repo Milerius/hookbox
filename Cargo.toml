@@ -95,6 +95,12 @@ anyhow = "1"
 # Config
 toml = "0.8.23"
 
+# Emitter backends
+rdkafka = { version = "0.36", features = ["cmake-build"] }
+async-nats = "0.38"
+aws-sdk-sqs = "1"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+
 # Testing
 reqwest = { version = "0.12", features = ["json"] }
 async-trait = "0.1"
