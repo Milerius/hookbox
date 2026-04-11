@@ -1,0 +1,447 @@
+//! In-memory route tests for all hookbox-server HTTP endpoints.
+
+#![expect(clippy::unwrap_used, reason = "unwrap is acceptable in test code")]
+
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use axum::Router;
+use http_body_util::BodyExt;
+use tower::ServiceExt;
+use uuid::Uuid;
+
+use hookbox::dedupe::InMemoryRecentDedupe;
+use hookbox::emitter::ChannelEmitter;
+use hookbox::error::StorageError;
+use hookbox::pipeline::HookboxPipeline;
+use hookbox::state::{ProcessingState, StoreResult};
+use hookbox::traits::Storage;
+use hookbox::types::{NormalizedEvent, ReceiptFilter, WebhookReceipt};
+
+use crate::AppState;
+
+// ── Test helpers ─────────────────────────────────────────────────────
+
+/// In-memory storage implementation for route tests.
+struct MemoryStorage {
+    receipts: Mutex<Vec<WebhookReceipt>>,
+}
+
+impl MemoryStorage {
+    fn new() -> Self {
+        Self {
+            receipts: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl Storage for MemoryStorage {
+    async fn store(&self, receipt: &WebhookReceipt) -> Result<StoreResult, StorageError> {
+        let mut receipts = self
+            .receipts
+            .lock()
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        if let Some(existing) = receipts.iter().find(|r| r.dedupe_key == receipt.dedupe_key) {
+            return Ok(StoreResult::Duplicate {
+                existing_id: existing.receipt_id,
+            });
+        }
+        receipts.push(receipt.clone());
+        Ok(StoreResult::Stored)
+    }
+
+    async fn get(&self, id: Uuid) -> Result<Option<WebhookReceipt>, StorageError> {
+        let receipts = self
+            .receipts
+            .lock()
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        Ok(receipts.iter().find(|r| r.receipt_id.0 == id).cloned())
+    }
+
+    async fn update_state(
+        &self,
+        id: Uuid,
+        state: ProcessingState,
+        error: Option<&str>,
+    ) -> Result<(), StorageError> {
+        let mut receipts = self
+            .receipts
+            .lock()
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        if let Some(receipt) = receipts.iter_mut().find(|r| r.receipt_id.0 == id) {
+            receipt.processing_state = state;
+            receipt.last_error = error.map(String::from);
+        }
+        Ok(())
+    }
+
+    async fn query(&self, filter: ReceiptFilter) -> Result<Vec<WebhookReceipt>, StorageError> {
+        let receipts = self
+            .receipts
+            .lock()
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        let filtered = receipts
+            .iter()
+            .filter(|r| {
+                if let Some(ref state) = filter.processing_state {
+                    if r.processing_state != *state {
+                        return false;
+                    }
+                }
+                if let Some(ref provider) = filter.provider_name {
+                    if r.provider_name != *provider {
+                        return false;
+                    }
+                }
+                true
+            })
+            .cloned()
+            .collect();
+        Ok(filtered)
+    }
+}
+
+/// Build a test app with in-memory backends. Returns the router and a receiver
+/// that must be kept alive for the duration of the test (dropping it causes
+/// emit failures).
+fn build_test_app(
+    admin_token: Option<String>,
+) -> (
+    Router,
+    tokio::sync::mpsc::Receiver<NormalizedEvent>,
+) {
+    let (emitter, receiver) = ChannelEmitter::new(64);
+    let pipeline = HookboxPipeline::<MemoryStorage, InMemoryRecentDedupe, ChannelEmitter>::builder()
+        .storage(MemoryStorage::new())
+        .dedupe(InMemoryRecentDedupe::new(1000))
+        .emitter(emitter)
+        .build();
+
+    let state = Arc::new(AppState {
+        pipeline,
+        pool: None,
+        admin_token,
+        prometheus: None,
+    });
+
+    let router = crate::build_router(state, 1024 * 1024);
+    (router, receiver)
+}
+
+/// Extract the response body as a JSON value.
+async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&body).unwrap()
+}
+
+// ── Ingest tests ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn ingest_valid_webhook_returns_200_accepted() {
+    let (app, _rx) = build_test_app(None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/webhooks/test")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"event":"test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["status"], "accepted");
+    assert!(json["receipt_id"].is_string());
+}
+
+#[tokio::test]
+async fn ingest_duplicate_returns_200_duplicate() {
+    let (app, _rx) = build_test_app(None);
+
+    // First request.
+    let resp1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/webhooks/test")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"event":"dup"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp1.status(), StatusCode::OK);
+    let json1 = body_json(resp1).await;
+    assert_eq!(json1["status"], "accepted");
+
+    // Second request with the same body and provider.
+    let resp2 = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/webhooks/test")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"event":"dup"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), StatusCode::OK);
+    let json2 = body_json(resp2).await;
+    assert_eq!(json2["status"], "duplicate");
+}
+
+#[tokio::test]
+async fn ingest_no_verifier_returns_200_accepted() {
+    let (app, _rx) = build_test_app(None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/webhooks/unknown")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"event":"no-verifier"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["status"], "accepted");
+}
+
+// ── Health tests ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn healthz_returns_200() {
+    let (app, _rx) = build_test_app(None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn readyz_without_pool_returns_503() {
+    let (app, _rx) = build_test_app(None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/readyz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+// ── Admin tests (without auth) ───────────────────────────────────────
+
+#[tokio::test]
+async fn list_receipts_empty() {
+    let (app, _rx) = build_test_app(None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/receipts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert!(json.is_array());
+    assert_eq!(json.as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn list_receipts_after_ingest() {
+    let (app, _rx) = build_test_app(None);
+
+    // Ingest a webhook first.
+    let ingest_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/webhooks/test")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"event":"listed"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ingest_resp.status(), StatusCode::OK);
+
+    // List receipts.
+    let list_resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/receipts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let json = body_json(list_resp).await;
+    assert!(json.is_array());
+    assert!(
+        !json.as_array().unwrap().is_empty(),
+        "receipts should not be empty after ingest"
+    );
+}
+
+#[tokio::test]
+async fn get_receipt_not_found() {
+    let (app, _rx) = build_test_app(None);
+    let random_id = Uuid::new_v4();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/receipts/{random_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn list_dlq_empty() {
+    let (app, _rx) = build_test_app(None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/dlq")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert!(json.is_array());
+    assert_eq!(json.as_array().unwrap().len(), 0);
+}
+
+// ── Admin auth tests ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn admin_missing_token_returns_401() {
+    let (app, _rx) = build_test_app(Some("secret".to_owned()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/receipts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_wrong_token_returns_401() {
+    let (app, _rx) = build_test_app(Some("secret".to_owned()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/receipts")
+                .header("authorization", "Bearer wrong-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_correct_token_returns_200() {
+    let (app, _rx) = build_test_app(Some("secret".to_owned()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/receipts")
+                .header("authorization", "Bearer secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn admin_no_token_configured_allows_all() {
+    let (app, _rx) = build_test_app(None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/receipts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+// ── Metrics tests ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn metrics_endpoint_returns_200() {
+    let (app, _rx) = build_test_app(None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}

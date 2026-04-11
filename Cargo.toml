@@ -94,6 +94,8 @@ anyhow = "1"
 toml = "0.8.23"
 
 # Testing
+async-trait = "0.1"
+http-body-util = "0.1"
 bolero = "0.13"
 cucumber = "0.22"
 futures = "0.3"

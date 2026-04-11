@@ -1242,12 +1242,14 @@ dependencies = [
 name = "hookbox-server"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "bytes",
  "chrono",
  "hookbox",
  "hookbox-postgres",
  "hookbox-providers",
+ "http-body-util",
  "metrics",
  "metrics-exporter-prometheus",
  "serde",
