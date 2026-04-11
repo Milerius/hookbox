@@ -19,11 +19,20 @@ Coverage branch: cargo llvm-cov --all-features --branch --html
 Kani:           cargo kani -p hookbox-verify
 Fuzz:           cargo +nightly fuzz run <target>
 Doc:            cargo doc --no-deps --all-features --open
+Metrics:        Prometheus metrics recorded in pipeline, exposed at GET /metrics
+Retry worker:   Spawned by `hookbox serve`, configured via [retry] in hookbox.toml
+CLI commands:   hookbox receipts list/inspect/search, hookbox replay id/failed, hookbox dlq list/inspect/retry
 ```
 
 ## Architecture
 
 See `docs/superpowers/specs/2026-04-10-hookbox-design.md` for the full design specification.
+
+### Background Worker
+
+A retry worker runs alongside the server, periodically retrying EmitFailed
+receipts. After max_attempts failures, receipts are promoted to DeadLettered.
+Configured via [retry] in hookbox.toml.
 
 ### Ingest Pipeline
 

@@ -35,48 +35,47 @@ DATABASE_URL=postgres://localhost/hookbox hookbox serve
 ### Inspecting Receipts
 
 ```bash
-# List recent receipts from Stripe
-hookbox receipts list --provider stripe --limit 20
-
-# List failed receipts
-hookbox receipts list --provider stripe --state failed
+# List failed receipts for a provider
+hookbox receipts list --database-url postgres://localhost/hookbox --provider stripe --state failed
 
 # Inspect a specific receipt (full payload, headers, verification details)
-hookbox receipts inspect 550e8400-e29b-41d4-a716-446655440000
+hookbox receipts inspect --database-url postgres://localhost/hookbox 550e8400-e29b-41d4-a716-446655440000
 
 # Search by business reference
-hookbox receipts search --ref "pay_abc123"
+hookbox receipts search --database-url postgres://localhost/hookbox --external-ref pay_123
 ```
 
 ### Replay
 
 ```bash
-# Re-emit a single receipt
-hookbox replay 550e8400-e29b-41d4-a716-446655440000
+# Re-emit a single receipt by ID
+hookbox replay id --database-url postgres://localhost/hookbox 550e8400-e29b-41d4-a716-446655440000
 
 # Re-emit all failed Stripe receipts from the last hour
-hookbox replay failed --provider stripe --since 1h
+hookbox replay failed --database-url postgres://localhost/hookbox --since 1h --provider stripe
 ```
 
 ### Dead Letter Queue
 
 ```bash
-# List all DLQ entries
-hookbox dlq list
-
-# List DLQ entries for a specific provider
-hookbox dlq list --provider stripe
+# List DLQ entries for a provider
+hookbox dlq list --database-url postgres://localhost/hookbox --provider stripe
 
 # Inspect a DLQ entry
-hookbox dlq inspect 550e8400-e29b-41d4-a716-446655440000
+hookbox dlq inspect --database-url postgres://localhost/hookbox 550e8400-e29b-41d4-a716-446655440000
 
 # Retry a dead-lettered receipt
-hookbox dlq retry 550e8400-e29b-41d4-a716-446655440000
+hookbox dlq retry --database-url postgres://localhost/hookbox 550e8400-e29b-41d4-a716-446655440000
 ```
 
 ## Connection
 
-The CLI connects to the hookbox database directly for read operations (list, inspect, search) and to the admin API for write operations (replay, retry). Connection details come from `--config` or environment variables.
+All commands accept `--database-url` for direct database access. Alternatively, set the `DATABASE_URL` environment variable:
+
+```bash
+export DATABASE_URL=postgres://localhost/hookbox
+hookbox receipts list --provider stripe --state failed
+```
 
 ## License
 
