@@ -11,6 +11,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
+use metrics_exporter_prometheus::PrometheusHandle;
 use sqlx::PgPool;
 
 use hookbox::dedupe::{InMemoryRecentDedupe, LayeredDedupe};
@@ -31,6 +32,8 @@ pub struct AppState {
     pub pool: PgPool,
     /// Optional bearer token for admin API authentication.
     pub admin_token: Option<String>,
+    /// Optional Prometheus metrics handle for the `/metrics` scrape endpoint.
+    pub prometheus: Option<PrometheusHandle>,
 }
 
 /// Build the Axum [`Router`] with all hookbox routes wired to the given state.
@@ -49,6 +52,7 @@ pub fn build_router(state: Arc<AppState>, body_limit: usize) -> Router {
             post(routes::admin::replay_receipt),
         )
         .route("/api/dlq", get(routes::admin::list_dlq))
+        .route("/metrics", get(routes::health::metrics))
         .with_state(state)
         .layer(DefaultBodyLimit::max(body_limit))
 }

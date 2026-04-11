@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
+use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -42,6 +43,12 @@ pub fn run(config_path: &str) -> anyhow::Result<()> {
 
 /// Async server startup: tracing, database, migrations, pipeline, and HTTP serve.
 async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
+    // Install the Prometheus metrics recorder so that metrics::counter! /
+    // metrics::histogram! macros emit real data instead of no-ops.
+    let prometheus = PrometheusBuilder::new()
+        .install_recorder()
+        .context("failed to install Prometheus recorder")?;
+
     // Initialise JSON tracing with an env-filter defaulting to INFO.
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()
@@ -112,6 +119,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
         pipeline,
         pool,
         admin_token: config.admin.bearer_token.clone(),
+        prometheus: Some(prometheus),
     });
 
     let router = build_router(state, config.server.body_limit);

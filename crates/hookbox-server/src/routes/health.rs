@@ -23,3 +23,14 @@ pub async fn readyz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         Ok(Err(_)) | Err(_) => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
+
+/// `GET /metrics` — Prometheus scrape endpoint.
+///
+/// Returns the current Prometheus metrics in text exposition format if a
+/// recorder was installed, or a comment line indicating no recorder is active.
+pub async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match &state.prometheus {
+        Some(handle) => handle.render(),
+        None => String::from("# no prometheus recorder installed\n"),
+    }
+}
