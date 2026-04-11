@@ -12,6 +12,7 @@
 //! [`HookboxPipeline::builder()`].
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use bytes::Bytes;
 use chrono::Utc;
@@ -86,6 +87,10 @@ where
         body: Bytes,
     ) -> Result<IngestResult, IngestError> {
         // ── Stage 1: Receive ──────────────────────────────────────────
+        metrics::counter!("hookbox_webhooks_received_total", "provider" => provider.to_owned())
+            .increment(1);
+        let ingest_start = Instant::now();
+
         let receipt_id = ReceiptId::new();
         let payload_hash = compute_payload_hash(&body);
         let dedupe_key = format!("{provider}:{payload_hash}");
@@ -103,11 +108,51 @@ where
                             %receipt_id, %provider, reason = %reason,
                             "webhook verification failed"
                         );
+                        metrics::counter!(
+                            "hookbox_verification_results_total",
+                            "provider" => provider.to_owned(),
+                            "status" => "failed",
+                            "reason" => reason.clone()
+                        )
+                        .increment(1);
+                        metrics::counter!(
+                            "hookbox_ingest_results_total",
+                            "provider" => provider.to_owned(),
+                            "result" => "verification_failed"
+                        )
+                        .increment(1);
+                        metrics::histogram!("hookbox_ingest_duration_seconds")
+                            .record(ingest_start.elapsed().as_secs_f64());
                         return Ok(IngestResult::VerificationFailed { reason });
                     }
-                    status => (status, result.reason),
+                    status => {
+                        let status_label = match status {
+                            VerificationStatus::Verified => "verified",
+                            VerificationStatus::Skipped => "skipped",
+                            VerificationStatus::Failed => "failed",
+                        };
+                        let reason_label = result
+                            .reason
+                            .clone()
+                            .unwrap_or_else(|| "none".to_owned());
+                        metrics::counter!(
+                            "hookbox_verification_results_total",
+                            "provider" => provider.to_owned(),
+                            "status" => status_label,
+                            "reason" => reason_label
+                        )
+                        .increment(1);
+                        (status, result.reason)
+                    }
                 }
             } else {
+                metrics::counter!(
+                    "hookbox_verification_results_total",
+                    "provider" => provider.to_owned(),
+                    "status" => "skipped",
+                    "reason" => "no_verifier_configured"
+                )
+                .increment(1);
                 (
                     VerificationStatus::Skipped,
                     Some("no_verifier_configured".to_owned()),
@@ -115,7 +160,31 @@ where
             };
 
         // ── Stage 3: Advisory dedupe ──────────────────────────────────
-        let advisory = self.dedupe.check(&dedupe_key, &payload_hash).await?;
+        let advisory = match self.dedupe.check(&dedupe_key, &payload_hash).await {
+            Ok(decision) => decision,
+            Err(e) => {
+                metrics::counter!(
+                    "hookbox_ingest_results_total",
+                    "provider" => provider.to_owned(),
+                    "result" => "dedupe_failed"
+                )
+                .increment(1);
+                metrics::histogram!("hookbox_ingest_duration_seconds")
+                    .record(ingest_start.elapsed().as_secs_f64());
+                return Err(e.into());
+            }
+        };
+        let dedupe_label = match advisory {
+            DedupeDecision::New => "new",
+            DedupeDecision::Duplicate => "duplicate",
+            DedupeDecision::Conflict => "conflict",
+        };
+        metrics::counter!(
+            "hookbox_dedupe_checks_total",
+            "provider" => provider.to_owned(),
+            "result" => dedupe_label
+        )
+        .increment(1);
         if advisory == DedupeDecision::Duplicate {
             tracing::info!(
                 %receipt_id, %provider, %dedupe_key,
@@ -150,13 +219,37 @@ where
         };
 
         // ── (continued) Store durably ────────────────────────────────
-        let store_result = self.storage.store(&receipt).await?;
+        let store_start = Instant::now();
+        let store_result = match self.storage.store(&receipt).await {
+            Ok(r) => r,
+            Err(e) => {
+                metrics::counter!(
+                    "hookbox_ingest_results_total",
+                    "provider" => provider.to_owned(),
+                    "result" => "store_failed"
+                )
+                .increment(1);
+                metrics::histogram!("hookbox_ingest_duration_seconds")
+                    .record(ingest_start.elapsed().as_secs_f64());
+                return Err(e.into());
+            }
+        };
+        metrics::histogram!("hookbox_store_duration_seconds")
+            .record(store_start.elapsed().as_secs_f64());
         match store_result {
             crate::state::StoreResult::Duplicate { existing_id } => {
                 tracing::info!(
                     %receipt_id, %existing_id, %provider,
                     "duplicate receipt detected by storage"
                 );
+                metrics::counter!(
+                    "hookbox_ingest_results_total",
+                    "provider" => provider.to_owned(),
+                    "result" => "duplicate"
+                )
+                .increment(1);
+                metrics::histogram!("hookbox_ingest_duration_seconds")
+                    .record(ingest_start.elapsed().as_secs_f64());
                 return Ok(IngestResult::Duplicate { existing_id });
             }
             crate::state::StoreResult::Stored => {
@@ -181,7 +274,20 @@ where
             metadata: json!({}),
         };
 
-        if let Err(e) = self.emitter.emit(&event).await {
+        let emit_start = Instant::now();
+        let emit_result = self.emitter.emit(&event).await;
+        metrics::histogram!("hookbox_emit_duration_seconds")
+            .record(emit_start.elapsed().as_secs_f64());
+
+        let emit_label = if emit_result.is_ok() { "success" } else { "failure" };
+        metrics::counter!(
+            "hookbox_emit_results_total",
+            "provider" => provider.to_owned(),
+            "result" => emit_label
+        )
+        .increment(1);
+
+        if let Err(e) = emit_result {
             tracing::warn!(%receipt_id, error = %e, "emit failed, receipt remains accepted");
             let _ = self
                 .storage
@@ -199,6 +305,14 @@ where
         }
 
         tracing::info!(%receipt_id, %provider, "webhook accepted");
+        metrics::counter!(
+            "hookbox_ingest_results_total",
+            "provider" => provider.to_owned(),
+            "result" => "accepted"
+        )
+        .increment(1);
+        metrics::histogram!("hookbox_ingest_duration_seconds")
+            .record(ingest_start.elapsed().as_secs_f64());
         Ok(IngestResult::Accepted { receipt_id })
     }
 }
