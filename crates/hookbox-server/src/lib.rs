@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod routes;
+pub mod worker;
 
 use std::sync::Arc;
 

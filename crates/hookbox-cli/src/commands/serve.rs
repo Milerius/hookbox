@@ -16,6 +16,7 @@ use hookbox_providers::{GenericHmacVerifier, StripeVerifier};
 use hookbox_server::AppState;
 use hookbox_server::build_router;
 use hookbox_server::config::HookboxConfig;
+use hookbox_server::worker::RetryWorker;
 
 /// Run the `serve` subcommand.
 ///
@@ -114,6 +115,18 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     }
 
     let pipeline = builder.build();
+
+    // Retry worker: separate emitter channel + drain task.
+    let (worker_emitter, worker_rx) = ChannelEmitter::new(256);
+    tokio::spawn(drain_emitter(worker_rx));
+
+    let retry_worker = RetryWorker::new(
+        PostgresStorage::new(pool.clone()),
+        Box::new(worker_emitter),
+        Duration::from_secs(config.retry.interval_seconds),
+        config.retry.max_attempts,
+    );
+    let _retry_handle = retry_worker.spawn();
 
     let state = Arc::new(AppState {
         pipeline,
