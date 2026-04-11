@@ -23,6 +23,7 @@ use crate::error::IngestError;
 use crate::hash::compute_payload_hash;
 use crate::state::{DedupeDecision, IngestResult, ProcessingState, ReceiptId, VerificationStatus};
 use crate::traits::{DedupeStrategy, Emitter, SignatureVerifier, Storage};
+use crate::transitions;
 use crate::types::{NormalizedEvent, WebhookReceipt};
 
 /// Core pipeline that orchestrates webhook ingestion through five stages:
@@ -119,7 +120,7 @@ where
                     metrics::counter!(
                         "hookbox_ingest_results_total",
                         "provider" => provider.to_owned(),
-                        "result" => "verification_failed"
+                        "result" => transitions::LABEL_VERIFICATION_FAILED
                     )
                     .increment(1);
                     metrics::histogram!("hookbox_ingest_duration_seconds")
@@ -170,7 +171,7 @@ where
                 metrics::counter!(
                     "hookbox_ingest_results_total",
                     "provider" => provider.to_owned(),
-                    "result" => "dedupe_failed"
+                    "result" => transitions::LABEL_DEDUPE_FAILED
                 )
                 .increment(1);
                 metrics::histogram!("hookbox_ingest_duration_seconds")
@@ -178,15 +179,10 @@ where
                 return Err(e.into());
             }
         };
-        let dedupe_label = match advisory {
-            DedupeDecision::New => "new",
-            DedupeDecision::Duplicate => "duplicate",
-            DedupeDecision::Conflict => "conflict",
-        };
         metrics::counter!(
             "hookbox_dedupe_checks_total",
             "provider" => provider.to_owned(),
-            "result" => dedupe_label
+            "result" => transitions::dedupe_decision_label(advisory)
         )
         .increment(1);
         if advisory == DedupeDecision::Duplicate {
@@ -230,7 +226,7 @@ where
                 metrics::counter!(
                     "hookbox_ingest_results_total",
                     "provider" => provider.to_owned(),
-                    "result" => "store_failed"
+                    "result" => transitions::LABEL_STORE_FAILED
                 )
                 .increment(1);
                 metrics::histogram!("hookbox_ingest_duration_seconds")
@@ -249,7 +245,7 @@ where
                 metrics::counter!(
                     "hookbox_ingest_results_total",
                     "provider" => provider.to_owned(),
-                    "result" => "duplicate"
+                    "result" => transitions::LABEL_DUPLICATE
                 )
                 .increment(1);
                 metrics::histogram!("hookbox_ingest_duration_seconds")
@@ -316,7 +312,7 @@ where
         metrics::counter!(
             "hookbox_ingest_results_total",
             "provider" => provider.to_owned(),
-            "result" => "accepted"
+            "result" => transitions::LABEL_ACCEPTED
         )
         .increment(1);
         metrics::histogram!("hookbox_ingest_duration_seconds")
