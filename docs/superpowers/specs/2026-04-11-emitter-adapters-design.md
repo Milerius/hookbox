@@ -26,28 +26,46 @@ One emitter is configured per hookbox server instance via `[emitter]` in `hookbo
 
 All emitters serialize `NormalizedEvent` as JSON via `serde_json::to_vec`. No alternative formats in this pass.
 
-### Blanket impl for Box<dyn Emitter>
+### Shared ownership via Arc<dyn Emitter>
 
-Add to `hookbox` core:
+Both `HookboxPipeline` and `RetryWorker` need to hold a reference to the same emitter. A single `Box<dyn Emitter>` cannot be shared between two owners. The solution is `Arc<dyn Emitter + Send + Sync>`.
+
+Add blanket impls to `hookbox` core for both smart pointer types:
 
 ```rust
 #[async_trait]
-impl<T: Emitter + ?Sized> Emitter for Box<T> {
+impl<T: Emitter + ?Sized + Send + Sync> Emitter for Box<T> {
+    async fn emit(&self, event: &NormalizedEvent) -> Result<(), EmitError> {
+        (**self).emit(event).await
+    }
+}
+
+#[async_trait]
+impl<T: Emitter + ?Sized + Send + Sync> Emitter for Arc<T> {
     async fn emit(&self, event: &NormalizedEvent) -> Result<(), EmitError> {
         (**self).emit(event).await
     }
 }
 ```
 
-This allows `Box<dyn Emitter + Send + Sync>` to be used as the emitter type in the pipeline and retry worker, enabling config-driven emitter selection at runtime.
+In serve.rs, construct the emitter once and distribute clones:
+
+```rust
+let emitter: Arc<dyn Emitter + Send + Sync> = Arc::new(/* constructed emitter */);
+let pipeline_emitter = Arc::clone(&emitter);
+let worker_emitter = Arc::clone(&emitter);
+```
+
+This allows `Arc<dyn Emitter + Send + Sync>` to satisfy `E: Emitter` for both the pipeline and the retry worker without moving or copying the underlying emitter.
 
 ### Message key
 
 All emitters use `receipt_id` as the message key/ID for:
 - Partition affinity (Kafka, Pulsar)
-- Deduplication (SQS FIFO)
-- Ordering (Redis Streams)
+- Deduplication (SQS FIFO, when FIFO queue is configured)
 - Traceability (all backends)
+
+Note: Redis Streams ordering is controlled by the server-assigned entry ID (the `*` auto-ID in `XADD`), not by `receipt_id`. The `receipt_id` is stored as a field within the stream entry for traceability only.
 
 ---
 
@@ -118,7 +136,7 @@ timeout_ms = 5000              # optional
 
 ### Config structs
 
-Add `EmitterConfig` to `hookbox-server/src/config.rs`:
+All backend config structs are defined in `hookbox-server/src/config.rs`. They are plain data structs with `serde` derives — no logic, no trait impls. The adapter crates do not depend on server config types; they accept primitive constructor arguments. `serve.rs` extracts fields from the config structs and passes them to each adapter's constructor. This avoids any circular dependency.
 
 ```rust
 #[derive(Debug, Deserialize)]
@@ -133,26 +151,70 @@ pub struct EmitterConfig {
     pub pulsar: Option<PulsarEmitterConfig>,
     pub grpc: Option<GrpcEmitterConfig>,
 }
+
+fn default_emitter_type() -> String {
+    "channel".to_string()
+}
 ```
 
-Each backend config struct lives in its own crate and is re-exported or duplicated in the server config. The simplest approach: define them in the server crate since it owns the TOML parsing.
+All 7 new adapter crates must be added to:
+1. The `[workspace]` `members` array in the root `Cargo.toml`
+2. The `[dependencies]` section of `hookbox-cli/Cargo.toml` (hookbox-cli, not hookbox-server, constructs and owns the emitter)
+
+**Dependency chain:** `hookbox-cli` depends on each adapter crate. `hookbox-server` owns config parsing. Adapter crates depend only on `hookbox` core. No circular dependencies.
 
 ### Wiring in serve.rs
 
+Unknown `type` values must be rejected with an error — they must not silently fall back to a dev drain in production. When `[emitter]` section is omitted entirely, the default is `"channel"` (via `default_emitter_type`). Each selected backend must have its sub-config present and be validated before construction.
+
 ```rust
-let emitter: Box<dyn Emitter + Send + Sync> = match config.emitter.emitter_type.as_str() {
-    "kafka" => { /* construct KafkaEmitter */ }
-    "nats" => { /* construct NatsEmitter */ }
-    "sqs" => { /* construct SqsEmitter */ }
-    "redis" => { /* construct RedisEmitter */ }
-    "rabbitmq" => { /* construct RabbitmqEmitter */ }
-    "pulsar" => { /* construct PulsarEmitter */ }
-    "grpc" => { /* construct GrpcEmitter */ }
-    "channel" | _ => { /* existing ChannelEmitter + drain task */ }
+let emitter: Arc<dyn Emitter + Send + Sync> = match config.emitter.emitter_type.as_str() {
+    "kafka" => {
+        let cfg = config.emitter.kafka.as_ref()
+            .ok_or_else(|| anyhow!("[emitter.kafka] section required when type = \"kafka\""))?;
+        Arc::new(KafkaEmitter::new(/* fields from cfg */)?)
+    }
+    "nats" => {
+        let cfg = config.emitter.nats.as_ref()
+            .ok_or_else(|| anyhow!("[emitter.nats] section required when type = \"nats\""))?;
+        Arc::new(NatsEmitter::new(/* fields from cfg */).await?)
+    }
+    "sqs" => {
+        let cfg = config.emitter.sqs.as_ref()
+            .ok_or_else(|| anyhow!("[emitter.sqs] section required when type = \"sqs\""))?;
+        Arc::new(SqsEmitter::new(/* fields from cfg */).await?)
+    }
+    "redis" => {
+        let cfg = config.emitter.redis.as_ref()
+            .ok_or_else(|| anyhow!("[emitter.redis] section required when type = \"redis\""))?;
+        Arc::new(RedisEmitter::new(/* fields from cfg */)?)
+    }
+    "rabbitmq" => {
+        let cfg = config.emitter.rabbitmq.as_ref()
+            .ok_or_else(|| anyhow!("[emitter.rabbitmq] section required when type = \"rabbitmq\""))?;
+        Arc::new(RabbitmqEmitter::new(/* fields from cfg */).await?)
+    }
+    "pulsar" => {
+        let cfg = config.emitter.pulsar.as_ref()
+            .ok_or_else(|| anyhow!("[emitter.pulsar] section required when type = \"pulsar\""))?;
+        Arc::new(PulsarEmitter::new(/* fields from cfg */).await?)
+    }
+    "grpc" => {
+        let cfg = config.emitter.grpc.as_ref()
+            .ok_or_else(|| anyhow!("[emitter.grpc] section required when type = \"grpc\""))?;
+        Arc::new(GrpcEmitter::new(/* fields from cfg */).await?)
+    }
+    "channel" => Arc::new(ChannelEmitter::new(/* spawn drain task */)),
+    other => bail!("unknown emitter type {:?}; valid values: kafka, nats, sqs, redis, rabbitmq, pulsar, grpc, channel", other),
 };
+
+let pipeline_emitter = Arc::clone(&emitter);
+let worker_emitter = Arc::clone(&emitter);
 ```
 
-The pipeline and worker both receive this `Box<dyn Emitter>`.
+The pipeline and worker each receive an `Arc::clone` of the shared emitter.
+
+**Note:** `ServerAppState` alias must be updated from `ChannelEmitter` to `Arc<dyn Emitter + Send + Sync>` to support runtime emitter selection.
 
 ---
 
@@ -180,17 +242,30 @@ The pipeline and worker both receive this `Box<dyn Emitter>`.
 
 - **Crate dep**: `aws-sdk-sqs` (via `aws-config` for credential resolution)
 - **Client**: `aws_sdk_sqs::Client::new(&config)`
-- **Send**: `client.send_message().queue_url(url).message_body(json).message_group_id(provider).message_deduplication_id(receipt_id)`
-- **FIFO support**: `MessageGroupId` = provider name, `MessageDeduplicationId` = receipt_id
+- **Send (standard queue)**: `client.send_message().queue_url(url).message_body(json)`
+- **Send (FIFO queue)**: additionally set `.message_group_id(provider_name).message_deduplication_id(receipt_id.to_string())`
+- **FIFO support**: controlled by the `fifo` config field (default: `false`). `MessageGroupId` and `MessageDeduplicationId` are only set when `fifo = true`. Standard queues reject these fields and must not receive them.
 - **Region**: from config or AWS defaults
 - **Errors**: SDK errors → `EmitError::Downstream`
+
+Config additions:
+
+```toml
+[emitter.sqs]
+queue_url = "https://sqs.us-east-1.amazonaws.com/123456789/hookbox-events"
+region = "us-east-1"
+fifo = false   # set to true for .fifo queues; enables MessageGroupId + MessageDeduplicationId
+```
 
 ### Redis Streams (`hookbox-emitter-redis`)
 
 - **Crate dep**: `redis = { version = "0.27", features = ["aio", "tokio-comp"] }`
 - **Connection**: `redis::Client::open(url)` → `get_multiplexed_tokio_connection()`
-- **Command**: `XADD stream MAXLEN ~ maxlen * receipt_id json_payload`
-- **Fields**: `receipt_id`, `provider`, `event_type`, `payload` (JSON)
+- **Command**: `XADD stream [MAXLEN ~ maxlen] * field1 value1 field2 value2 ...`
+  - The `*` auto-ID instructs Redis to assign a monotonic entry ID (millisecond timestamp + sequence). hookbox does not control ordering — Redis stream ordering is by server-assigned entry ID.
+  - Example: `XADD hookbox:events MAXLEN ~ 10000 * receipt_id <uuid> provider stripe event_type charge.succeeded payload <json>`
+- **Fields stored per entry**: `receipt_id` (for traceability), `provider`, `event_type`, `payload` (JSON-encoded `NormalizedEvent`)
+- **Ordering**: determined by Redis entry ID (`*`), not by `receipt_id`. `receipt_id` is stored as a field for lookup and traceability only, not for ordering.
 - **Trimming**: approximate MAXLEN from config (default: no trim)
 - **Errors**: connection/command errors → `EmitError::Downstream`
 
@@ -198,10 +273,23 @@ The pipeline and worker both receive this `Box<dyn Emitter>`.
 
 - **Crate dep**: `lapin = "2"`
 - **Connection**: `Connection::connect(url, ConnectionProperties::default().with_tokio())`
-- **Channel**: create channel, declare exchange if needed
+- **Channel**: create channel, then publish directly — hookbox does **not** auto-declare exchanges
 - **Publish**: `channel.basic_publish(exchange, routing_key, options, payload, properties)`
 - **Properties**: `content_type = "application/json"`, `delivery_mode = 2` (persistent), `message_id = receipt_id`
+- **Exchange lifecycle**: the exchange must pre-exist before hookbox starts. Use RabbitMQ Management UI or CLI to create it. hookbox will return `EmitError::Downstream` if the exchange does not exist.
 - **Errors**: connection/publish errors → `EmitError::Downstream`
+
+Config additions:
+
+```toml
+[emitter.rabbitmq]
+url = "amqp://guest:guest@localhost:5672"
+exchange = "hookbox"
+routing_key = "events"
+# exchange_type = "direct"  # documentation only; hookbox does not declare the exchange.
+                             # hookbox assumes the exchange already exists.
+                             # Use RabbitMQ management to create it before starting hookbox.
+```
 
 ### Apache Pulsar (`hookbox-emitter-pulsar`)
 
@@ -214,6 +302,7 @@ The pipeline and worker both receive this `Box<dyn Emitter>`.
 ### gRPC (`hookbox-emitter-grpc`)
 
 - **Crate deps**: `tonic = "0.12"`, `prost = "0.13"`, `tonic-build = "0.12"` (build dep)
+- **Wire format**: protobuf (this is the one exception to the JSON-only rule — gRPC uses protobuf over the wire by design). The JSON-only serialization rule applies to message-broker emitters (Kafka, NATS, SQS, Redis, RabbitMQ, Pulsar).
 - **Proto**: `proto/hookbox_event.proto` defined by hookbox:
 
 ```protobuf
@@ -225,10 +314,10 @@ message WebhookEvent {
   string provider_name = 2;
   optional string event_type = 3;
   optional string external_reference = 4;
-  optional string parsed_payload = 5;
+  optional string parsed_payload = 5;   // JSON-encoded string (serde_json::Value serialized to String)
   string payload_hash = 6;
   string received_at = 7;
-  string metadata = 8;
+  string metadata = 8;                  // JSON-encoded string (serde_json::Value serialized to String)
 }
 
 message EmitRequest {
@@ -245,9 +334,11 @@ service HookboxEmitter {
 }
 ```
 
+- **JSON fields in proto**: `parsed_payload` and `metadata` are `serde_json::Value` in Rust but `string` in proto. They are JSON-encoded strings (i.e., the `serde_json::Value` is serialized to a JSON string, then placed in the proto string field). This double-encoding is expected and standard for flexible schemas in protobuf when a schema registry is not used.
 - **Client**: `HookboxEmitterClient::connect(endpoint).await`
 - **Call**: `client.emit(EmitRequest { event }).await`
 - **Timeout**: configurable (default: 5s)
+- **Response mapping**: `EmitResponse { success: false, error }` → `EmitError::Downstream(error.unwrap_or_default())`
 - **Errors**: tonic `Status` → `EmitError::Downstream`, timeout → `EmitError::Timeout`
 
 ---
@@ -256,10 +347,18 @@ service HookboxEmitter {
 
 ### `hookbox` core (`crates/hookbox/src/emitter.rs`)
 
-Add blanket impl:
+Add blanket impls for both `Box<T>` and `Arc<T>`:
+
 ```rust
 #[async_trait]
-impl<T: Emitter + ?Sized> Emitter for Box<T> {
+impl<T: Emitter + ?Sized + Send + Sync> Emitter for Box<T> {
+    async fn emit(&self, event: &NormalizedEvent) -> Result<(), EmitError> {
+        (**self).emit(event).await
+    }
+}
+
+#[async_trait]
+impl<T: Emitter + ?Sized + Send + Sync> Emitter for Arc<T> {
     async fn emit(&self, event: &NormalizedEvent) -> Result<(), EmitError> {
         (**self).emit(event).await
     }
@@ -268,21 +367,19 @@ impl<T: Emitter + ?Sized> Emitter for Box<T> {
 
 ### `hookbox-server` config
 
-Add `EmitterConfig` with `emitter_type` + optional backend sub-configs.
-Add `#[serde(default)]` to `HookboxConfig` for `emitter` field.
+Add `EmitterConfig` with `emitter_type` + optional backend sub-configs (all structs in `hookbox-server/src/config.rs`).
+Add `#[serde(default)]` to `HookboxConfig` for `emitter` field so omitting `[emitter]` defaults to `type = "channel"`.
 
 ### `hookbox-cli` serve.rs
 
 Replace hardcoded `ChannelEmitter` with config-driven emitter construction.
-Both pipeline and worker receive `Box<dyn Emitter + Send + Sync>`.
+Construct one `Arc<dyn Emitter + Send + Sync>` and distribute `Arc::clone`s to the pipeline and the retry worker.
 
 ### `AppState` and pipeline generics
 
-Currently `AppState` is generic over `E: Emitter`. With `Box<dyn Emitter>`:
-- Either keep generics and use `Box<dyn Emitter + Send + Sync>` as the concrete `E`
-- Or simplify to store `Box<dyn Emitter + Send + Sync>` directly
-
-The blanket impl approach means `Box<dyn Emitter + Send + Sync>` satisfies `E: Emitter`, so no refactor needed — just pass the box where `ChannelEmitter` was used.
+Currently `AppState` is generic over `E: Emitter`. With `Arc<dyn Emitter + Send + Sync>`:
+- The blanket `Arc<T>` impl means `Arc<dyn Emitter + Send + Sync>` satisfies `E: Emitter` — no generics refactor needed.
+- `ServerAppState` type alias must be updated from `ChannelEmitter` to `Arc<dyn Emitter + Send + Sync>` to support runtime emitter selection.
 
 ---
 
