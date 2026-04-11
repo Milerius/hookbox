@@ -71,9 +71,15 @@ async fn sqs_emitter_smoke() {
     let queue_url = std::env::var("SQS_QUEUE_URL")
         .unwrap_or_else(|_| "http://localhost:4566/000000000000/hookbox-smoke-test".to_owned());
     let region = std::env::var("AWS_REGION").ok();
-    let emitter = hookbox_emitter_sqs::SqsEmitter::new(queue_url, region.as_deref(), false)
-        .await
-        .expect("sqs emitter should be created");
+    let endpoint_url = std::env::var("AWS_ENDPOINT_URL").ok();
+    let emitter = hookbox_emitter_sqs::SqsEmitter::new(
+        queue_url,
+        region.as_deref(),
+        false,
+        endpoint_url.as_deref(),
+    )
+    .await
+    .expect("sqs emitter should be created");
 
     let event = test_event();
     emitter.emit(&event).await.expect("sqs emit should succeed");

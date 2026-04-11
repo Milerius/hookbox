@@ -171,6 +171,7 @@ const fn default_max_attempts() -> i32 {
 
 /// Emitter backend configuration.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EmitterConfig {
     /// Which emitter backend to use: `"channel"` (default), `"kafka"`, `"nats"`, or `"sqs"`.
     #[serde(rename = "type", default = "default_emitter_type")]
@@ -250,6 +251,8 @@ pub struct SqsEmitterConfig {
     /// Whether the queue is a FIFO queue (default: `false`).
     #[serde(default)]
     pub fifo: bool,
+    /// Optional endpoint URL override for `LocalStack` or SQS-compatible services.
+    pub endpoint_url: Option<String>,
 }
 
 #[cfg(test)]

@@ -14,8 +14,9 @@ type = "sqs"
 
 [emitter.sqs]
 queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/hookbox-events"
-region = "us-east-1"   # optional, uses default AWS region chain if omitted
-fifo = false           # optional, default: false
+region = "us-east-1"       # optional, uses default AWS region chain if omitted
+fifo = false               # optional, default: false
+endpoint_url = "..."       # optional, override for LocalStack or SQS-compatible services
 ```
 
 For FIFO queues:
@@ -43,6 +44,7 @@ let emitter = SqsEmitter::new(
     "https://sqs.us-east-1.amazonaws.com/123456789012/hookbox-events".to_owned(),
     Some("us-east-1"),
     false,
+    None, // endpoint_url override (for LocalStack, use Some("http://localhost:4566"))
 ).await?;
 ```
 

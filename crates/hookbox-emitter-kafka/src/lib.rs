@@ -51,6 +51,7 @@ impl KafkaEmitter {
             .set("bootstrap.servers", brokers)
             .set("client.id", client_id)
             .set("acks", acks)
+            .set("delivery.timeout.ms", timeout_ms.to_string())
             .create()
             .map_err(|e| EmitError::Downstream(e.to_string()))?;
 

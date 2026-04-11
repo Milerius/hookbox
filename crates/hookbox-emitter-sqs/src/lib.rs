@@ -35,6 +35,8 @@ impl SqsEmitter {
     /// * `region` — optional AWS region override; uses the default provider
     ///   chain when `None`.
     /// * `fifo` — set to `true` for FIFO queues.
+    /// * `endpoint_url` — optional endpoint URL override for `LocalStack` or
+    ///   SQS-compatible services.
     ///
     /// # Errors
     ///
@@ -43,11 +45,16 @@ impl SqsEmitter {
         queue_url: String,
         region: Option<&str>,
         fifo: bool,
+        endpoint_url: Option<&str>,
     ) -> Result<Self, EmitError> {
         let mut config_loader = aws_config::from_env();
 
         if let Some(r) = region {
             config_loader = config_loader.region(aws_config::Region::new(r.to_owned()));
+        }
+
+        if let Some(url) = endpoint_url {
+            config_loader = config_loader.endpoint_url(url);
         }
 
         let config = config_loader.load().await;

@@ -129,6 +129,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                 cfg.queue_url.clone(),
                 cfg.region.as_deref(),
                 cfg.fifo,
+                cfg.endpoint_url.as_deref(),
             )
             .await
             .context("failed to create SQS emitter")?;
