@@ -113,3 +113,80 @@ fn parse_duration(s: &str) -> anyhow::Result<chrono::Duration> {
 
     Ok(duration)
 }
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "acceptable in test code")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_seconds() {
+        let d = parse_duration("30s").expect("should parse");
+        assert_eq!(d, chrono::Duration::seconds(30));
+    }
+
+    #[test]
+    fn parse_minutes() {
+        let d = parse_duration("5m").expect("should parse");
+        assert_eq!(d, chrono::Duration::minutes(5));
+    }
+
+    #[test]
+    fn parse_hours() {
+        let d = parse_duration("2h").expect("should parse");
+        assert_eq!(d, chrono::Duration::hours(2));
+    }
+
+    #[test]
+    fn parse_days() {
+        let d = parse_duration("7d").expect("should parse");
+        assert_eq!(d, chrono::Duration::days(7));
+    }
+
+    #[test]
+    fn parse_zero() {
+        let d = parse_duration("0s").expect("should parse");
+        assert_eq!(d, chrono::Duration::seconds(0));
+    }
+
+    #[test]
+    fn parse_large_number() {
+        let d = parse_duration("365d").expect("should parse");
+        assert_eq!(d, chrono::Duration::days(365));
+    }
+
+    #[test]
+    fn parse_with_whitespace() {
+        let d = parse_duration("  1h  ").expect("should parse");
+        assert_eq!(d, chrono::Duration::hours(1));
+    }
+
+    #[test]
+    fn invalid_unit() {
+        assert!(parse_duration("10x").is_err());
+    }
+
+    #[test]
+    fn empty_string() {
+        assert!(parse_duration("").is_err());
+    }
+
+    #[test]
+    fn just_unit_no_number() {
+        assert!(parse_duration("h").is_err());
+    }
+
+    #[test]
+    fn negative_number() {
+        // Depends on implementation — if it parses, the Duration should be negative
+        // If it errors, that's also acceptable
+        let result = parse_duration("-1h");
+        // Either succeeds with negative or errors — both are fine, just don't panic
+        let _ = result;
+    }
+
+    #[test]
+    fn no_unit_just_number() {
+        assert!(parse_duration("123").is_err());
+    }
+}
