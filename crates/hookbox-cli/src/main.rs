@@ -3,8 +3,7 @@
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-mod commands;
-mod db;
+use hookbox_cli::commands;
 
 /// Hookbox — a durable webhook inbox.
 #[derive(Parser)]

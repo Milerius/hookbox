@@ -26,5 +26,7 @@ github_checks:
   annotations: true
 
 ignore:
-  - "crates/hookbox-cli/**"
+  - "crates/hookbox-server/src/shutdown.rs"
+  - "crates/hookbox-cli/src/main.rs"
+  - "crates/hookbox-cli/src/commands/serve.rs"
   - "integration-tests/**"

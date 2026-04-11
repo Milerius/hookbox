@@ -16,8 +16,8 @@ use hookbox::dedupe::InMemoryRecentDedupe;
 use hookbox::emitter::ChannelEmitter;
 use hookbox::error::StorageError;
 use hookbox::pipeline::HookboxPipeline;
-use hookbox::state::{ProcessingState, StoreResult};
-use hookbox::traits::Storage;
+use hookbox::state::{ProcessingState, StoreResult, VerificationResult, VerificationStatus};
+use hookbox::traits::{SignatureVerifier, Storage};
 use hookbox::types::{NormalizedEvent, ReceiptFilter, WebhookReceipt};
 
 use crate::AppState;
@@ -738,4 +738,447 @@ async fn ingest_non_json_body() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["status"], "accepted");
+}
+
+// ── Verification failure tests ──────────────────────────────────────
+
+/// A verifier that always rejects the signature.
+struct RejectVerifier;
+
+#[async_trait]
+impl SignatureVerifier for RejectVerifier {
+    fn provider_name(&self) -> &'static str {
+        "reject-provider"
+    }
+
+    async fn verify(&self, _headers: &axum::http::HeaderMap, _body: &[u8]) -> VerificationResult {
+        VerificationResult {
+            status: VerificationStatus::Failed,
+            reason: Some("invalid_signature".to_owned()),
+        }
+    }
+}
+
+/// Build a test app that has a [`RejectVerifier`] registered for the
+/// `"reject-provider"` provider name.
+fn build_test_app_with_reject_verifier() -> (Router, tokio::sync::mpsc::Receiver<NormalizedEvent>) {
+    let (emitter, receiver) = ChannelEmitter::new(64);
+    let pipeline =
+        HookboxPipeline::<MemoryStorage, InMemoryRecentDedupe, ChannelEmitter>::builder()
+            .storage(MemoryStorage::new())
+            .dedupe(InMemoryRecentDedupe::new(1000))
+            .emitter(emitter)
+            .verifier(RejectVerifier)
+            .build();
+
+    let state = Arc::new(AppState {
+        pipeline,
+        pool: None,
+        admin_token: None,
+        prometheus: None,
+    });
+
+    let router = crate::build_router(state, 1024 * 1024);
+    (router, receiver)
+}
+
+#[tokio::test]
+async fn ingest_verification_failed_returns_401() {
+    let (app, _rx) = build_test_app_with_reject_verifier();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/webhooks/reject-provider")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"event":"rejected"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let json = body_json(response).await;
+    assert_eq!(json["status"], "verification_failed");
+    assert_eq!(json["reason"], "invalid_signature");
+}
+
+// ── Replay emit failure (receiver dropped) ──────────────────────────
+
+#[tokio::test]
+async fn replay_with_closed_emitter_returns_500() {
+    let (app, rx) = build_test_app(None);
+
+    // Ingest a webhook.
+    let ingest_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/webhooks/test")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"event":"replay-fail","id":"unique-replay-fail-1"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ingest_resp.status(), StatusCode::OK);
+    let ingest_json = body_json(ingest_resp).await;
+    let receipt_id = ingest_json["receipt_id"].as_str().unwrap().to_owned();
+
+    // Drop the receiver so the emitter channel is closed.
+    drop(rx);
+
+    // Replay should fail because the emitter cannot send.
+    let replay_resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/receipts/{receipt_id}/replay"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(replay_resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(replay_resp).await;
+    assert!(json["error"].as_str().unwrap().contains("emit failed"));
+}
+
+// ── Admin auth: non-UTF-8 authorization header ──────────────────────
+
+#[tokio::test]
+async fn admin_non_utf8_auth_header_returns_401() {
+    let (app, _rx) = build_test_app(Some("secret".to_owned()));
+
+    // Send a header value with bytes that are valid for HTTP but not a
+    // valid bearer-token match.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/receipts")
+                .header("authorization", "Bearer \t bad")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ── FailingStorage tests (500 error paths in admin routes) ──────────
+
+/// Storage implementation that always fails, to cover error branches.
+struct FailingStorage;
+
+#[async_trait]
+impl Storage for FailingStorage {
+    async fn store(&self, _receipt: &WebhookReceipt) -> Result<StoreResult, StorageError> {
+        Err(StorageError::Internal("simulated store failure".to_owned()))
+    }
+
+    async fn get(&self, _id: Uuid) -> Result<Option<WebhookReceipt>, StorageError> {
+        Err(StorageError::Internal("simulated get failure".to_owned()))
+    }
+
+    async fn update_state(
+        &self,
+        _id: Uuid,
+        _state: ProcessingState,
+        _error: Option<&str>,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "simulated update_state failure".to_owned(),
+        ))
+    }
+
+    async fn query(&self, _filter: ReceiptFilter) -> Result<Vec<WebhookReceipt>, StorageError> {
+        Err(StorageError::Internal("simulated query failure".to_owned()))
+    }
+}
+
+/// Build a test app with a [`FailingStorage`] backend.
+fn build_failing_app() -> (Router, tokio::sync::mpsc::Receiver<NormalizedEvent>) {
+    let (emitter, receiver) = ChannelEmitter::new(64);
+    let pipeline =
+        HookboxPipeline::<FailingStorage, InMemoryRecentDedupe, ChannelEmitter>::builder()
+            .storage(FailingStorage)
+            .dedupe(InMemoryRecentDedupe::new(1000))
+            .emitter(emitter)
+            .build();
+
+    let state = Arc::new(AppState {
+        pipeline,
+        pool: None,
+        admin_token: None,
+        prometheus: None,
+    });
+
+    let router = crate::build_router(state, 1024 * 1024);
+    (router, receiver)
+}
+
+#[tokio::test]
+async fn list_receipts_storage_error_returns_500() {
+    let (app, _rx) = build_failing_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/receipts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    assert!(json["error"].as_str().unwrap().contains("simulated"));
+}
+
+#[tokio::test]
+async fn get_receipt_storage_error_returns_500() {
+    let (app, _rx) = build_failing_app();
+    let id = Uuid::new_v4();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/receipts/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    assert!(json["error"].as_str().unwrap().contains("simulated"));
+}
+
+#[tokio::test]
+async fn replay_receipt_storage_error_returns_500() {
+    let (app, _rx) = build_failing_app();
+    let id = Uuid::new_v4();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/receipts/{id}/replay"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    assert!(json["error"].as_str().unwrap().contains("simulated"));
+}
+
+#[tokio::test]
+async fn list_dlq_storage_error_returns_500() {
+    let (app, _rx) = build_failing_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/dlq")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    assert!(json["error"].as_str().unwrap().contains("simulated"));
+}
+
+#[tokio::test]
+async fn ingest_storage_error_returns_500() {
+    let (app, _rx) = build_failing_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/webhooks/test")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"event":"will-fail"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    assert_eq!(json["status"], "error");
+}
+
+// ── Admin auth on additional endpoints ──────────────────────────────
+
+#[tokio::test]
+async fn get_receipt_missing_token_returns_401() {
+    let (app, _rx) = build_test_app(Some("secret".to_owned()));
+    let id = Uuid::new_v4();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/receipts/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn replay_receipt_missing_token_returns_401() {
+    let (app, _rx) = build_test_app(Some("secret".to_owned()));
+    let id = Uuid::new_v4();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/receipts/{id}/replay"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn list_dlq_missing_token_returns_401() {
+    let (app, _rx) = build_test_app(Some("secret".to_owned()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/dlq")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ── Replay with update_state failure ────────────────────────────────
+
+/// Storage that succeeds for `get` and `store` but fails for `update_state`.
+struct UpdateFailStorage {
+    inner: MemoryStorage,
+}
+
+impl UpdateFailStorage {
+    fn new() -> Self {
+        Self {
+            inner: MemoryStorage::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl Storage for UpdateFailStorage {
+    async fn store(&self, receipt: &WebhookReceipt) -> Result<StoreResult, StorageError> {
+        self.inner.store(receipt).await
+    }
+
+    async fn get(&self, id: Uuid) -> Result<Option<WebhookReceipt>, StorageError> {
+        self.inner.get(id).await
+    }
+
+    async fn update_state(
+        &self,
+        _id: Uuid,
+        _state: ProcessingState,
+        _error: Option<&str>,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "simulated update_state failure".to_owned(),
+        ))
+    }
+
+    async fn query(&self, filter: ReceiptFilter) -> Result<Vec<WebhookReceipt>, StorageError> {
+        self.inner.query(filter).await
+    }
+}
+
+#[tokio::test]
+async fn replay_update_state_failure_returns_500() {
+    let (emitter, _rx) = ChannelEmitter::new(64);
+    let pipeline =
+        HookboxPipeline::<UpdateFailStorage, InMemoryRecentDedupe, ChannelEmitter>::builder()
+            .storage(UpdateFailStorage::new())
+            .dedupe(InMemoryRecentDedupe::new(1000))
+            .emitter(emitter)
+            .build();
+
+    let state = Arc::new(AppState {
+        pipeline,
+        pool: None,
+        admin_token: None,
+        prometheus: None,
+    });
+
+    let app = crate::build_router(state, 1024 * 1024);
+
+    // Ingest a webhook first.
+    let ingest_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/webhooks/test")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"event":"update-fail","id":"unique-update-fail-1"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Ingest should succeed (store works, but update_state fails for the
+    // Stored→Emitted transition — the emit still happens).
+    assert_eq!(ingest_resp.status(), StatusCode::OK);
+    let ingest_json = body_json(ingest_resp).await;
+    let receipt_id = ingest_json["receipt_id"].as_str().unwrap().to_owned();
+
+    // Replay should fail because update_state is broken.
+    let replay_resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/receipts/{receipt_id}/replay"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(replay_resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(replay_resp).await;
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap()
+            .contains("state update failed")
+    );
 }

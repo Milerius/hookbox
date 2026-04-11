@@ -47,6 +47,7 @@ hookbox = { path = "crates/hookbox", version = "0.1.0" }
 hookbox-postgres = { path = "crates/hookbox-postgres", version = "0.1.0" }
 hookbox-providers = { path = "crates/hookbox-providers", version = "0.1.0" }
 hookbox-server = { path = "crates/hookbox-server", version = "0.1.0" }
+hookbox-cli = { path = "crates/hookbox-cli", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

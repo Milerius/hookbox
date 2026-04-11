@@ -1337,6 +1337,7 @@ dependencies = [
  "bytes",
  "chrono",
  "hookbox",
+ "hookbox-cli",
  "hookbox-postgres",
  "hookbox-providers",
  "hookbox-server",
@@ -1347,6 +1348,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tower",
+ "tracing-subscriber",
  "uuid",
 ]
 
