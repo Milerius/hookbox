@@ -38,6 +38,36 @@ let emitter = KafkaEmitter::new(
 )?;
 ```
 
+## Local Testing
+
+Start a Kafka broker with Docker:
+
+```bash
+docker compose -f docker-compose.test.yml up kafka -d
+```
+
+Or manually:
+
+```bash
+docker run -d --name hookbox-kafka -p 9092:9092 \
+  -e KAFKA_NODE_ID=1 \
+  -e KAFKA_PROCESS_ROLES=broker,controller \
+  -e KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093 \
+  -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
+  -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+  -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
+  -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 \
+  -e CLUSTER_ID=MkU3OEVBNTcwNTJENDM2Qk \
+  -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
+  confluentinc/cp-kafka:7.6.0
+```
+
+Run the smoke test:
+
+```bash
+KAFKA_BROKERS=localhost:9092 cargo test -p hookbox-integration-tests --test emitter_smoke_test -- --ignored kafka_emitter_smoke
+```
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](../../LICENSE-APACHE) or [MIT License](../../LICENSE-MIT) at your option.

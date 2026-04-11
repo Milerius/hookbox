@@ -29,6 +29,26 @@ use hookbox_emitter_nats::NatsEmitter;
 let emitter = NatsEmitter::new("nats://localhost:4222", "hookbox.events".to_owned()).await?;
 ```
 
+## Local Testing
+
+Start a NATS server with Docker:
+
+```bash
+docker compose -f docker-compose.test.yml up nats -d
+```
+
+Or manually:
+
+```bash
+docker run -d --name hookbox-nats -p 4222:4222 nats:latest
+```
+
+Run the smoke test:
+
+```bash
+NATS_URL=nats://localhost:4222 cargo test -p hookbox-integration-tests --test emitter_smoke_test -- --ignored nats_emitter_smoke
+```
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](../../LICENSE-APACHE) or [MIT License](../../LICENSE-MIT) at your option.
