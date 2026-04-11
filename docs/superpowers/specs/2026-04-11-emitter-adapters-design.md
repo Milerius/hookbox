@@ -30,7 +30,7 @@ One emitter is configured per hookbox server instance via `[emitter]` in `hookbo
 
 ### Serialization
 
-All emitters serialize `NormalizedEvent` as JSON via `serde_json::to_vec`. No alternative formats in this pass.
+All emitters serialize `NormalizedEvent` as JSON. Adapters use the backend-appropriate JSON form (for example, bytes via `serde_json::to_vec` or string via `serde_json::to_string`). No alternative formats in this pass.
 
 ### Shared ownership via Arc<dyn Emitter>
 
@@ -75,7 +75,7 @@ All emitters use `receipt_id` as the message key/ID for:
 
 ## Crate Structure
 
-```
+```text
 crates/hookbox-emitter-kafka/      # rdkafka, produces to topic
 crates/hookbox-emitter-nats/       # async-nats, publishes to subject
 crates/hookbox-emitter-sqs/        # aws-sdk-sqs, sends to queue URL
