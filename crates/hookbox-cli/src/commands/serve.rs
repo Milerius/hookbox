@@ -13,7 +13,7 @@ use hookbox::emitter::ChannelEmitter;
 use hookbox::pipeline::HookboxPipeline;
 use hookbox_postgres::{PostgresStorage, StorageDedupe};
 use hookbox_providers::{GenericHmacVerifier, StripeVerifier};
-use hookbox_server::AppState;
+use hookbox_server::ServerAppState;
 use hookbox_server::build_router;
 use hookbox_server::config::HookboxConfig;
 use hookbox_server::worker::RetryWorker;
@@ -128,9 +128,9 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     );
     let _retry_handle = retry_worker.spawn();
 
-    let state = Arc::new(AppState {
+    let state: Arc<ServerAppState> = Arc::new(ServerAppState {
         pipeline,
-        pool,
+        pool: Some(pool),
         admin_token: config.admin.bearer_token.clone(),
         prometheus: Some(prometheus),
     });
