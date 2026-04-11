@@ -15,8 +15,14 @@
 - Triple-A fiat: https://developers.triple-a.io/docs/fiat-payout-api-doc/519646ce696e6-webhook-notifications
 - Walapay (Svix): https://docs.walapay.io/docs/verifying-webhook-signature
 
-**Noted for later:**
-- Triple-A Crypto Payments — uses NaCl `crypto_box` authenticated encryption (not HMAC). Needs `sodiumoxide` or `crypto_box` crate, keypair management, URL token validation. Separate task.
+**UPDATE:** Triple-A crypto payments use the SAME pattern as Stripe: HMAC-SHA256 with
+`t=<timestamp>,v1=<hex-sig>` in a `triplea-signature` header. The WooCommerce plugin
+(NaCl crypto_box) was an older API version. Current API v2 is standard HMAC.
+
+**Plan change:** Add a `TripleACryptoVerifier` that reuses the timestamped HMAC pattern
+(same as Stripe but with `triplea-signature` header and `notify_secret` as key).
+Or better: make a configurable `TimestampedHmacVerifier` that both Stripe and Triple-A
+crypto can use. This is Task 4b below.
 
 ---
 
@@ -512,6 +518,83 @@ git commit -m "feat(hookbox-providers): add TripleAFiatVerifier — RSA-SHA512 w
 
 ---
 
+## Task 4b: Triple-A Crypto Verifier
+
+**Files:**
+- Create: `crates/hookbox-providers/src/triplea_crypto.rs`
+- Modify: `crates/hookbox-providers/src/lib.rs` (add module + re-export)
+
+### Triple-A Crypto Signature Specification
+
+- Algorithm: HMAC-SHA256
+- Header: `triplea-signature` (lowercase)
+- Header format: `t=<unix-timestamp>,v1=<hex-encoded-signature>`
+- Secret: `notify_secret` (from payment request)
+- Signed content: `{timestamp}.{raw_body}`
+- Timestamp tolerance: 300 seconds recommended
+- This is the SAME pattern as Stripe but with a different header name
+
+Reference: https://developers.triple-a.io/docs/triplea-api-doc/4c87b81419436-webhook-notifications
+
+Sample data for test validation:
+- Body: `{"txs":[{"txid":"33d5d9af65fe63b12e1a4d67f6b05fcf01428764db840463aba621daa65323d3",...}],...}`
+- Secret: `Cf9mx4nAvRuy5vwBY2FCtaKr!@#`
+- Header: `t=1621246963,v1=a0749b4b490e15701ab2c488037da9367e8421d8cbddf2450071758e2c6c9f7d`
+
+### Steps
+
+- [ ] **Step 1: Implement TripleACryptoVerifier**
+
+Follow the exact same pattern as `StripeVerifier` but with:
+- Header name: `triplea-signature` (instead of `Stripe-Signature`)
+- Provider name: configurable (like Stripe)
+- Secret: raw string (the `notify_secret`)
+- Tolerance: 300 seconds default
+
+The implementing agent should read `stripe.rs`, copy the pattern, and change:
+1. Header name from `"Stripe-Signature"` to `"triplea-signature"`
+2. Module/struct name to `TripleACryptoVerifier`
+3. Doc comments to reference Triple-A
+
+- [ ] **Step 2: Add tests using official sample data**
+
+Use the official sample data from Triple-A docs to write a golden test:
+```rust
+#[tokio::test]
+async fn official_sample_data_verifies() {
+    let secret = "Cf9mx4nAvRuy5vwBY2FCtaKr!@#";
+    let body = r#"{"txs":[{"txid":"33d5d9af65fe63b12e1a4d67f6b05fcf01428764db840463aba621daa65323d3","status":"good",...}]}"#;
+    // Use the full raw body from the docs
+    let header = "t=1621246963,v1=a0749b4b490e15701ab2c488037da9367e8421d8cbddf2450071758e2c6c9f7d";
+    // Skip timestamp check for this test (data is old)
+    let verifier = TripleACryptoVerifier::new("triplea".to_owned(), secret.to_owned())
+        .with_tolerance(Duration::from_secs(u64::MAX)); // disable for golden test
+    // ... verify
+}
+```
+
+Also add standard tests: valid sig, expired timestamp, wrong secret, missing header.
+
+- [ ] **Step 3: Update lib.rs**
+
+Add to lib.rs:
+```rust
+#[cfg(feature = "triplea")]
+pub mod triplea_crypto;
+#[cfg(feature = "triplea")]
+pub use triplea_crypto::TripleACryptoVerifier;
+```
+
+- [ ] **Step 4: Run tests and lint**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m "feat(hookbox-providers): add TripleACryptoVerifier — HMAC-SHA256 timestamped signature"
+```
+
+---
+
 ## Task 5: Walapay Verifier (Svix)
 
 **Files:**
@@ -682,6 +765,7 @@ Update the `ProviderConfig` doc comment to list all supported types:
 /// - `"adyen"` — Adyen HMAC-SHA256 with hex key and Base64 signature
 /// - `"bvnk"` — BVNK HMAC-SHA256 with Base64 signature in x-signature
 /// - `"triplea-fiat"` — Triple-A fiat RSA-SHA512 with public key
+/// - `"triplea-crypto"` — Triple-A crypto HMAC-SHA256 with timestamp (like Stripe)
 /// - `"walapay"` — Walapay/Svix HMAC-SHA256 with svix-* headers
 /// - `"checkout"` — Checkout.com (alias for hmac-sha256 with Cko-Signature header)
 ```
@@ -715,6 +799,13 @@ match provider.verifier_type.as_str() {
         let Some(verifier) = hookbox_providers::TripleAFiatVerifier::new(name, pem) else {
             anyhow::bail!("invalid PEM public key for Triple-A fiat provider '{name}'");
         };
+        builder = builder.verifier(verifier);
+    }
+    "triplea-crypto" => {
+        let mut verifier = hookbox_providers::TripleACryptoVerifier::new(name.clone(), provider.secret.clone());
+        if let Some(tolerance) = provider.tolerance_seconds {
+            verifier = verifier.with_tolerance(Duration::from_secs(tolerance));
+        }
         builder = builder.verifier(verifier);
     }
     "walapay" => {
@@ -830,11 +921,12 @@ git push -u origin feat/provider-adapters
 | 2 | Task 2 | AdyenVerifier (HMAC-SHA256, hex key, Base64 sig) |
 | 3 | Task 3 | BvnkVerifier (HMAC-SHA256, Base64 sig, x-signature) |
 | 4 | Task 4 | TripleAFiatVerifier (RSA-SHA512, public key, TripleA-Signature) |
+| 4b | Task 4b | TripleACryptoVerifier (HMAC-SHA256, timestamped, triplea-signature) |
 | 5 | Task 5 | WalapayVerifier (Svix HMAC-SHA256, svix-* headers, timestamp) |
 | 6 | Task 6 | Wire in config + serve.rs |
 | 7 | Task 7 | Documentation |
 | 8 | Task 8 | Validation |
 
 **Noted for later:**
-- Triple-A Crypto — NaCl `crypto_box` authenticated encryption with libsodium
+- Triple-A Crypto API v1 (WooCommerce plugin) used NaCl `crypto_box` — this is the OLD API. Current API v2 uses standard HMAC-SHA256 with timestamped signatures (now covered by `TripleACryptoVerifier`).
 - Checkout.com is just a config alias for GenericHmacVerifier with `Cko-Signature` header
