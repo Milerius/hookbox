@@ -98,5 +98,6 @@ reqwest = { version = "0.12", features = ["json"] }
 async-trait = "0.1"
 http-body-util = "0.1"
 bolero = "0.13"
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 cucumber = "0.22"
 futures = "0.3"
