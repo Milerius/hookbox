@@ -89,7 +89,7 @@ Additional methods on `PostgresStorage` for operational use (not part of the cor
 | Method | Purpose |
 |--------|---------|
 | `query_for_retry(max_attempts)` | Fetch EmitFailed receipts eligible for retry |
-| `retry_failed(id, max_attempts)` | Atomic: increment emit_count + promote to DLQ |
+| `retry_failed(id, max_attempts)` | Atomic: increment emit_count, promote to DeadLettered if count >= max_attempts |
 | `reset_for_retry(id)` | Reset receipt for retry (CLI replay/dlq retry) |
 | `query_by_external_reference(ref, limit)` | Search by business reference |
 | `query_failed_since(provider, since, limit)` | Failed receipts since timestamp |
