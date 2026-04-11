@@ -633,6 +633,57 @@ mod tests {
         );
     }
 
+    /// Verifier that returns [`VerificationStatus::Failed`] with no reason string.
+    struct FailVerifierNoReason;
+
+    #[async_trait]
+    impl SignatureVerifier for FailVerifierNoReason {
+        fn provider_name(&self) -> &'static str {
+            "test-provider"
+        }
+
+        async fn verify(&self, _headers: &HeaderMap, _body: &[u8]) -> VerificationResult {
+            VerificationResult {
+                status: VerificationStatus::Failed,
+                reason: None,
+            }
+        }
+    }
+
+    /// Verifier that returns [`VerificationStatus::Verified`] with no reason string.
+    struct PassVerifierNoReason;
+
+    #[async_trait]
+    impl SignatureVerifier for PassVerifierNoReason {
+        fn provider_name(&self) -> &'static str {
+            "test-provider"
+        }
+
+        async fn verify(&self, _headers: &HeaderMap, _body: &[u8]) -> VerificationResult {
+            VerificationResult {
+                status: VerificationStatus::Verified,
+                reason: None,
+            }
+        }
+    }
+
+    /// Verifier that returns [`VerificationStatus::Skipped`] with no reason string.
+    struct SkipVerifierNoReason;
+
+    #[async_trait]
+    impl SignatureVerifier for SkipVerifierNoReason {
+        fn provider_name(&self) -> &'static str {
+            "test-provider"
+        }
+
+        async fn verify(&self, _headers: &HeaderMap, _body: &[u8]) -> VerificationResult {
+            VerificationResult {
+                status: VerificationStatus::Skipped,
+                reason: None,
+            }
+        }
+    }
+
     /// Emitter that always returns a downstream error.
     struct FailEmitter;
 
@@ -661,5 +712,109 @@ mod tests {
             matches!(result, Ok(IngestResult::Accepted { .. })),
             "pipeline should return Accepted even when the emitter fails, got {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn ingest_verification_failed_with_no_reason() {
+        // Covers the `unwrap_or_else(|| "verification_failed".to_owned())` branch.
+        let pipeline = HookboxPipeline::builder()
+            .storage(MemoryStorage::new())
+            .dedupe(InMemoryRecentDedupe::new(100))
+            .emitter(noop_emitter())
+            .verifier(FailVerifierNoReason)
+            .build();
+
+        let body = Bytes::from(r#"{"event":"test"}"#);
+        let result = pipeline
+            .ingest("test-provider", HeaderMap::new(), body)
+            .await;
+
+        match result {
+            Ok(IngestResult::VerificationFailed { reason }) => {
+                assert_eq!(reason, "verification_failed");
+            }
+            other => panic!("expected VerificationFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ingest_verified_with_no_reason_label() {
+        // Covers the `unwrap_or_else(|| "none".to_owned())` branch for Verified.
+        let pipeline = HookboxPipeline::builder()
+            .storage(MemoryStorage::new())
+            .dedupe(InMemoryRecentDedupe::new(100))
+            .emitter(noop_emitter())
+            .verifier(PassVerifierNoReason)
+            .build();
+
+        let body = Bytes::from(r#"{"event":"test"}"#);
+        let result = pipeline
+            .ingest("test-provider", HeaderMap::new(), body)
+            .await;
+
+        assert!(
+            matches!(result, Ok(IngestResult::Accepted { .. })),
+            "expected Accepted, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ingest_skipped_with_no_reason_label() {
+        // Covers the `unwrap_or_else(|| "none".to_owned())` branch for Skipped.
+        let pipeline = HookboxPipeline::builder()
+            .storage(MemoryStorage::new())
+            .dedupe(InMemoryRecentDedupe::new(100))
+            .emitter(noop_emitter())
+            .verifier(SkipVerifierNoReason)
+            .build();
+
+        let body = Bytes::from(r#"{"event":"test"}"#);
+        let result = pipeline
+            .ingest("test-provider", HeaderMap::new(), body)
+            .await;
+
+        assert!(
+            matches!(result, Ok(IngestResult::Accepted { .. })),
+            "expected Accepted for Skipped verification, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_storage_get_returns_stored_receipt() {
+        // Exercises MemoryStorage::get and MemoryStorage::query.
+        let storage = MemoryStorage::new();
+        let body = Bytes::from(r#"{"event":"test"}"#);
+        let pipeline = HookboxPipeline::builder()
+            .storage(storage)
+            .dedupe(InMemoryRecentDedupe::new(100))
+            .emitter(noop_emitter())
+            .verifier(PassVerifier)
+            .build();
+
+        let result = pipeline
+            .ingest("test-provider", HeaderMap::new(), body)
+            .await
+            .unwrap();
+
+        let IngestResult::Accepted { receipt_id } = result else {
+            panic!("expected Accepted");
+        };
+
+        // Exercise get()
+        let found = pipeline
+            .storage()
+            .get(receipt_id.0)
+            .await
+            .unwrap();
+        assert!(found.is_some(), "get() should find the stored receipt");
+        assert_eq!(found.unwrap().receipt_id, receipt_id);
+
+        // Exercise query()
+        let all = pipeline
+            .storage()
+            .query(ReceiptFilter::default())
+            .await
+            .unwrap();
+        assert!(!all.is_empty(), "query() should return stored receipts");
     }
 }

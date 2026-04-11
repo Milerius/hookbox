@@ -139,6 +139,7 @@ mod serde_bytes_base64 {
 }
 
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "expect is acceptable in test code")]
 mod tests {
     use chrono::Utc;
     use serde_json::json;
@@ -146,6 +147,45 @@ mod tests {
 
     use super::*;
     use crate::state::{ProcessingState, VerificationStatus};
+
+    #[test]
+    fn dedupe_key_display() {
+        let key = DedupeKey("stripe:abc123".to_owned());
+        assert_eq!(key.to_string(), "stripe:abc123");
+    }
+
+    #[test]
+    fn payload_hash_display() {
+        let hash = PayloadHash("deadbeef".to_owned());
+        assert_eq!(hash.to_string(), "deadbeef");
+    }
+
+    #[test]
+    fn raw_body_deserialize_rejects_bad_base64() {
+        // Provide an invalid base64 string for raw_body; deserialize must fail.
+        let bad_json = r#"{
+            "receipt_id": "00000000-0000-0000-0000-000000000001",
+            "provider_name": "test",
+            "provider_event_id": null,
+            "external_reference": null,
+            "dedupe_key": "k",
+            "payload_hash": "h",
+            "raw_body": "!!!not-valid-base64!!!",
+            "parsed_payload": null,
+            "raw_headers": {},
+            "normalized_event_type": null,
+            "verification_status": "skipped",
+            "verification_reason": null,
+            "processing_state": "stored",
+            "emit_count": 0,
+            "last_error": null,
+            "received_at": "2024-01-01T00:00:00Z",
+            "processed_at": null,
+            "metadata": {}
+        }"#;
+        let result = serde_json::from_str::<WebhookReceipt>(bad_json);
+        assert!(result.is_err(), "expected deserialization to fail on bad base64");
+    }
 
     #[test]
     fn receipt_id_new_is_unique() {
@@ -185,14 +225,9 @@ mod tests {
             metadata: json!({}),
         };
 
-        let serialized = serde_json::to_string(&receipt);
-        assert!(serialized.is_ok(), "serialization failed");
-        let deserialized = serialized
-            .ok()
-            .and_then(|s| serde_json::from_str::<WebhookReceipt>(&s).ok());
-        assert!(deserialized.is_some(), "deserialization failed");
-        if let Some(d) = deserialized {
-            assert_eq!(d.raw_body, raw_body);
-        }
+        let serialized = serde_json::to_string(&receipt).expect("serialization should succeed");
+        let deserialized: WebhookReceipt =
+            serde_json::from_str(&serialized).expect("deserialization should succeed");
+        assert_eq!(deserialized.raw_body, raw_body);
     }
 }

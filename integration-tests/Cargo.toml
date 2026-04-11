@@ -9,6 +9,7 @@ publish = false
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
 hookbox.workspace = true
 hookbox-postgres.workspace = true
 hookbox-providers.workspace = true
