@@ -5,48 +5,22 @@ Tracking next steps after the MVP and MVP gaps milestones.
 ## Completed
 
 - [x] **PR #9 — MVP Implementation**: Core pipeline, Postgres storage, Stripe + HMAC providers, Axum server, CLI serve command, 6 verification tiers
-- [x] **PR #10 — MVP Gaps**: Prometheus metrics, 8 CLI subcommands, retry worker, generic AppState, HTTP route tests, documentation
-- [x] **Provider adapter pack**: Adyen (HMAC-SHA256, hex key), BVNK new hook service (Base64 HMAC-SHA256), Triple-A fiat (RSA-SHA512), Triple-A crypto (HMAC-SHA256, timestamped), Walapay/Svix (HMAC-SHA256)
+- [x] **PR #10 — MVP Gaps**: Prometheus metrics, 8 CLI subcommands, retry worker, generic AppState, HTTP route tests, documentation, graceful shutdown, shared transition functions, criterion benchmarks
+- [x] **PR #12 — Provider adapter pack**: Adyen (HMAC-SHA256, hex key), BVNK new hook service (Base64 HMAC-SHA256), Triple-A fiat (RSA-SHA512), Triple-A crypto (HMAC-SHA256, timestamped), Walapay/Svix (HMAC-SHA256)
+- [x] **PR #13 — Emitter adapters (V1)**: Kafka (rdkafka), NATS (async-nats), SQS (aws-sdk-sqs) — config-driven selection, Arc<dyn Emitter> shared ownership, Docker smoke tests, nightly CI
+- [x] **Shared transition functions**: `transitions.rs` at 100% coverage — Bolero/Kani test real production code
+- [x] **Graceful shutdown**: `shutdown.rs` — SIGTERM/SIGINT drain with tokio::signal
+- [x] **Coverage 85%+**: Line coverage at 85.26% (target was 80%)
+- [x] **Criterion benchmarks**: `benches/ingest.rs` for ingest throughput
 
 ---
 
-## Next: Quality and Robustness (Priority)
+## Next: Immediate candidates
 
-### 8. Extract shared transition functions
-Move label derivation and state transition logic into shared helpers so Bolero/Kani tests exercise real production code instead of local tautologies. CodeRabbit flagged the current property tests as vacuous — this fixes it.
-
-- Extract metric label derivation from `pipeline.rs` into `hookbox/src/labels.rs`
-- Extract retry state transition logic into a pure function testable by Bolero and Kani
-- Update property tests to call shared functions
-- Update Kani proofs to model the shared transition function
-
-### 9. Coverage improvement
-Currently ~66% line coverage. Main gaps: Postgres storage ops queries, CLI command handlers, server admin routes under auth.
-
-- Add direct Postgres tests for all 5 ops queries (query_for_retry, retry_failed, reset_for_retry, query_by_external_reference, query_failed_since)
-- Add HTTP integration tests for admin auth flows
-- Add CLI integration tests that exercise the full command → DB → output path
-- Target: 80%+ line coverage
-
-### 10. Load and stress testing
-Concurrent webhook ingest at scale to find race conditions, dedupe contention, and performance bottlenecks.
-
-- Benchmark: ingest throughput (requests/sec) with real Postgres
-- Stress: concurrent duplicate submissions (dedupe under contention)
-- Stress: retry worker under high EmitFailed volume
-- Tool: criterion benchmarks or custom load generator
-- Identify: connection pool sizing, lock contention, index performance
-
-### 11. Graceful shutdown
-Drain in-flight retries and emits before process exit. Currently the server and retry worker are killed immediately on SIGTERM.
-
-- Handle SIGTERM/SIGINT via `tokio::signal`
-- Stop accepting new webhooks
-- Wait for in-flight `ingest()` calls to complete
-- Stop retry worker loop
-- Wait for in-flight retry emissions to complete
-- Drain the `ChannelEmitter` receiver
-- Close database pool
+- **Stress testing under contention**: concurrent duplicate submissions, retry worker under high EmitFailed volume, connection pool sizing. Criterion benchmarks exist but no multi-client stress harness yet.
+- **Remaining provider adapters**: Checkout.com (HMAC-SHA256), PayPal (certificate-based)
+- **Redis Streams emitter** (V2 emitter — most requested next)
+- **Coverage gaps**: emitter adapter crates are at 0% (can't unit-test without mocks or embedded brokers). Consider testcontainers or mock traits.
 
 ---
 
@@ -59,15 +33,10 @@ Remaining from original scope:
 - Checkout.com (HMAC-SHA256)
 - PayPal (certificate-based verification)
 
-### 2. Emitter adapters (in progress)
-Replace the `ChannelEmitter` drain task with real message broker delivery.
+### 2. ~~Emitter adapters V1~~ (done)
+Completed: Kafka (rdkafka), NATS (async-nats), SQS (aws-sdk-sqs) — config-driven selection, `Arc<dyn Emitter>` shared ownership, `delivery.timeout.ms`, `endpoint_url` for LocalStack, Docker smoke tests, nightly CI.
 
-**V1 (current batch — 3 adapters):**
-- `hookbox-emitter-kafka` — rdkafka with static linking, FutureProducer
-- `hookbox-emitter-nats` — async-nats, publish to subject
-- `hookbox-emitter-sqs` — aws-sdk-sqs, FIFO support with dedup
-
-Config-driven selection via `[emitter]` section in `hookbox.toml`. Single emitter per instance. JSON serialization.
+Remaining emitter work:
 
 **V2 (next batch):**
 - `hookbox-emitter-redis` — Redis Streams via XADD (most likely next)
