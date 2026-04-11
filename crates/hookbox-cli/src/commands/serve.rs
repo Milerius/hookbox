@@ -167,11 +167,14 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                 let secret = provider.secret.as_deref().ok_or_else(|| {
                     anyhow::anyhow!("walapay provider '{name}' requires a secret (whsec_...)")
                 })?;
-                let Some(verifier) = WalapayVerifier::new(name, secret) else {
+                let Some(mut verifier) = WalapayVerifier::new(name, secret) else {
                     anyhow::bail!(
                         "invalid Svix secret for Walapay provider '{name}' (expected whsec_...)"
                     );
                 };
+                if let Some(tolerance) = provider.tolerance_seconds {
+                    verifier = verifier.with_tolerance(Duration::from_secs(tolerance));
+                }
                 tracing::info!(provider = %name, "registering WalapayVerifier");
                 builder = builder.verifier(verifier);
             }
@@ -205,7 +208,18 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                 builder = builder.verifier(verifier);
             }
             other => {
-                anyhow::bail!("unknown provider type '{other}' for provider '{name}'");
+                tracing::warn!(provider = %name, provider_type = %other, "unknown provider type, falling back to GenericHmacVerifier");
+                let secret = provider
+                    .secret
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("provider '{name}' requires a secret"))?;
+                let header = provider
+                    .header
+                    .clone()
+                    .unwrap_or_else(|| format!("X-{name}-Signature"));
+                let verifier =
+                    GenericHmacVerifier::new(name, secret.as_bytes().to_vec(), header);
+                builder = builder.verifier(verifier);
             }
         }
     }

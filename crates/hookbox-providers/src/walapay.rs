@@ -115,17 +115,20 @@ impl SignatureVerifier for WalapayVerifier {
             return Self::failed("timestamp_expired");
         }
 
-        // 3. Build signed content: "{msg_id}.{timestamp}.{body}".
-        let Ok(body_str) = std::str::from_utf8(body) else {
-            return Self::failed("invalid_body_encoding");
-        };
-        let signed_payload = format!("{msg_id}.{ts_str}.{body_str}");
+        // 3. Build signed content bytes: "{msg_id}.{timestamp}.{body}".
+        // Use raw bytes directly so non-UTF-8 payloads are handled correctly.
+        let mut signed_content = Vec::with_capacity(msg_id.len() + 1 + ts_str.len() + 1 + body.len());
+        signed_content.extend_from_slice(msg_id.as_bytes());
+        signed_content.push(b'.');
+        signed_content.extend_from_slice(ts_str.as_bytes());
+        signed_content.push(b'.');
+        signed_content.extend_from_slice(body);
 
         // 4. Compute expected HMAC-SHA256 and Base64-encode it.
         let Ok(mut mac) = HmacSha256::new_from_slice(&self.key) else {
             return Self::failed("invalid_key_length");
         };
-        mac.update(signed_payload.as_bytes());
+        mac.update(&signed_content);
         let expected_bytes = mac.finalize().into_bytes();
         let expected_b64 = STANDARD.encode(expected_bytes);
 
@@ -170,10 +173,15 @@ mod tests {
     const TEST_KEY: &[u8] = b"test_key_for_walapay_tests";
 
     fn compute_sig(key: &[u8], msg_id: &str, timestamp: u64, body: &[u8]) -> String {
-        let body_str = std::str::from_utf8(body).expect("valid UTF-8 body");
-        let signed_payload = format!("{msg_id}.{timestamp}.{body_str}");
+        let ts_str = timestamp.to_string();
+        let mut signed_content = Vec::with_capacity(msg_id.len() + 1 + ts_str.len() + 1 + body.len());
+        signed_content.extend_from_slice(msg_id.as_bytes());
+        signed_content.push(b'.');
+        signed_content.extend_from_slice(ts_str.as_bytes());
+        signed_content.push(b'.');
+        signed_content.extend_from_slice(body);
         let mut mac = HmacSha256::new_from_slice(key).expect("valid key");
-        mac.update(signed_payload.as_bytes());
+        mac.update(&signed_content);
         STANDARD.encode(mac.finalize().into_bytes())
     }
 
