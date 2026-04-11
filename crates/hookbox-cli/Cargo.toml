@@ -23,6 +23,9 @@ hookbox.workspace = true
 hookbox-server.workspace = true
 hookbox-postgres.workspace = true
 hookbox-providers.workspace = true
+hookbox-emitter-kafka = { path = "../hookbox-emitter-kafka" }
+hookbox-emitter-nats = { path = "../hookbox-emitter-nats" }
+hookbox-emitter-sqs = { path = "../hookbox-emitter-sqs" }
 clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true

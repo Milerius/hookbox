@@ -308,7 +308,10 @@ topic = "hookbox-events"
         let config: HookboxConfig =
             toml::from_str(toml_str).expect("kafka emitter config should parse");
         assert_eq!(config.emitter.emitter_type, "kafka");
-        let kafka = config.emitter.kafka.expect("kafka config should be present");
+        let kafka = config
+            .emitter
+            .kafka
+            .expect("kafka config should be present");
         assert_eq!(kafka.brokers, "localhost:9092");
         assert_eq!(kafka.topic, "hookbox-events");
         assert_eq!(kafka.client_id, "hookbox");
@@ -334,7 +337,10 @@ timeout_ms = 3000
 "#;
         let config: HookboxConfig =
             toml::from_str(toml_str).expect("full kafka emitter config should parse");
-        let kafka = config.emitter.kafka.expect("kafka config should be present");
+        let kafka = config
+            .emitter
+            .kafka
+            .expect("kafka config should be present");
         assert_eq!(kafka.brokers, "broker1:9092,broker2:9092");
         assert_eq!(kafka.topic, "my-topic");
         assert_eq!(kafka.client_id, "my-client");

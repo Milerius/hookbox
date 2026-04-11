@@ -94,12 +94,62 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     let storage_dedupe = StorageDedupe::new(pool.clone());
     let dedupe = LayeredDedupe::new(lru, storage_dedupe);
 
-    // Build the downstream emitter (channel-based).
-    // Spawn a drain task so the receiver stays alive and emits don't fail.
-    // In production, this would be replaced with a real consumer.
-    let (emitter, rx) = ChannelEmitter::new(1024);
-    tokio::spawn(drain_emitter(rx));
-    let emitter: std::sync::Arc<dyn Emitter + Send + Sync> = std::sync::Arc::new(emitter);
+    // Build the downstream emitter from config.
+    let emitter: Arc<dyn Emitter + Send + Sync> = match config.emitter.emitter_type.as_str() {
+        "kafka" => {
+            let cfg = config.emitter.kafka.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("[emitter.kafka] section required when type = \"kafka\"")
+            })?;
+            let emitter = hookbox_emitter_kafka::KafkaEmitter::new(
+                &cfg.brokers,
+                cfg.topic.clone(),
+                &cfg.client_id,
+                &cfg.acks,
+                cfg.timeout_ms,
+            )
+            .context("failed to create Kafka emitter")?;
+            tracing::info!(brokers = %cfg.brokers, topic = %cfg.topic, "emitter: kafka");
+            Arc::new(emitter)
+        }
+        "nats" => {
+            let cfg = config.emitter.nats.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("[emitter.nats] section required when type = \"nats\"")
+            })?;
+            let emitter = hookbox_emitter_nats::NatsEmitter::new(&cfg.url, cfg.subject.clone())
+                .await
+                .context("failed to create NATS emitter")?;
+            tracing::info!(url = %cfg.url, subject = %cfg.subject, "emitter: nats");
+            Arc::new(emitter)
+        }
+        "sqs" => {
+            let cfg = config.emitter.sqs.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("[emitter.sqs] section required when type = \"sqs\"")
+            })?;
+            let emitter = hookbox_emitter_sqs::SqsEmitter::new(
+                cfg.queue_url.clone(),
+                cfg.region.as_deref(),
+                cfg.fifo,
+            )
+            .await
+            .context("failed to create SQS emitter")?;
+            tracing::info!(queue_url = %cfg.queue_url, fifo = %cfg.fifo, "emitter: sqs");
+            Arc::new(emitter)
+        }
+        "channel" => {
+            let (channel_emitter, rx) = ChannelEmitter::new(1024);
+            tokio::spawn(drain_emitter(rx));
+            tracing::info!("emitter: channel (development drain)");
+            Arc::new(channel_emitter)
+        }
+        other => {
+            anyhow::bail!(
+                "unknown emitter type {other:?}; valid values: kafka, nats, sqs, channel"
+            );
+        }
+    };
+
+    // Clone the emitter for the retry worker before moving into the pipeline.
+    let worker_emitter: Box<dyn Emitter + Send + Sync> = Box::new(Arc::clone(&emitter));
 
     // Build pipeline and register provider verifiers from config.
     let mut builder = HookboxPipeline::builder()
@@ -262,11 +312,6 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     }
 
     let pipeline = builder.build();
-
-    // Retry worker: separate emitter channel + drain task.
-    let (worker_emitter, worker_rx) = ChannelEmitter::new(256);
-    tokio::spawn(drain_emitter(worker_rx));
-    let worker_emitter: Box<dyn Emitter + Send + Sync> = Box::new(worker_emitter);
 
     let retry_worker = RetryWorker::new(
         PostgresStorage::new(pool.clone()),

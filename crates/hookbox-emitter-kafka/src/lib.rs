@@ -69,9 +69,7 @@ impl Emitter for KafkaEmitter {
             serde_json::to_vec(event).map_err(|e| EmitError::Downstream(e.to_string()))?;
         let key = event.receipt_id.to_string();
 
-        let record = FutureRecord::to(&self.topic)
-            .key(&key)
-            .payload(&payload);
+        let record = FutureRecord::to(&self.topic).key(&key).payload(&payload);
 
         self.producer
             .send(record, self.timeout)
