@@ -7,10 +7,14 @@ mod tests {
         bolero::check!()
             .with_type::<(u8, u8)>()
             .for_each(|(emit_count, max_attempts)| {
-                let emit_count = *emit_count as i32;
-                let max_attempts = (*max_attempts as i32).max(1);
+                let emit_count = i32::from(*emit_count);
+                let max_attempts = i32::from(*max_attempts).max(1);
                 let new_count = emit_count + 1;
-                let new_state = if new_count >= max_attempts { "dead_lettered" } else { "emit_failed" };
+                let new_state = if new_count >= max_attempts {
+                    "dead_lettered"
+                } else {
+                    "emit_failed"
+                };
                 if new_count >= max_attempts {
                     assert_eq!(new_state, "dead_lettered");
                 } else {
