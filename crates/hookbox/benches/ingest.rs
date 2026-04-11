@@ -81,11 +81,7 @@ fn bench_ingest(c: &mut Criterion) {
 
             b.to_async(&rt).iter(|| {
                 let n = counter.fetch_add(1, Ordering::Relaxed);
-                let body = Bytes::from(format!(
-                    "{}{}",
-                    n,
-                    String::from_utf8_lossy(&base_body)
-                ));
+                let body = Bytes::from(format!("{}{}", n, String::from_utf8_lossy(&base_body)));
                 let headers = HeaderMap::new();
                 async {
                     let _ = pipeline.ingest("bench", headers, body).await;
