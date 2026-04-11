@@ -62,18 +62,24 @@ Remaining from original scope:
 ### 2. Emitter adapters (in progress)
 Replace the `ChannelEmitter` drain task with real message broker delivery.
 
-**Tier 1 (current batch — 7 adapters):**
+**V1 (current batch — 3 adapters):**
 - `hookbox-emitter-kafka` — rdkafka with static linking, FutureProducer
 - `hookbox-emitter-nats` — async-nats, publish to subject
 - `hookbox-emitter-sqs` — aws-sdk-sqs, FIFO support with dedup
-- `hookbox-emitter-redis` — Redis Streams via XADD
-- `hookbox-emitter-rabbitmq` — lapin, AMQP publish to exchange
-- `hookbox-emitter-pulsar` — Apache Pulsar producer
-- `hookbox-emitter-grpc` — tonic client with hookbox-defined proto
 
 Config-driven selection via `[emitter]` section in `hookbox.toml`. Single emitter per instance. JSON serialization.
 
-**Tier 2 (future):**
+**V2 (next batch):**
+- `hookbox-emitter-redis` — Redis Streams via XADD (most likely next)
+
+**Deferred:**
+- `hookbox-emitter-rabbitmq` — lapin, AMQP publish to exchange (legacy compatibility, sharp-edged exchange pre-existence)
+- `hookbox-emitter-pulsar` — Apache Pulsar producer (sophisticated users can wait)
+
+**Rejected for emitter family:**
+- gRPC — breaks the "emit JSON to broker" model, different contract shape (proto vs JSON), semantic mismatch. Better suited as a separate integration/transport mode.
+
+**Tier 2 / future broker adapters:**
 - Google Cloud Pub/Sub
 - AWS SNS
 - Azure Service Bus
@@ -94,12 +100,6 @@ Config-driven selection via `[emitter]` section in `hookbox.toml`. Single emitte
 - Protobuf with schema registry
 - Avro with schema registry
 - MessagePack
-
-**Future gRPC enhancements:**
-- User-provided proto definitions
-- Bidirectional streaming
-- TLS/mTLS
-- Load balancing
 
 **Future Kafka enhancements:**
 - Schema Registry (Confluent/Redpanda)

@@ -1,18 +1,24 @@
 # Emitter Adapters — Design Specification
 
-Add 7 message broker emitter adapters so hookbox can forward webhook events to real infrastructure instead of draining to a log.
+Add 3 message broker emitter adapters so hookbox can forward webhook events to real infrastructure instead of draining to a log.
 
 ## Scope
 
-7 new crates, each implementing the `Emitter` trait:
+**V1 (ship now):**
+- `channel` (existing, dev/default)
+- `hookbox-emitter-kafka` — rdkafka with static linking
+- `hookbox-emitter-nats` — async-nats
+- `hookbox-emitter-sqs` — aws-sdk-sqs
 
-1. **Kafka** — `rdkafka` with static linking
-2. **NATS** — `async-nats`
-3. **AWS SQS** — `aws-sdk-sqs`
-4. **Redis Streams** — `redis` crate
-5. **RabbitMQ** — `lapin`
-6. **Apache Pulsar** — `pulsar` crate
-7. **gRPC** — `tonic` + `prost` with hookbox-defined proto
+**V2 (next batch):**
+- `hookbox-emitter-redis` — Redis Streams (most likely next)
+
+**Deferred:**
+- `hookbox-emitter-rabbitmq` — RabbitMQ/AMQP (legacy compatibility, sharp-edged exchange pre-existence)
+- `hookbox-emitter-pulsar` — Apache Pulsar (sophisticated users can wait)
+
+**Rejected for emitter family:**
+- gRPC — breaks the "emit JSON to broker" model, different contract shape (proto vs JSON), semantic mismatch. Better suited as a separate integration/transport mode, not an emitter adapter.
 
 ---
 
@@ -61,11 +67,9 @@ This allows `Arc<dyn Emitter + Send + Sync>` to satisfy `E: Emitter` for both th
 ### Message key
 
 All emitters use `receipt_id` as the message key/ID for:
-- Partition affinity (Kafka, Pulsar)
+- Partition affinity (Kafka)
 - Deduplication (SQS FIFO, when FIFO queue is configured)
 - Traceability (all backends)
-
-Note: Redis Streams ordering is controlled by the server-assigned entry ID (the `*` auto-ID in `XADD`), not by `receipt_id`. The `receipt_id` is stored as a field within the stream entry for traceability only.
 
 ---
 
@@ -75,10 +79,6 @@ Note: Redis Streams ordering is controlled by the server-assigned entry ID (the 
 crates/hookbox-emitter-kafka/      # rdkafka, produces to topic
 crates/hookbox-emitter-nats/       # async-nats, publishes to subject
 crates/hookbox-emitter-sqs/        # aws-sdk-sqs, sends to queue URL
-crates/hookbox-emitter-redis/      # redis, XADD to stream
-crates/hookbox-emitter-rabbitmq/   # lapin, publishes to exchange
-crates/hookbox-emitter-pulsar/     # pulsar, produces to topic
-crates/hookbox-emitter-grpc/       # tonic client, calls unary RPC
 ```
 
 Each crate:
@@ -97,7 +97,7 @@ Each crate:
 
 ```toml
 [emitter]
-type = "kafka"  # kafka | nats | sqs | redis | rabbitmq | pulsar | grpc | channel
+type = "kafka"  # kafka | nats | sqs | channel
 
 [emitter.kafka]
 brokers = "localhost:9092"
@@ -114,24 +114,7 @@ subject = "hookbox.events"
 [emitter.sqs]
 queue_url = "https://sqs.us-east-1.amazonaws.com/123456789/hookbox-events"
 region = "us-east-1"
-
-[emitter.redis]
-url = "redis://localhost:6379"
-stream = "hookbox:events"
-maxlen = 10000                 # optional, approximate MAXLEN for trimming
-
-[emitter.rabbitmq]
-url = "amqp://guest:guest@localhost:5672"
-exchange = "hookbox"
-routing_key = "events"
-
-[emitter.pulsar]
-url = "pulsar://localhost:6650"
-topic = "persistent://public/default/hookbox-events"
-
-[emitter.grpc]
-endpoint = "http://localhost:50051"
-timeout_ms = 5000              # optional
+fifo = false   # set to true for .fifo queues; enables MessageGroupId + MessageDeduplicationId
 ```
 
 ### Config structs
@@ -146,10 +129,6 @@ pub struct EmitterConfig {
     pub kafka: Option<KafkaEmitterConfig>,
     pub nats: Option<NatsEmitterConfig>,
     pub sqs: Option<SqsEmitterConfig>,
-    pub redis: Option<RedisEmitterConfig>,
-    pub rabbitmq: Option<RabbitmqEmitterConfig>,
-    pub pulsar: Option<PulsarEmitterConfig>,
-    pub grpc: Option<GrpcEmitterConfig>,
 }
 
 fn default_emitter_type() -> String {
@@ -157,7 +136,7 @@ fn default_emitter_type() -> String {
 }
 ```
 
-All 7 new adapter crates must be added to:
+All 3 new adapter crates must be added to:
 1. The `[workspace]` `members` array in the root `Cargo.toml`
 2. The `[dependencies]` section of `hookbox-cli/Cargo.toml` (hookbox-cli, not hookbox-server, constructs and owns the emitter)
 
@@ -184,28 +163,8 @@ let emitter: Arc<dyn Emitter + Send + Sync> = match config.emitter.emitter_type.
             .ok_or_else(|| anyhow!("[emitter.sqs] section required when type = \"sqs\""))?;
         Arc::new(SqsEmitter::new(/* fields from cfg */).await?)
     }
-    "redis" => {
-        let cfg = config.emitter.redis.as_ref()
-            .ok_or_else(|| anyhow!("[emitter.redis] section required when type = \"redis\""))?;
-        Arc::new(RedisEmitter::new(/* fields from cfg */)?)
-    }
-    "rabbitmq" => {
-        let cfg = config.emitter.rabbitmq.as_ref()
-            .ok_or_else(|| anyhow!("[emitter.rabbitmq] section required when type = \"rabbitmq\""))?;
-        Arc::new(RabbitmqEmitter::new(/* fields from cfg */).await?)
-    }
-    "pulsar" => {
-        let cfg = config.emitter.pulsar.as_ref()
-            .ok_or_else(|| anyhow!("[emitter.pulsar] section required when type = \"pulsar\""))?;
-        Arc::new(PulsarEmitter::new(/* fields from cfg */).await?)
-    }
-    "grpc" => {
-        let cfg = config.emitter.grpc.as_ref()
-            .ok_or_else(|| anyhow!("[emitter.grpc] section required when type = \"grpc\""))?;
-        Arc::new(GrpcEmitter::new(/* fields from cfg */).await?)
-    }
     "channel" => Arc::new(ChannelEmitter::new(/* spawn drain task */)),
-    other => bail!("unknown emitter type {:?}; valid values: kafka, nats, sqs, redis, rabbitmq, pulsar, grpc, channel", other),
+    other => bail!("unknown emitter type {:?}; valid values: kafka, nats, sqs, channel", other),
 };
 
 let pipeline_emitter = Arc::clone(&emitter);
@@ -247,99 +206,6 @@ The pipeline and worker each receive an `Arc::clone` of the shared emitter.
 - **FIFO support**: controlled by the `fifo` config field (default: `false`). `MessageGroupId` and `MessageDeduplicationId` are only set when `fifo = true`. Standard queues reject these fields and must not receive them.
 - **Region**: from config or AWS defaults
 - **Errors**: SDK errors → `EmitError::Downstream`
-
-Config additions:
-
-```toml
-[emitter.sqs]
-queue_url = "https://sqs.us-east-1.amazonaws.com/123456789/hookbox-events"
-region = "us-east-1"
-fifo = false   # set to true for .fifo queues; enables MessageGroupId + MessageDeduplicationId
-```
-
-### Redis Streams (`hookbox-emitter-redis`)
-
-- **Crate dep**: `redis = { version = "0.27", features = ["aio", "tokio-comp"] }`
-- **Connection**: `redis::Client::open(url)` → `get_multiplexed_tokio_connection()`
-- **Command**: `XADD stream [MAXLEN ~ maxlen] * field1 value1 field2 value2 ...`
-  - The `*` auto-ID instructs Redis to assign a monotonic entry ID (millisecond timestamp + sequence). hookbox does not control ordering — Redis stream ordering is by server-assigned entry ID.
-  - Example: `XADD hookbox:events MAXLEN ~ 10000 * receipt_id <uuid> provider stripe event_type charge.succeeded payload <json>`
-- **Fields stored per entry**: `receipt_id` (for traceability), `provider`, `event_type`, `payload` (JSON-encoded `NormalizedEvent`)
-- **Ordering**: determined by Redis entry ID (`*`), not by `receipt_id`. `receipt_id` is stored as a field for lookup and traceability only, not for ordering.
-- **Trimming**: approximate MAXLEN from config (default: no trim)
-- **Errors**: connection/command errors → `EmitError::Downstream`
-
-### RabbitMQ (`hookbox-emitter-rabbitmq`)
-
-- **Crate dep**: `lapin = "2"`
-- **Connection**: `Connection::connect(url, ConnectionProperties::default().with_tokio())`
-- **Channel**: create channel, then publish directly — hookbox does **not** auto-declare exchanges
-- **Publish**: `channel.basic_publish(exchange, routing_key, options, payload, properties)`
-- **Properties**: `content_type = "application/json"`, `delivery_mode = 2` (persistent), `message_id = receipt_id`
-- **Exchange lifecycle**: the exchange must pre-exist before hookbox starts. Use RabbitMQ Management UI or CLI to create it. hookbox will return `EmitError::Downstream` if the exchange does not exist.
-- **Errors**: connection/publish errors → `EmitError::Downstream`
-
-Config additions:
-
-```toml
-[emitter.rabbitmq]
-url = "amqp://guest:guest@localhost:5672"
-exchange = "hookbox"
-routing_key = "events"
-# exchange_type = "direct"  # documentation only; hookbox does not declare the exchange.
-                             # hookbox assumes the exchange already exists.
-                             # Use RabbitMQ management to create it before starting hookbox.
-```
-
-### Apache Pulsar (`hookbox-emitter-pulsar`)
-
-- **Crate dep**: `pulsar = "6"`
-- **Producer**: `Pulsar::builder(url).build().await` → `client.producer().with_topic(topic).build().await`
-- **Send**: `producer.send(json_bytes).await` with key = receipt_id
-- **Schema**: raw bytes (JSON)
-- **Errors**: producer errors → `EmitError::Downstream`
-
-### gRPC (`hookbox-emitter-grpc`)
-
-- **Crate deps**: `tonic = "0.12"`, `prost = "0.13"`, `tonic-build = "0.12"` (build dep)
-- **Wire format**: protobuf (this is the one exception to the JSON-only rule — gRPC uses protobuf over the wire by design). The JSON-only serialization rule applies to message-broker emitters (Kafka, NATS, SQS, Redis, RabbitMQ, Pulsar).
-- **Proto**: `proto/hookbox_event.proto` defined by hookbox:
-
-```protobuf
-syntax = "proto3";
-package hookbox.v1;
-
-message WebhookEvent {
-  string receipt_id = 1;
-  string provider_name = 2;
-  optional string event_type = 3;
-  optional string external_reference = 4;
-  optional string parsed_payload = 5;   // JSON-encoded string (serde_json::Value serialized to String)
-  string payload_hash = 6;
-  string received_at = 7;
-  string metadata = 8;                  // JSON-encoded string (serde_json::Value serialized to String)
-}
-
-message EmitRequest {
-  WebhookEvent event = 1;
-}
-
-message EmitResponse {
-  bool success = 1;
-  optional string error = 2;
-}
-
-service HookboxEmitter {
-  rpc Emit(EmitRequest) returns (EmitResponse);
-}
-```
-
-- **JSON fields in proto**: `parsed_payload` and `metadata` are `serde_json::Value` in Rust but `string` in proto. They are JSON-encoded strings (i.e., the `serde_json::Value` is serialized to a JSON string, then placed in the proto string field). This double-encoding is expected and standard for flexible schemas in protobuf when a schema registry is not used.
-- **Client**: `HookboxEmitterClient::connect(endpoint).await`
-- **Call**: `client.emit(EmitRequest { event }).await`
-- **Timeout**: configurable (default: 5s)
-- **Response mapping**: `EmitResponse { success: false, error }` → `EmitError::Downstream(error.unwrap_or_default())`
-- **Errors**: tonic `Status` → `EmitError::Downstream`, timeout → `EmitError::Timeout`
 
 ---
 
@@ -388,14 +254,14 @@ Currently `AppState` is generic over `E: Emitter`. With `Arc<dyn Emitter + Send 
 ### Unit tests per crate
 
 Each emitter crate has `#[cfg(test)] mod tests` with:
-- Mock/embedded backend where feasible (Redis via `redis-test`, NATS via `nats-server` test util)
+- Mock/embedded backend where feasible (NATS via `nats-server` test util)
 - Config parsing tests
 - Error mapping tests
 - Serialization format verification (JSON output matches expected structure)
 
 ### Integration tests
 
-For backends that need real infrastructure (Kafka, SQS, Pulsar):
+For backends that need real infrastructure (Kafka, SQS):
 - Tests marked `#[ignore]` by default
 - CI can run them with Docker services (like the Postgres integration tests)
 - Environment variables for connection strings
@@ -423,12 +289,6 @@ Everything below is out of scope for this pass but tracked for follow-up.
 - Protobuf native serialization with schema registry
 - Avro serialization with schema registry
 - MessagePack binary serialization
-
-### gRPC Enhancements
-- User-provided proto definitions (custom event schema)
-- Bidirectional streaming (not just unary RPC)
-- TLS/mTLS configuration
-- Load balancing across multiple gRPC endpoints
 
 ### NATS Enhancements
 - JetStream support for guaranteed delivery
@@ -458,3 +318,136 @@ Everything below is out of scope for this pass but tracked for follow-up.
 - No exactly-once semantics (at-least-once by design)
 - No custom serialization formats (JSON only)
 - No emitter-specific metrics (use existing pipeline metrics)
+
+---
+
+## V2 / Deferred / Rejected
+
+### V2 — Redis Streams (`hookbox-emitter-redis`)
+
+Spec preserved for the next batch. Most likely next after V1 ships.
+
+- **Crate dep**: `redis = { version = "0.27", features = ["aio", "tokio-comp"] }`
+- **Connection**: `redis::Client::open(url)` → `get_multiplexed_tokio_connection()`
+- **Command**: `XADD stream [MAXLEN ~ maxlen] * field1 value1 field2 value2 ...`
+  - The `*` auto-ID instructs Redis to assign a monotonic entry ID (millisecond timestamp + sequence). hookbox does not control ordering — Redis stream ordering is by server-assigned entry ID.
+  - Example: `XADD hookbox:events MAXLEN ~ 10000 * receipt_id <uuid> provider stripe event_type charge.succeeded payload <json>`
+- **Fields stored per entry**: `receipt_id` (for traceability), `provider`, `event_type`, `payload` (JSON-encoded `NormalizedEvent`)
+- **Ordering**: determined by Redis entry ID (`*`), not by `receipt_id`. `receipt_id` is stored as a field for lookup and traceability only, not for ordering.
+- **Trimming**: approximate MAXLEN from config (default: no trim)
+- **Errors**: connection/command errors → `EmitError::Downstream`
+
+Config (for when promoted to V1):
+
+```toml
+[emitter.redis]
+url = "redis://localhost:6379"
+stream = "hookbox:events"
+maxlen = 10000                 # optional, approximate MAXLEN for trimming
+```
+
+Note on `receipt_id` and message key: Redis Streams ordering is controlled by the server-assigned entry ID (the `*` auto-ID in `XADD`), not by `receipt_id`. The `receipt_id` is stored as a field within the stream entry for traceability only.
+
+---
+
+### Deferred — RabbitMQ (`hookbox-emitter-rabbitmq`)
+
+**Status: Deferred.** Legacy compatibility use case. Sharp edge: exchange must pre-exist before hookbox starts. Deferred until there is concrete user demand.
+
+- **Crate dep**: `lapin = "2"`
+- **Connection**: `Connection::connect(url, ConnectionProperties::default().with_tokio())`
+- **Channel**: create channel, then publish directly — hookbox does **not** auto-declare exchanges
+- **Publish**: `channel.basic_publish(exchange, routing_key, options, payload, properties)`
+- **Properties**: `content_type = "application/json"`, `delivery_mode = 2` (persistent), `message_id = receipt_id`
+- **Exchange lifecycle**: the exchange must pre-exist before hookbox starts. Use RabbitMQ Management UI or CLI to create it. hookbox will return `EmitError::Downstream` if the exchange does not exist.
+- **Errors**: connection/publish errors → `EmitError::Downstream`
+
+Config (for when promoted):
+
+```toml
+[emitter.rabbitmq]
+url = "amqp://guest:guest@localhost:5672"
+exchange = "hookbox"
+routing_key = "events"
+# exchange_type = "direct"  # documentation only; hookbox does not declare the exchange.
+                             # hookbox assumes the exchange already exists.
+                             # Use RabbitMQ management to create it before starting hookbox.
+```
+
+---
+
+### Deferred — Apache Pulsar (`hookbox-emitter-pulsar`)
+
+**Status: Deferred.** Sophisticated users who need Pulsar can wait. Deferred until there is concrete demand or a contributor steps up.
+
+- **Crate dep**: `pulsar = "6"`
+- **Producer**: `Pulsar::builder(url).build().await` → `client.producer().with_topic(topic).build().await`
+- **Send**: `producer.send(json_bytes).await` with key = receipt_id
+- **Schema**: raw bytes (JSON)
+- **Errors**: producer errors → `EmitError::Downstream`
+
+Config (for when promoted):
+
+```toml
+[emitter.pulsar]
+url = "pulsar://localhost:6650"
+topic = "persistent://public/default/hookbox-events"
+```
+
+---
+
+### Rejected — gRPC
+
+**Status: Rejected for the emitter adapter family.**
+
+**Reasoning:** gRPC breaks the "emit JSON to broker" model that defines this family of adapters. The emitter contract is: serialize `NormalizedEvent` as JSON, deliver bytes to a message broker topic/queue/stream. gRPC inverts this — instead of pushing to a broker, it makes a synchronous RPC call to a downstream service. This is a fundamentally different contract shape:
+
+- Wire format: protobuf (not JSON) — the one exception to the JSON-only rule would be gRPC
+- Delivery model: synchronous RPC call vs. async broker enqueue
+- Schema: proto definition vs. JSON schema
+- Failure mode: RPC timeout/error vs. broker unavailability
+- Consumer model: single RPC endpoint vs. arbitrary broker consumers
+
+gRPC is better suited as a separate integration/transport mode — not an emitter adapter. If added in the future, it should be a distinct abstraction, not crammed into the `Emitter` trait family.
+
+**Preserved spec (for reference if ever revisited):**
+
+- **Crate deps**: `tonic = "0.12"`, `prost = "0.13"`, `tonic-build = "0.12"` (build dep)
+- **Wire format**: protobuf (this is the one exception to the JSON-only rule — gRPC uses protobuf over the wire by design). The JSON-only serialization rule applies to message-broker emitters (Kafka, NATS, SQS, Redis, RabbitMQ, Pulsar).
+- **Proto**: `proto/hookbox_event.proto` defined by hookbox:
+
+```protobuf
+syntax = "proto3";
+package hookbox.v1;
+
+message WebhookEvent {
+  string receipt_id = 1;
+  string provider_name = 2;
+  optional string event_type = 3;
+  optional string external_reference = 4;
+  optional string parsed_payload = 5;   // JSON-encoded string (serde_json::Value serialized to String)
+  string payload_hash = 6;
+  string received_at = 7;
+  string metadata = 8;                  // JSON-encoded string (serde_json::Value serialized to String)
+}
+
+message EmitRequest {
+  WebhookEvent event = 1;
+}
+
+message EmitResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+service HookboxEmitter {
+  rpc Emit(EmitRequest) returns (EmitResponse);
+}
+```
+
+- **JSON fields in proto**: `parsed_payload` and `metadata` are `serde_json::Value` in Rust but `string` in proto. They are JSON-encoded strings (i.e., the `serde_json::Value` is serialized to a JSON string, then placed in the proto string field). This double-encoding is expected and standard for flexible schemas in protobuf when a schema registry is not used.
+- **Client**: `HookboxEmitterClient::connect(endpoint).await`
+- **Call**: `client.emit(EmitRequest { event }).await`
+- **Timeout**: configurable (default: 5s)
+- **Response mapping**: `EmitResponse { success: false, error }` → `EmitError::Downstream(error.unwrap_or_default())`
+- **Errors**: tonic `Status` → `EmitError::Downstream`, timeout → `EmitError::Timeout`
