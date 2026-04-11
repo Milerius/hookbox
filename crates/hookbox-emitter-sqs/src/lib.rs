@@ -74,10 +74,9 @@ impl Emitter for SqsEmitter {
                 .message_deduplication_id(event.receipt_id.to_string());
         }
 
-        request
-            .send()
-            .await
-            .map_err(|e| EmitError::Downstream(e.to_string()))?;
+        request.send().await.map_err(|e| {
+            EmitError::Downstream(format!("sqs send failed: {e:?}"))
+        })?;
 
         tracing::debug!(
             receipt_id = %event.receipt_id,

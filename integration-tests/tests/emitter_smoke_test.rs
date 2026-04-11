@@ -68,9 +68,12 @@ async fn nats_emitter_smoke() {
 #[tokio::test]
 #[ignore = "requires LocalStack SQS (docker-compose)"]
 async fn sqs_emitter_smoke() {
+    let queue_url = std::env::var("SQS_QUEUE_URL")
+        .unwrap_or_else(|_| "http://localhost:4566/000000000000/hookbox-smoke-test".to_owned());
+    let region = std::env::var("AWS_REGION").ok();
     let emitter = hookbox_emitter_sqs::SqsEmitter::new(
-        "http://localhost:4566/000000000000/hookbox-smoke-test".to_owned(),
-        Some("us-east-1"),
+        queue_url,
+        region.as_deref(),
         false,
     )
     .await

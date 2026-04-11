@@ -105,7 +105,7 @@ toml = "0.8.23"
 rdkafka = { version = "0.36", features = ["cmake-build"] }
 async-nats = "0.38"
 aws-sdk-sqs = "1"
-aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-config = { version = "1", features = ["behavior-version-latest", "credentials-login"] }
 
 # Testing
 reqwest = { version = "0.12", features = ["json"] }
