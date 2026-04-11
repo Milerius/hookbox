@@ -77,17 +77,17 @@ hookbox dlq retry        --database-url <url> <receipt_id>
 
 Each subcommand:
 1. Connects to Postgres via `PgPoolOptions`
-2. Runs migrations via `PostgresStorage::migrate()`
+2. **Write commands only** (`replay`, `dlq retry`) run migrations via `PostgresStorage::migrate()`. Read-only commands (`receipts list`, `inspect`, `search`, `dlq list`, `dlq inspect`) skip migrations — this allows operators to use read-only Postgres roles or replicas safely.
 3. Calls `storage.query()` or `storage.get()` with appropriate filters
 4. Prints results to stdout as formatted text (human-readable)
 
 ### Replay and DLQ Retry in Direct-DB Mode
 
 The CLI is an ops tool for inspection and state management. In direct-DB mode:
-- `hookbox replay <id>` — sets state back to `Stored` so the running server's retry worker picks it up
-- `hookbox dlq retry <id>` — sets state from `DeadLettered` back to `EmitFailed` with `emit_count` reset to 0, so the retry worker retries it
+- `hookbox replay <id>` — sets state to `EmitFailed` with `emit_count` reset to 0, so the running server's retry worker picks it up and re-emits
+- `hookbox dlq retry <id>` — sets state from `DeadLettered` to `EmitFailed` with `emit_count` reset to 0, same mechanism
 
-Actual re-emission is the server's job. The CLI manages state transitions.
+Both commands use the same state transition (`→ EmitFailed, emit_count = 0`) so the retry worker's query (`processing_state = 'emit_failed' AND emit_count < max_attempts`) always finds them. Actual re-emission is the server's job. The CLI manages state transitions.
 
 ### Files Created
 
@@ -181,8 +181,8 @@ A background `tokio::spawn` task that runs a periodic retry loop:
 3. For each receipt:
    - Build `NormalizedEvent` from receipt
    - Call `emitter.emit(&event)`
-   - On success → `update_state(id, Emitted, None)` + increment `emit_count`
-   - On failure → increment `emit_count`. If `emit_count >= max_attempts` → `update_state(id, DeadLettered, error_msg)`
+   - On success → `update_state(id, Emitted, None)`
+   - On failure → call `retry_failed(id, max_attempts)` which atomically increments `emit_count` and promotes to `DeadLettered` if threshold reached (single SQL query, crash-safe)
 4. Loop back to step 1
 
 ### Configuration
@@ -215,17 +215,32 @@ EmitFailed (emit_count >= max) → DeadLettered
 
 ### Storage Requirements
 
-New method on `PostgresStorage` (not the core trait):
+New methods on `PostgresStorage` (not the core trait):
+
 ```rust
 pub async fn query_for_retry(&self, max_attempts: i32) -> Result<Vec<WebhookReceipt>, StorageError>
 ```
 Queries: `SELECT * FROM webhook_receipts WHERE processing_state = 'emit_failed' AND emit_count < $1 ORDER BY received_at ASC LIMIT 100`
 
-Also need:
 ```rust
-pub async fn increment_emit_count(&self, id: Uuid) -> Result<(), StorageError>
+pub async fn retry_failed(&self, id: Uuid, max_attempts: i32) -> Result<(), StorageError>
 ```
-Updates: `UPDATE webhook_receipts SET emit_count = emit_count + 1 WHERE receipt_id = $1`
+**Atomic single-query** state transition after a failed retry attempt:
+```sql
+UPDATE webhook_receipts
+SET emit_count = emit_count + 1,
+    processing_state = CASE
+        WHEN emit_count + 1 >= $2 THEN 'dead_lettered'
+        ELSE 'emit_failed'
+    END
+WHERE receipt_id = $1
+```
+This prevents the race where a crash between incrementing `emit_count` and setting `DeadLettered` strands a receipt outside both retry and DLQ processing. The query uses `>=` (not `==`) so receipts with `emit_count` already at or above `max_attempts` are always promoted to DLQ.
+
+```rust
+pub async fn reset_for_retry(&self, id: Uuid) -> Result<(), StorageError>
+```
+For CLI `replay` and `dlq retry`: sets `processing_state = 'emit_failed'` and `emit_count = 0`.
 
 ### Files Created
 
