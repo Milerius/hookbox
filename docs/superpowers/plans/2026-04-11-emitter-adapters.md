@@ -52,9 +52,9 @@
 
 In `crates/hookbox/src/emitter.rs`, add after the existing implementations:
 
-```rust
-use std::sync::Arc;
+> Note: Verify `std::sync::Arc` is already imported (it should be) — do not add a duplicate `use std::sync::Arc;`.
 
+```rust
 #[async_trait]
 impl<T: Emitter + ?Sized + Send + Sync> Emitter for Box<T> {
     async fn emit(&self, event: &NormalizedEvent) -> Result<(), EmitError> {
@@ -182,6 +182,8 @@ pub type ServerAppState = AppState<
 
 Add `use std::sync::Arc;` and `use hookbox::traits::Emitter;` if not present.
 
+> Note: Remove the direct `ChannelEmitter` import from `lib.rs` if it becomes unused after the alias change.
+
 - [ ] **Step 4: Add workspace deps**
 
 In root `Cargo.toml`, add to `[workspace.dependencies]`:
@@ -256,7 +258,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
-use tracing;
 
 use hookbox::error::EmitError;
 use hookbox::traits::Emitter;
@@ -391,7 +392,6 @@ Add `"crates/hookbox-emitter-nats"` to workspace members.
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use tracing;
 
 use hookbox::error::EmitError;
 use hookbox::traits::Emitter;
@@ -501,7 +501,6 @@ Add `"crates/hookbox-emitter-sqs"` to workspace members.
 //! Supports both standard and FIFO queues.
 
 use async_trait::async_trait;
-use tracing;
 
 use hookbox::error::EmitError;
 use hookbox::traits::Emitter;
@@ -674,6 +673,8 @@ Remove the old separate `ChannelEmitter` + drain task code that was previously o
 
 The `drain_emitter` function stays — it's used by the `"channel"` arm.
 
+> Note: Clean up stale imports — remove old `use hookbox::emitter::ChannelEmitter;` if it is now referenced via full path only in the channel match arm.
+
 - [ ] **Step 3: Update ServerAppState usage**
 
 Since `ServerAppState` now uses `Arc<dyn Emitter + Send + Sync>` as `E`, update any code that explicitly references `ChannelEmitter` as the emitter type.
@@ -836,6 +837,8 @@ mod tests {
 
 Add `mod emitter_props;` to `crates/hookbox-verify/src/lib.rs`.
 
+In `crates/hookbox-verify/Cargo.toml`, add `chrono.workspace = true` to `[dependencies]` (the property tests call `chrono::Utc::now()`). The `tokio` workspace dep already has `features = ["full"]` which includes `rt-multi-thread` — no change needed there.
+
 - [ ] **Step 3: Run tests**
 
 Run: `cargo test -p hookbox-verify --all-features`
@@ -901,7 +904,6 @@ git commit -m "test(hookbox): add BDD scenarios for emitter selection"
 
 **Files:**
 - Modify: `crates/hookbox-server/src/routes/tests.rs`
-- Modify: `integration-tests/tests/http_test.rs`
 
 ### Steps
 
@@ -984,9 +986,9 @@ url = "postgres://localhost/hookbox"
 
 - [ ] **Step 2: Add Arc<dyn Emitter> route test**
 
-In `crates/hookbox-server/src/routes/tests.rs`, add a test that verifies the in-memory route tests work with `Arc<dyn Emitter>` as the emitter type (instead of concrete `ChannelEmitter`). This validates the `ServerAppState` alias change.
+In `crates/hookbox-server/src/routes/tests.rs`, add a test that verifies the in-memory route tests work with `Arc<dyn Emitter + Send + Sync>` as the emitter type (instead of concrete `ChannelEmitter`). This validates the `ServerAppState` alias change.
 
-The implementing agent should verify the existing tests still pass after the type alias change, and add one explicit test that constructs `AppState` with `Arc<ChannelEmitter>` as the emitter.
+The implementing agent should verify the existing tests still pass after the type alias change, and add one explicit test that constructs `AppState` with `Arc<dyn Emitter + Send + Sync>` (wrapping a `ChannelEmitter`) as the emitter type — this validates the `ServerAppState` alias change works end-to-end through the router.
 
 - [ ] **Step 3: Run tests**
 
@@ -1043,7 +1045,16 @@ This task documents how to test against real brokers. Tests are `#[ignore]` by d
 //!
 //! ```bash
 //! # Start brokers
-//! docker run -d --name kafka -p 9092:9092 confluentinc/cp-kafka:latest
+//! docker run -d --name kafka -p 9092:9092 \
+//!   -e KAFKA_NODE_ID=1 \
+//!   -e KAFKA_PROCESS_ROLES=broker,controller \
+//!   -e KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093 \
+//!   -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
+//!   -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+//!   -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
+//!   -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 \
+//!   -e CLUSTER_ID=$(uuidgen) \
+//!   confluentinc/cp-kafka:7.6.0
 //! docker run -d --name nats -p 4222:4222 nats:latest
 //!
 //! # Run smoke tests
