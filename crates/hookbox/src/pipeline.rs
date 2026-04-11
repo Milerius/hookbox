@@ -801,11 +801,7 @@ mod tests {
         };
 
         // Exercise get()
-        let found = pipeline
-            .storage()
-            .get(receipt_id.0)
-            .await
-            .unwrap();
+        let found = pipeline.storage().get(receipt_id.0).await.unwrap();
         assert!(found.is_some(), "get() should find the stored receipt");
         assert_eq!(found.unwrap().receipt_id, receipt_id);
 

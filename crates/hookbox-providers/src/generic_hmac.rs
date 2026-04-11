@@ -215,11 +215,8 @@ mod tests {
 
     #[tokio::test]
     async fn provider_name_returns_configured_name() {
-        let verifier = GenericHmacVerifier::new(
-            "my-provider",
-            b"secret".to_vec(),
-            "X-Sig".to_owned(),
-        );
+        let verifier =
+            GenericHmacVerifier::new("my-provider", b"secret".to_vec(), "X-Sig".to_owned());
         assert_eq!(verifier.provider_name(), "my-provider");
     }
 }

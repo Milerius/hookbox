@@ -107,7 +107,11 @@ async fn query_failed_since_returns_failed_receipts() {
 
     // Move the receipt to EmitFailed so it shows up in query_failed_since.
     storage
-        .update_state(receipt_id.0, ProcessingState::EmitFailed, Some("test error"))
+        .update_state(
+            receipt_id.0,
+            ProcessingState::EmitFailed,
+            Some("test error"),
+        )
         .await
         .expect("update_state should succeed");
 
@@ -173,17 +177,14 @@ async fn query_with_provider_event_id_filter() {
         provider_event_id: Some("nonexistent-event-id".to_owned()),
         ..Default::default()
     };
-    let results = storage
-        .query(filter)
-        .await
-        .expect("query should succeed");
+    let results = storage.query(filter).await.expect("query should succeed");
     assert!(
         results.is_empty(),
         "filtering by nonexistent provider_event_id should return empty"
     );
 }
 
-/// Test `retry_failed` on a non-existent receipt ID (rows_affected == 0).
+/// Test `retry_failed` on a non-existent receipt ID (`rows_affected` == 0).
 #[tokio::test]
 async fn retry_failed_on_nonexistent_id_logs_warn_and_succeeds() {
     let _guard = ingest_test_lock().lock().await;
@@ -194,10 +195,13 @@ async fn retry_failed_on_nonexistent_id_logs_warn_and_succeeds() {
     let nonexistent = Uuid::new_v4();
     let result = storage.retry_failed(nonexistent, 5).await;
     // Should succeed (no error) even when no row is matched.
-    assert!(result.is_ok(), "retry_failed on nonexistent id should succeed");
+    assert!(
+        result.is_ok(),
+        "retry_failed on nonexistent id should succeed"
+    );
 }
 
-/// Test `update_state` on a non-existent receipt ID (rows_affected == 0).
+/// Test `update_state` on a non-existent receipt ID (`rows_affected` == 0).
 #[tokio::test]
 async fn update_state_on_nonexistent_id_logs_warn_and_succeeds() {
     let _guard = ingest_test_lock().lock().await;

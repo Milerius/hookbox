@@ -160,8 +160,7 @@ mod tests {
     fn compute_stripe_sig(secret: &str, timestamp: u64, body: &[u8]) -> String {
         let body_str = std::str::from_utf8(body).expect("valid UTF-8 body");
         let signed_payload = format!("{timestamp}.{body_str}");
-        let mut mac =
-            HmacSha256::new_from_slice(secret.as_bytes()).expect("valid secret length");
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("valid secret length");
         mac.update(signed_payload.as_bytes());
         hex::encode(mac.finalize().into_bytes())
     }

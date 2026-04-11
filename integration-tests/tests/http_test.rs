@@ -350,11 +350,7 @@ async fn ingest_verification_failed_returns_401() {
         .await
         .unwrap();
 
-    assert_eq!(
-        resp.status(),
-        401,
-        "verification failure should return 401"
-    );
+    assert_eq!(resp.status(), 401, "verification failure should return 401");
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "verification_failed");
     assert_eq!(body["reason"], "test_rejection");

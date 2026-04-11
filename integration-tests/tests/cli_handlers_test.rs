@@ -394,7 +394,7 @@ async fn replay_failed_replays_emit_failed_receipts() {
         .expect("replay failed should succeed");
 }
 
-/// Ingest a receipt with a specific external_reference.
+/// Ingest a receipt with a specific `external_reference`.
 async fn ingest_receipt_with_ref(pool: &PgPool, provider: &str, external_ref: &str) -> Uuid {
     let storage = PostgresStorage::new(pool.clone());
     let receipt_id = Uuid::new_v4();

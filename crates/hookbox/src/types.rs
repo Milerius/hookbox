@@ -184,7 +184,10 @@ mod tests {
             "metadata": {}
         }"#;
         let result = serde_json::from_str::<WebhookReceipt>(bad_json);
-        assert!(result.is_err(), "expected deserialization to fail on bad base64");
+        assert!(
+            result.is_err(),
+            "expected deserialization to fail on bad base64"
+        );
     }
 
     #[test]
