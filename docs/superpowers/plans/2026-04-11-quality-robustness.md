@@ -34,7 +34,7 @@
 | `crates/hookbox-verify/src/retry_props.rs` | Non-tautological tests against shared functions |
 | `crates/hookbox-verify/src/metrics_props.rs` | Non-tautological tests against shared functions |
 | `crates/hookbox-verify/src/kani_proofs.rs` | Proofs against shared transition function |
-| `integration-tests/tests/http_test.rs` | Additional coverage tests |
+| `crates/hookbox-server/src/routes/tests.rs` | Additional coverage tests (admin routes, ingest edge cases) |
 
 ---
 
@@ -81,18 +81,35 @@ pub fn dedupe_decision_label(decision: DedupeDecision) -> &'static str {
     }
 }
 
-/// The set of valid ingest result metric labels.
+/// Individual ingest result metric label constants.
+/// Used directly in pipeline.rs so the label strings and the exhaustive set
+/// are defined in one place — making `INGEST_RESULT_LABELS` non-tautological.
+pub const LABEL_ACCEPTED: &str = "accepted";
+pub const LABEL_DUPLICATE: &str = "duplicate";
+pub const LABEL_VERIFICATION_FAILED: &str = "verification_failed";
+pub const LABEL_STORE_FAILED: &str = "store_failed";
+pub const LABEL_DEDUPE_FAILED: &str = "dedupe_failed";
+
+/// The exhaustive set of valid ingest result metric labels.
+/// Bolero tests verify this set is complete; pipeline.rs references the
+/// same constants above — so any added variant that is not in both places
+/// will be caught at compile-time or by the property test.
 pub const INGEST_RESULT_LABELS: &[&str] = &[
-    "accepted",
-    "duplicate",
-    "verification_failed",
-    "store_failed",
-    "dedupe_failed",
+    LABEL_ACCEPTED,
+    LABEL_DUPLICATE,
+    LABEL_VERIFICATION_FAILED,
+    LABEL_STORE_FAILED,
+    LABEL_DEDUPE_FAILED,
 ];
 
 /// Compute the next state after a failed retry attempt.
 ///
-/// This models the atomic SQL transition in `PostgresStorage::retry_failed()`:
+/// **Specification model** — this mirrors the SQL CASE logic in
+/// `PostgresStorage::retry_failed()` — both must be kept in sync.
+/// It is NOT the actual code path; it exists so that Bolero/Kani can test
+/// the intended transition invariants without running SQL.
+///
+/// SQL equivalent:
 /// ```sql
 /// SET emit_count = emit_count + 1,
 ///     processing_state = CASE WHEN emit_count + 1 >= max THEN 'dead_lettered' ELSE 'emit_failed' END
@@ -177,6 +194,22 @@ In `crates/hookbox/src/pipeline.rs`, replace inline label string derivation with
 
 The implementing agent should read pipeline.rs, find the places where verification status and dedupe decision are converted to strings for metrics labels, and replace them with the shared functions.
 
+> **Note — production vs. model code:**
+> - `verification_status_label()` and `dedupe_decision_label()` are **production code** extracted from pipeline.rs. The Bolero tests against these are non-tautological because they exercise the real code path.
+> - `retry_next_state()` is a **specification model** that mirrors the SQL CASE logic in `PostgresStorage::retry_failed()` — both must be kept in sync. It is not the actual code path; it exists to give Bolero/Kani something to test that represents the intended SQL behavior. The real enforcement is that both the model and the SQL implement the same invariants.
+
+Also replace the hard-coded label strings in pipeline.rs `ingest_results_total` calls with references to constants from `transitions.rs`. For example, instead of `"result" => "accepted"`, use `"result" => hookbox::transitions::LABEL_ACCEPTED`. Add the following constants to `transitions.rs`:
+
+```rust
+pub const LABEL_ACCEPTED: &str = "accepted";
+pub const LABEL_DUPLICATE: &str = "duplicate";
+pub const LABEL_VERIFICATION_FAILED: &str = "verification_failed";
+pub const LABEL_STORE_FAILED: &str = "store_failed";
+pub const LABEL_DEDUPE_FAILED: &str = "dedupe_failed";
+```
+
+This makes the `INGEST_RESULT_LABELS` constant array and the Bolero exhaustiveness test non-tautological: pipeline.rs references the same constants, so a mismatch between the array and actual usage becomes a compile-time or test-time error.
+
 - [ ] **Step 4: Run tests and lint**
 
 Run: `cargo test -p hookbox && cargo clippy -p hookbox --all-targets -- -D warnings`
@@ -198,7 +231,6 @@ git commit -m "refactor(hookbox): extract shared transition functions into trans
 - Modify: `crates/hookbox-verify/src/retry_props.rs`
 - Modify: `crates/hookbox-verify/src/metrics_props.rs`
 - Modify: `crates/hookbox-verify/src/kani_proofs.rs`
-- Modify: `crates/hookbox-verify/Cargo.toml`
 
 Replace tautological tests with ones that call the shared transition functions.
 
@@ -387,7 +419,7 @@ Tests to add:
 - `replay_nonexistent_returns_404` — POST /api/receipts/:random-uuid/replay → 404
 - `list_receipts_with_provider_filter` — ingest for two providers, filter by one
 - `list_receipts_with_state_filter` — filter by processing state
-- `list_receipts_with_limit` — verify limit parameter works
+- `list_receipts_with_limit` — verify the HTTP query parameter `limit` is forwarded correctly to the storage filter; assert the response contains at most `limit` items. **Do not** assert that `MemoryStorage` implements pagination internally — instead assert the HTTP layer passes the parameter through. If `MemoryStorage::query()` currently ignores `filter.limit`, the implementing agent must also update it to apply `.take(limit)` on the result set so this test does not spuriously pass.
 - `get_receipt_after_ingest` — ingest then GET by ID, verify full JSON shape
 - `ingest_empty_body` — POST with empty body → should still return 200 (empty body is valid)
 - `ingest_non_json_body` — POST with plain text → 200 accepted (parsed_payload is None)
@@ -427,7 +459,7 @@ Test the retry worker against real Postgres.
 
 //! Integration tests for the retry worker.
 
-#![expect(clippy::expect_used, clippy::unwrap_used)]
+#![expect(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::time::Duration;
 
@@ -471,13 +503,13 @@ async fn worker_retries_emit_failed_receipt() {
 
     let body = Bytes::from(format!(r#"{{"nonce":"{}"}}"#, uuid::Uuid::new_v4()));
     let result = pipeline.ingest("test", HeaderMap::new(), body).await.unwrap();
-    let receipt_id = match result {
-        hookbox::IngestResult::Accepted { receipt_id } => receipt_id,
-        other => panic!("expected Accepted, got {other:?}"),
-    };
+    // `IngestResult::Accepted` yields a `ReceiptId` newtype; `.0` extracts the inner `Uuid`
+    // required by `storage.get()` and `storage.update_state()`.
+    let hookbox::IngestResult::Accepted { receipt_id } = result else { unreachable!() };
+    let receipt_uuid = receipt_id.0;
 
     // Receipt should be in EmitFailed state
-    let receipt = storage.get(receipt_id).await.unwrap().unwrap();
+    let receipt = storage.get(receipt_uuid).await.unwrap().unwrap();
     assert_eq!(receipt.processing_state, ProcessingState::EmitFailed);
 
     // Create a working emitter for the worker
@@ -498,7 +530,7 @@ async fn worker_retries_emit_failed_receipt() {
     handle.abort();
 
     // Receipt should now be Emitted
-    let receipt = storage.get(receipt_id).await.unwrap().unwrap();
+    let receipt = storage.get(receipt_uuid).await.unwrap().unwrap();
     assert_eq!(receipt.processing_state, ProcessingState::Emitted);
 }
 
@@ -518,18 +550,18 @@ async fn worker_promotes_to_dlq_after_max_attempts() {
 
     let body = Bytes::from(format!(r#"{{"nonce":"{}"}}"#, uuid::Uuid::new_v4()));
     let result = pipeline.ingest("test", HeaderMap::new(), body).await.unwrap();
-    let receipt_id = match result {
-        hookbox::IngestResult::Accepted { receipt_id } => receipt_id,
-        other => panic!("expected Accepted, got {other:?}"),
-    };
+    // `IngestResult::Accepted` yields a `ReceiptId` newtype; `.0` extracts the inner `Uuid`
+    // required by `storage.get()` and `storage.update_state()`.
+    let hookbox::IngestResult::Accepted { receipt_id } = result else { unreachable!() };
+    let receipt_uuid = receipt_id.0;
 
     // Set to EmitFailed and simulate 4 prior retries
-    storage.update_state(receipt_id, ProcessingState::EmitFailed, None).await.unwrap();
+    storage.update_state(receipt_uuid, ProcessingState::EmitFailed, None).await.unwrap();
     for _ in 0..4 {
-        storage.retry_failed(receipt_id, 5).await.unwrap();
+        storage.retry_failed(receipt_uuid, 5).await.unwrap();
     }
 
-    let receipt = storage.get(receipt_id).await.unwrap().unwrap();
+    let receipt = storage.get(receipt_uuid).await.unwrap().unwrap();
     assert_eq!(receipt.emit_count, 4);
     assert_eq!(receipt.processing_state, ProcessingState::EmitFailed);
 
@@ -548,18 +580,15 @@ async fn worker_promotes_to_dlq_after_max_attempts() {
     handle.abort();
 
     // Receipt should now be DeadLettered
-    let receipt = storage.get(receipt_id).await.unwrap().unwrap();
+    let receipt = storage.get(receipt_uuid).await.unwrap().unwrap();
     assert_eq!(receipt.processing_state, ProcessingState::DeadLettered);
     assert_eq!(receipt.emit_count, 5);
 }
 ```
 
-- [ ] **Step 2: Add deps to integration-tests Cargo.toml**
+- [ ] **Step 2: Verify deps in integration-tests Cargo.toml**
 
-Add if not present:
-```toml
-hookbox-server.workspace = true
-```
+Verify that `integration-tests/Cargo.toml` already contains `hookbox-server.workspace = true`. This dependency is expected to be present; no changes should be needed. If it is missing for any reason, add it.
 
 - [ ] **Step 3: Run tests**
 
@@ -600,6 +629,11 @@ git commit -m "test(integration): add worker retry and DLQ promotion tests"
 /// Listens for:
 /// - `SIGINT` (Ctrl-C)
 /// - `SIGTERM` (container orchestrators, systemd)
+///
+/// Signal handler installation failures are genuinely fatal (the process
+/// cannot safely handle shutdown), so `.expect()` is appropriate here.
+// Signal handler installation is fatal — expect() is intentional.
+#[expect(clippy::expect_used, reason = "signal handler installation is fatal and non-recoverable")]
 pub async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
@@ -676,6 +710,7 @@ git commit -m "feat(hookbox-server): add graceful shutdown with SIGTERM/SIGINT h
 **Files:**
 - Create: `crates/hookbox/benches/ingest.rs`
 - Modify: `crates/hookbox/Cargo.toml`
+- Modify: `Cargo.toml` (workspace root — add criterion to workspace deps if not present)
 
 A criterion benchmark for ingest pipeline throughput using in-memory backends.
 
@@ -705,6 +740,9 @@ Add `criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
 //! Benchmark for the ingest pipeline throughput.
 
+// Benchmarks are not production code — unwrap/expect are acceptable.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
@@ -714,12 +752,13 @@ use hookbox::dedupe::InMemoryRecentDedupe;
 use hookbox::emitter::ChannelEmitter;
 use hookbox::error::StorageError;
 use hookbox::pipeline::HookboxPipeline;
-use hookbox::state::{ProcessingState, StoreResult, VerificationResult, VerificationStatus};
-use hookbox::traits::{SignatureVerifier, Storage};
+use hookbox::state::{ProcessingState, StoreResult};
+use hookbox::traits::Storage;
 use hookbox::types::{ReceiptFilter, WebhookReceipt};
 use uuid::Uuid;
 
-// Minimal in-memory storage for benchmarking
+// Minimal in-memory storage for benchmarking.
+// No verifier is registered on the pipeline — verification is skipped automatically.
 struct BenchStorage {
     count: Mutex<u64>,
 }
@@ -745,19 +784,6 @@ impl Storage for BenchStorage {
     }
     async fn query(&self, _filter: ReceiptFilter) -> Result<Vec<WebhookReceipt>, StorageError> {
         Ok(vec![])
-    }
-}
-
-struct NoopVerifier;
-
-#[async_trait]
-impl SignatureVerifier for NoopVerifier {
-    fn provider_name(&self) -> &str { "bench" }
-    async fn verify(&self, _headers: &HeaderMap, _body: &[u8]) -> VerificationResult {
-        VerificationResult {
-            status: VerificationStatus::Skipped,
-            reason: Some("benchmark".to_owned()),
-        }
     }
 }
 
