@@ -96,68 +96,66 @@ where
         let dedupe_key = format!("{provider}:{payload_hash}");
 
         // ── Stage 2: Verify ───────────────────────────────────────────
-        let (verification_status, verification_reason) =
-            if let Some(verifier) = self.verifiers.get(provider) {
-                let result = verifier.verify(&headers, &body).await;
-                match result.status {
-                    VerificationStatus::Failed => {
-                        let reason = result
-                            .reason
-                            .unwrap_or_else(|| "verification_failed".to_owned());
-                        tracing::warn!(
-                            %receipt_id, %provider, reason = %reason,
-                            "webhook verification failed"
-                        );
-                        metrics::counter!(
-                            "hookbox_verification_results_total",
-                            "provider" => provider.to_owned(),
-                            "status" => "failed",
-                            "reason" => reason.clone()
-                        )
-                        .increment(1);
-                        metrics::counter!(
-                            "hookbox_ingest_results_total",
-                            "provider" => provider.to_owned(),
-                            "result" => "verification_failed"
-                        )
-                        .increment(1);
-                        metrics::histogram!("hookbox_ingest_duration_seconds")
-                            .record(ingest_start.elapsed().as_secs_f64());
-                        return Ok(IngestResult::VerificationFailed { reason });
-                    }
-                    status => {
-                        let status_label = match status {
-                            VerificationStatus::Verified => "verified",
-                            VerificationStatus::Skipped => "skipped",
-                            VerificationStatus::Failed => "failed",
-                        };
-                        let reason_label = result
-                            .reason
-                            .clone()
-                            .unwrap_or_else(|| "none".to_owned());
-                        metrics::counter!(
-                            "hookbox_verification_results_total",
-                            "provider" => provider.to_owned(),
-                            "status" => status_label,
-                            "reason" => reason_label
-                        )
-                        .increment(1);
-                        (status, result.reason)
-                    }
+        let (verification_status, verification_reason) = if let Some(verifier) =
+            self.verifiers.get(provider)
+        {
+            let result = verifier.verify(&headers, &body).await;
+            match result.status {
+                VerificationStatus::Failed => {
+                    let reason = result
+                        .reason
+                        .unwrap_or_else(|| "verification_failed".to_owned());
+                    tracing::warn!(
+                        %receipt_id, %provider, reason = %reason,
+                        "webhook verification failed"
+                    );
+                    metrics::counter!(
+                        "hookbox_verification_results_total",
+                        "provider" => provider.to_owned(),
+                        "status" => "failed",
+                        "reason" => reason.clone()
+                    )
+                    .increment(1);
+                    metrics::counter!(
+                        "hookbox_ingest_results_total",
+                        "provider" => provider.to_owned(),
+                        "result" => "verification_failed"
+                    )
+                    .increment(1);
+                    metrics::histogram!("hookbox_ingest_duration_seconds")
+                        .record(ingest_start.elapsed().as_secs_f64());
+                    return Ok(IngestResult::VerificationFailed { reason });
                 }
-            } else {
-                metrics::counter!(
-                    "hookbox_verification_results_total",
-                    "provider" => provider.to_owned(),
-                    "status" => "skipped",
-                    "reason" => "no_verifier_configured"
-                )
-                .increment(1);
-                (
-                    VerificationStatus::Skipped,
-                    Some("no_verifier_configured".to_owned()),
-                )
-            };
+                status => {
+                    let status_label = match status {
+                        VerificationStatus::Verified => "verified",
+                        VerificationStatus::Skipped => "skipped",
+                        VerificationStatus::Failed => "failed",
+                    };
+                    let reason_label = result.reason.clone().unwrap_or_else(|| "none".to_owned());
+                    metrics::counter!(
+                        "hookbox_verification_results_total",
+                        "provider" => provider.to_owned(),
+                        "status" => status_label,
+                        "reason" => reason_label
+                    )
+                    .increment(1);
+                    (status, result.reason)
+                }
+            }
+        } else {
+            metrics::counter!(
+                "hookbox_verification_results_total",
+                "provider" => provider.to_owned(),
+                "status" => "skipped",
+                "reason" => "no_verifier_configured"
+            )
+            .increment(1);
+            (
+                VerificationStatus::Skipped,
+                Some("no_verifier_configured".to_owned()),
+            )
+        };
 
         // ── Stage 3: Advisory dedupe ──────────────────────────────────
         let advisory = match self.dedupe.check(&dedupe_key, &payload_hash).await {
@@ -279,7 +277,11 @@ where
         metrics::histogram!("hookbox_emit_duration_seconds")
             .record(emit_start.elapsed().as_secs_f64());
 
-        let emit_label = if emit_result.is_ok() { "success" } else { "failure" };
+        let emit_label = if emit_result.is_ok() {
+            "success"
+        } else {
+            "failure"
+        };
         metrics::counter!(
             "hookbox_emit_results_total",
             "provider" => provider.to_owned(),

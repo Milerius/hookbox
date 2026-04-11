@@ -376,11 +376,7 @@ impl PostgresStorage {
     /// # Errors
     ///
     /// Returns [`StorageError::Internal`] if the database query fails.
-    pub async fn retry_failed(
-        &self,
-        id: Uuid,
-        max_attempts: i32,
-    ) -> Result<(), StorageError> {
+    pub async fn retry_failed(&self, id: Uuid, max_attempts: i32) -> Result<(), StorageError> {
         let result = sqlx::query(
             r"
             UPDATE webhook_receipts

@@ -36,11 +36,8 @@ pub struct AppState<S: Storage, D: DedupeStrategy, E: Emitter> {
 }
 
 /// Concrete [`AppState`] used by the production server binary.
-pub type ServerAppState = AppState<
-    PostgresStorage,
-    LayeredDedupe<InMemoryRecentDedupe, StorageDedupe>,
-    ChannelEmitter,
->;
+pub type ServerAppState =
+    AppState<PostgresStorage, LayeredDedupe<InMemoryRecentDedupe, StorageDedupe>, ChannelEmitter>;
 
 /// Build the Axum [`Router`] with all hookbox routes wired to the given state.
 ///

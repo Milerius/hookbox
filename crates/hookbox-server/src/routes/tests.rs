@@ -5,9 +5,9 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::Router;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -109,16 +109,14 @@ impl Storage for MemoryStorage {
 /// emit failures).
 fn build_test_app(
     admin_token: Option<String>,
-) -> (
-    Router,
-    tokio::sync::mpsc::Receiver<NormalizedEvent>,
-) {
+) -> (Router, tokio::sync::mpsc::Receiver<NormalizedEvent>) {
     let (emitter, receiver) = ChannelEmitter::new(64);
-    let pipeline = HookboxPipeline::<MemoryStorage, InMemoryRecentDedupe, ChannelEmitter>::builder()
-        .storage(MemoryStorage::new())
-        .dedupe(InMemoryRecentDedupe::new(1000))
-        .emitter(emitter)
-        .build();
+    let pipeline =
+        HookboxPipeline::<MemoryStorage, InMemoryRecentDedupe, ChannelEmitter>::builder()
+            .storage(MemoryStorage::new())
+            .dedupe(InMemoryRecentDedupe::new(1000))
+            .emitter(emitter)
+            .build();
 
     let state = Arc::new(AppState {
         pipeline,

@@ -116,11 +116,7 @@ async fn full_http_flow() {
     assert_eq!(resp.status(), 200);
 
     // Test 5: GET /healthz → 200
-    let resp = client
-        .get(format!("{base}/healthz"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(format!("{base}/healthz")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
 
     // Test 6: GET /readyz → 200 (real pool)
@@ -128,11 +124,7 @@ async fn full_http_flow() {
     assert_eq!(resp.status(), 200);
 
     // Test 7: GET /metrics → 200 with hookbox_ metrics
-    let resp = client
-        .get(format!("{base}/metrics"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(format!("{base}/metrics")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     let text = resp.text().await.unwrap();
     assert!(text.contains("hookbox_"));
