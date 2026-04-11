@@ -10,6 +10,10 @@ description = "CLI and server binary for hookbox: inspect, replay, and serve."
 [lints]
 workspace = true
 
+[lib]
+name = "hookbox_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "hookbox"
 path = "src/main.rs"

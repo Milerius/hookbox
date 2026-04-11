@@ -10,6 +10,7 @@ pub mod hash;
 pub mod pipeline;
 pub mod state;
 pub mod traits;
+pub mod transitions;
 pub mod types;
 
 pub use dedupe::{InMemoryRecentDedupe, LayeredDedupe};

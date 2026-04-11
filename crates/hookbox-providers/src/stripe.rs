@@ -142,6 +142,7 @@ impl SignatureVerifier for StripeVerifier {
 }
 
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "expect is acceptable in test code")]
 mod tests {
     use std::time::Duration;
 
@@ -156,15 +157,12 @@ mod tests {
 
     type HmacSha256 = Hmac<Sha256>;
 
-    /// Returns `None` if the secret or body are unusable in the test context.
-    fn compute_stripe_sig(secret: &str, timestamp: u64, body: &[u8]) -> Option<String> {
-        let body_str = std::str::from_utf8(body).ok()?;
+    fn compute_stripe_sig(secret: &str, timestamp: u64, body: &[u8]) -> String {
+        let body_str = std::str::from_utf8(body).expect("valid UTF-8 body");
         let signed_payload = format!("{timestamp}.{body_str}");
-        let Ok(mut mac) = HmacSha256::new_from_slice(secret.as_bytes()) else {
-            return None;
-        };
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("valid secret length");
         mac.update(signed_payload.as_bytes());
-        Some(hex::encode(mac.finalize().into_bytes()))
+        hex::encode(mac.finalize().into_bytes())
     }
 
     fn now_secs() -> u64 {
@@ -177,13 +175,9 @@ mod tests {
         let secret = "whsec_test_secret";
         let body = b"{\"type\":\"payment_intent.created\"}";
         let ts = now_secs();
-        let Some(sig) = compute_stripe_sig(secret, ts, body) else {
-            return;
-        };
+        let sig = compute_stripe_sig(secret, ts, body);
         let header_str = format!("t={ts},v1={sig}");
-        let Ok(header_val) = HeaderValue::from_str(&header_str) else {
-            return;
-        };
+        let header_val = HeaderValue::from_str(&header_str).expect("valid header value");
 
         let verifier = StripeVerifier::new("stripe".to_owned(), secret.to_owned());
 
@@ -202,13 +196,9 @@ mod tests {
         let body = b"{\"type\":\"payment_intent.created\"}";
         // Timestamp 10 minutes in the past — beyond the default 300s tolerance.
         let ts = now_secs().saturating_sub(601);
-        let Some(sig) = compute_stripe_sig(secret, ts, body) else {
-            return;
-        };
+        let sig = compute_stripe_sig(secret, ts, body);
         let header_str = format!("t={ts},v1={sig}");
-        let Ok(header_val) = HeaderValue::from_str(&header_str) else {
-            return;
-        };
+        let header_val = HeaderValue::from_str(&header_str).expect("valid header value");
 
         let verifier = StripeVerifier::new("stripe".to_owned(), secret.to_owned());
 
@@ -226,13 +216,9 @@ mod tests {
         let body = b"{\"type\":\"payment_intent.created\"}";
         let ts = now_secs();
         // Sign with a different secret than the verifier will use.
-        let Some(sig) = compute_stripe_sig("wrong_secret", ts, body) else {
-            return;
-        };
+        let sig = compute_stripe_sig("wrong_secret", ts, body);
         let header_str = format!("t={ts},v1={sig}");
-        let Ok(header_val) = HeaderValue::from_str(&header_str) else {
-            return;
-        };
+        let header_val = HeaderValue::from_str(&header_str).expect("valid header value");
 
         let verifier = StripeVerifier::new("stripe".to_owned(), "correct_secret".to_owned());
 
@@ -262,13 +248,9 @@ mod tests {
         let secret = "whsec_test_secret";
         let body = b"{}";
         let ts = now_secs();
-        let Some(sig) = compute_stripe_sig(secret, ts, body) else {
-            return;
-        };
+        let sig = compute_stripe_sig(secret, ts, body);
         let header_str = format!("t={ts},v1={sig}");
-        let Ok(header_val) = HeaderValue::from_str(&header_str) else {
-            return;
-        };
+        let header_val = HeaderValue::from_str(&header_str).expect("valid header value");
 
         let verifier = StripeVerifier::new("stripe".to_owned(), secret.to_owned())
             .with_tolerance(Duration::from_secs(60));
@@ -287,18 +269,12 @@ mod tests {
         let body = b"{\"type\":\"charge.succeeded\"}";
         let ts = now_secs();
 
-        let Some(old_sig) = compute_stripe_sig(old_secret, ts, body) else {
-            return;
-        };
-        let Some(new_sig) = compute_stripe_sig(new_secret, ts, body) else {
-            return;
-        };
+        let old_sig = compute_stripe_sig(old_secret, ts, body);
+        let new_sig = compute_stripe_sig(new_secret, ts, body);
 
         // Stripe sends both signatures during rotation
         let header_str = format!("t={ts},v1={old_sig},v1={new_sig}");
-        let Ok(header_val) = HeaderValue::from_str(&header_str) else {
-            return;
-        };
+        let header_val = HeaderValue::from_str(&header_str).expect("valid header value");
 
         // Verifier configured with the NEW secret should accept
         let verifier = StripeVerifier::new("stripe".to_owned(), new_secret.to_owned());
@@ -308,5 +284,89 @@ mod tests {
         let result = verifier.verify(&headers, body).await;
         assert_eq!(result.status, VerificationStatus::Verified);
         assert_eq!(result.reason.as_deref(), Some("signature_valid"));
+    }
+
+    #[tokio::test]
+    async fn missing_timestamp_fails() {
+        // Header with v1= but no t= field.
+        let header_val = HeaderValue::from_str("v1=aabbccdd").expect("valid header value");
+        let verifier = StripeVerifier::new("stripe".to_owned(), "whsec_test_secret".to_owned());
+        let mut headers = HeaderMap::new();
+        headers.insert("Stripe-Signature", header_val);
+
+        let result = verifier.verify(&headers, b"{}").await;
+        assert_eq!(result.status, VerificationStatus::Failed);
+        assert_eq!(result.reason.as_deref(), Some("missing_timestamp"));
+    }
+
+    #[tokio::test]
+    async fn missing_v1_signature_fails() {
+        // Header with t= but no v1= field.
+        let ts = now_secs();
+        let header_str = format!("t={ts}");
+        let header_val = HeaderValue::from_str(&header_str).expect("valid header value");
+        let verifier = StripeVerifier::new("stripe".to_owned(), "whsec_test_secret".to_owned());
+        let mut headers = HeaderMap::new();
+        headers.insert("Stripe-Signature", header_val);
+
+        let result = verifier.verify(&headers, b"{}").await;
+        assert_eq!(result.status, VerificationStatus::Failed);
+        assert_eq!(result.reason.as_deref(), Some("missing_v1_signature"));
+    }
+
+    #[tokio::test]
+    async fn invalid_timestamp_fails() {
+        // t= field is non-numeric.
+        let header_val =
+            HeaderValue::from_str("t=notanumber,v1=aabbccdd").expect("valid header value");
+        let verifier = StripeVerifier::new("stripe".to_owned(), "whsec_test_secret".to_owned());
+        let mut headers = HeaderMap::new();
+        headers.insert("Stripe-Signature", header_val);
+
+        let result = verifier.verify(&headers, b"{}").await;
+        assert_eq!(result.status, VerificationStatus::Failed);
+        assert_eq!(result.reason.as_deref(), Some("invalid_timestamp"));
+    }
+
+    #[tokio::test]
+    async fn non_utf8_body_fails() {
+        // Body bytes that are not valid UTF-8.
+        let ts = now_secs();
+        // Use timestamp within tolerance so we pass the tolerance check.
+        let header_str = format!("t={ts},v1=aabbccdd");
+        let header_val = HeaderValue::from_str(&header_str).expect("valid header value");
+        let verifier = StripeVerifier::new("stripe".to_owned(), "whsec_test_secret".to_owned());
+        let mut headers = HeaderMap::new();
+        headers.insert("Stripe-Signature", header_val);
+
+        // Invalid UTF-8 bytes.
+        let bad_body: &[u8] = &[0xFF, 0xFE, 0x00];
+        let result = verifier.verify(&headers, bad_body).await;
+        assert_eq!(result.status, VerificationStatus::Failed);
+        assert_eq!(result.reason.as_deref(), Some("invalid_body_encoding"));
+    }
+
+    #[tokio::test]
+    async fn invalid_hex_in_v1_skips_to_mismatch() {
+        // v1= contains non-hex characters — the bad sig is skipped, no valid
+        // sig exists, so the final result is signature_mismatch.
+        let secret = "whsec_test_secret";
+        let body = b"{}";
+        let ts = now_secs();
+        let header_str = format!("t={ts},v1=ZZZZZZ");
+        let header_val = HeaderValue::from_str(&header_str).expect("valid header value");
+        let verifier = StripeVerifier::new("stripe".to_owned(), secret.to_owned());
+        let mut headers = HeaderMap::new();
+        headers.insert("Stripe-Signature", header_val);
+
+        let result = verifier.verify(&headers, body).await;
+        assert_eq!(result.status, VerificationStatus::Failed);
+        assert_eq!(result.reason.as_deref(), Some("signature_mismatch"));
+    }
+
+    #[tokio::test]
+    async fn provider_name_returns_configured_name() {
+        let verifier = StripeVerifier::new("stripe-prod".to_owned(), "secret".to_owned());
+        assert_eq!(verifier.provider_name(), "stripe-prod");
     }
 }

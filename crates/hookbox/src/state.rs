@@ -108,6 +108,19 @@ pub enum StoreResult {
     },
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn receipt_id_default_is_valid() {
+        // Exercises the Default impl (lines 23-27).
+        let id = ReceiptId::default();
+        // Default should produce a non-nil UUID.
+        assert_ne!(id.0, uuid::Uuid::nil());
+    }
+}
+
 /// High-level result of attempting to ingest a single webhook event.
 #[derive(Debug, Clone)]
 pub enum IngestResult {

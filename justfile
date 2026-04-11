@@ -63,10 +63,12 @@ coverage:
     cargo llvm-cov --all-features --html
     @echo "Report: target/llvm-cov/html/index.html"
 
-# Coverage with branch coverage
+# Coverage with branch coverage (per-crate to avoid llvm-cov SIGSEGV on async-trait crates)
 coverage-branch:
-    cargo llvm-cov --all-features --branch --html
-    @echo "Report: target/llvm-cov/html/index.html"
+    cargo +nightly llvm-cov --branch -p hookbox-server --tests --html
+    cargo +nightly llvm-cov --branch -p hookbox-verify --lib --html
+    @echo "Branch coverage for compatible crates: target/llvm-cov/html/index.html"
+    @echo "Note: hookbox/hookbox-postgres/hookbox-providers crash llvm-cov with --branch due to async-trait macros"
 
 # Run mutation testing
 mutants:

@@ -16,6 +16,7 @@ use hookbox_providers::{GenericHmacVerifier, StripeVerifier};
 use hookbox_server::ServerAppState;
 use hookbox_server::build_router;
 use hookbox_server::config::HookboxConfig;
+use hookbox_server::shutdown::shutdown_signal;
 use hookbox_server::worker::RetryWorker;
 
 /// Run the `serve` subcommand.
@@ -134,7 +135,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
         Duration::from_secs(config.retry.interval_seconds),
         config.retry.max_attempts,
     );
-    let _retry_handle = retry_worker.spawn();
+    let retry_handle = retry_worker.spawn();
 
     let state: Arc<ServerAppState> = Arc::new(ServerAppState {
         pipeline,
@@ -153,8 +154,14 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     tracing::info!(addr = %bind_addr, "hookbox server listening");
 
     axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .context("server encountered a fatal error")?;
+
+    tracing::info!("server shut down gracefully");
+
+    retry_handle.abort();
+    tracing::info!("retry worker stopped");
 
     Ok(())
 }

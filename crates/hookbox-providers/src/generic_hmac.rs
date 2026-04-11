@@ -96,6 +96,7 @@ impl SignatureVerifier for GenericHmacVerifier {
 }
 
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "expect is acceptable in test code")]
 mod tests {
     use hmac::{Hmac, KeyInit, Mac};
     use http::{HeaderMap, HeaderValue};
@@ -108,24 +109,18 @@ mod tests {
 
     type HmacSha256 = Hmac<Sha256>;
 
-    fn compute_sig(secret: &[u8], body: &[u8]) -> Option<String> {
-        let Ok(mut mac) = HmacSha256::new_from_slice(secret) else {
-            return None;
-        };
+    fn compute_sig(secret: &[u8], body: &[u8]) -> String {
+        let mut mac = HmacSha256::new_from_slice(secret).expect("valid secret");
         mac.update(body);
-        Some(hex::encode(mac.finalize().into_bytes()))
+        hex::encode(mac.finalize().into_bytes())
     }
 
     #[tokio::test]
     async fn valid_signature_passes() {
         let secret = b"test-secret";
         let body = b"hello world";
-        let Some(sig) = compute_sig(secret, body) else {
-            return;
-        };
-        let Ok(header_val) = HeaderValue::from_str(&sig) else {
-            return;
-        };
+        let sig = compute_sig(secret, body);
+        let header_val = HeaderValue::from_str(&sig).expect("valid header value");
 
         let verifier =
             GenericHmacVerifier::new("test-provider", secret.to_vec(), "X-Signature".to_owned());
@@ -144,9 +139,7 @@ mod tests {
         let secret = b"test-secret";
         let body = b"hello world";
         let bad_sig = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
-        let Ok(header_val) = HeaderValue::from_str(bad_sig) else {
-            return;
-        };
+        let header_val = HeaderValue::from_str(bad_sig).expect("valid header value");
 
         let verifier =
             GenericHmacVerifier::new("test-provider", secret.to_vec(), "X-Signature".to_owned());
@@ -172,5 +165,58 @@ mod tests {
 
         assert_eq!(result.status, VerificationStatus::Failed);
         assert_eq!(result.reason.as_deref(), Some("missing_signature_header"));
+    }
+
+    #[tokio::test]
+    async fn invalid_hex_signature_fails() {
+        // Signature header contains non-hex characters.
+        let secret = b"test-secret";
+        let body = b"hello world";
+        let header_val = HeaderValue::from_str("ZZZZZZNOTHEX").expect("valid header value");
+
+        let verifier =
+            GenericHmacVerifier::new("test-provider", secret.to_vec(), "X-Signature".to_owned());
+
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Signature", header_val);
+
+        let result = verifier.verify(&headers, body).await;
+
+        assert_eq!(result.status, VerificationStatus::Failed);
+        assert_eq!(result.reason.as_deref(), Some("invalid_hex_signature"));
+    }
+
+    #[tokio::test]
+    async fn invalid_header_encoding_fails() {
+        // Insert raw bytes that are not valid UTF-8 into the header value.
+        // HTTP headers must be valid Latin-1; use bytes with high bits set.
+        let secret = b"test-secret";
+        let body = b"hello world";
+
+        // Build a header value from raw bytes that `to_str()` will reject.
+        // HeaderValue::from_bytes accepts Latin-1, but to_str() requires ASCII.
+        let raw_bytes: &[u8] = &[0xC3, 0xA9]; // é in UTF-8 — not ASCII
+        let header_val = HeaderValue::from_bytes(raw_bytes).expect("valid Latin-1 header");
+
+        let verifier =
+            GenericHmacVerifier::new("test-provider", secret.to_vec(), "X-Signature".to_owned());
+
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Signature", header_val);
+
+        let result = verifier.verify(&headers, body).await;
+
+        assert_eq!(result.status, VerificationStatus::Failed);
+        assert_eq!(
+            result.reason.as_deref(),
+            Some("invalid_signature_header_encoding")
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_name_returns_configured_name() {
+        let verifier =
+            GenericHmacVerifier::new("my-provider", b"secret".to_vec(), "X-Sig".to_owned());
+        assert_eq!(verifier.provider_name(), "my-provider");
     }
 }
