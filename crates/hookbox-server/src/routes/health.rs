@@ -7,6 +7,8 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use tokio::time::{Duration, timeout};
 
+use hookbox::traits::{DedupeStrategy, Emitter, Storage};
+
 use crate::AppState;
 
 /// Liveness probe — always returns `200 OK`.
@@ -15,11 +17,30 @@ pub async fn healthz() -> StatusCode {
 }
 
 /// Readiness probe — returns `200 OK` if the database is reachable within
-/// 2 seconds, `503 Service Unavailable` otherwise.
-pub async fn readyz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let ping = sqlx::query("SELECT 1").execute(&state.pool);
+/// 2 seconds, `503 Service Unavailable` otherwise (including when no pool
+/// is configured).
+pub async fn readyz<S: Storage, D: DedupeStrategy, E: Emitter>(
+    State(state): State<Arc<AppState<S, D, E>>>,
+) -> impl IntoResponse {
+    let Some(ref pool) = state.pool else {
+        return StatusCode::SERVICE_UNAVAILABLE;
+    };
+    let ping = sqlx::query("SELECT 1").execute(pool);
     match timeout(Duration::from_secs(2), ping).await {
         Ok(Ok(_)) => StatusCode::OK,
         Ok(Err(_)) | Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
+/// `GET /metrics` — Prometheus scrape endpoint.
+///
+/// Returns the current Prometheus metrics in text exposition format if a
+/// recorder was installed, or a comment line indicating no recorder is active.
+pub async fn metrics<S: Storage, D: DedupeStrategy, E: Emitter>(
+    State(state): State<Arc<AppState<S, D, E>>>,
+) -> impl IntoResponse {
+    match &state.prometheus {
+        Some(handle) => handle.render(),
+        None => String::from("# no prometheus recorder installed\n"),
     }
 }

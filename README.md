@@ -58,6 +58,8 @@ hookbox serve --config hookbox.toml
 - **Durable storage** — raw body bytes preserved immutably; ACK only after durable write
 - **Replay & redrive** — re-emit any receipt via CLI or admin API
 - **Dead-letter queue** — failed emissions are captured, inspectable, and retryable
+- **Prometheus metrics** — counters and histograms at every pipeline stage, exposed at `/metrics`
+- **Retry worker** — background task retries failed emissions with configurable interval and max attempts
 - **Observability** — structured tracing, Prometheus metrics, health/readiness endpoints
 - **CLI tooling** — inspect receipts, replay failures, manage DLQ
 
@@ -79,22 +81,25 @@ hookbox/
 ## CLI
 
 ```bash
-# Inspect
-hookbox receipts list --provider stripe --state failed
-hookbox receipts inspect <receipt_id>
-hookbox receipts search --ref "pay_abc123"
-
-# Replay
-hookbox replay <receipt_id>
-hookbox replay failed --provider stripe --since 1h
-
-# Dead letter queue
-hookbox dlq list --provider stripe
-hookbox dlq retry <receipt_id>
-
 # Run server
 hookbox serve --config hookbox.toml
+
+# Inspect receipts
+hookbox receipts list --database-url <url> --provider stripe --state failed
+hookbox receipts inspect --database-url <url> <receipt_id>
+hookbox receipts search --database-url <url> --external-ref pay_123
+
+# Replay
+hookbox replay id --database-url <url> <receipt_id>
+hookbox replay failed --database-url <url> --since 1h --provider stripe
+
+# Dead letter queue
+hookbox dlq list --database-url <url> --provider stripe
+hookbox dlq inspect --database-url <url> <receipt_id>
+hookbox dlq retry --database-url <url> <receipt_id>
 ```
+
+All commands except `serve` accept `--database-url` or the `DATABASE_URL` environment variable for direct database access. The `serve` command uses `--config` with a TOML file instead.
 
 ## Design principles
 

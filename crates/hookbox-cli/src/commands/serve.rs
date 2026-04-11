@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
+use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -12,9 +13,10 @@ use hookbox::emitter::ChannelEmitter;
 use hookbox::pipeline::HookboxPipeline;
 use hookbox_postgres::{PostgresStorage, StorageDedupe};
 use hookbox_providers::{GenericHmacVerifier, StripeVerifier};
-use hookbox_server::AppState;
+use hookbox_server::ServerAppState;
 use hookbox_server::build_router;
 use hookbox_server::config::HookboxConfig;
+use hookbox_server::worker::RetryWorker;
 
 /// Run the `serve` subcommand.
 ///
@@ -42,6 +44,20 @@ pub fn run(config_path: &str) -> anyhow::Result<()> {
 
 /// Async server startup: tracing, database, migrations, pipeline, and HTTP serve.
 async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        config.retry.interval_seconds >= 1,
+        "retry.interval_seconds must be >= 1"
+    );
+    anyhow::ensure!(
+        config.retry.max_attempts >= 1,
+        "retry.max_attempts must be >= 1"
+    );
+    // Install the Prometheus metrics recorder so that metrics::counter! /
+    // metrics::histogram! macros emit real data instead of no-ops.
+    let prometheus = PrometheusBuilder::new()
+        .install_recorder()
+        .context("failed to install Prometheus recorder")?;
+
     // Initialise JSON tracing with an env-filter defaulting to INFO.
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()
@@ -108,10 +124,23 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
 
     let pipeline = builder.build();
 
-    let state = Arc::new(AppState {
+    // Retry worker: separate emitter channel + drain task.
+    let (worker_emitter, worker_rx) = ChannelEmitter::new(256);
+    tokio::spawn(drain_emitter(worker_rx));
+
+    let retry_worker = RetryWorker::new(
+        PostgresStorage::new(pool.clone()),
+        Box::new(worker_emitter),
+        Duration::from_secs(config.retry.interval_seconds),
+        config.retry.max_attempts,
+    );
+    let _retry_handle = retry_worker.spawn();
+
+    let state: Arc<ServerAppState> = Arc::new(ServerAppState {
         pipeline,
-        pool,
+        pool: Some(pool),
         admin_token: config.admin.bearer_token.clone(),
+        prometheus: Some(prometheus),
     });
 
     let router = build_router(state, config.server.body_limit);

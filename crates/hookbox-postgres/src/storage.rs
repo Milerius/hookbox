@@ -334,3 +334,166 @@ impl Storage for PostgresStorage {
             .collect()
     }
 }
+
+/// Ops-specific queries not part of the core [`Storage`] trait.
+impl PostgresStorage {
+    /// Return up to 100 receipts eligible for retry.
+    ///
+    /// A receipt is eligible when its `processing_state` is `emit_failed` and
+    /// its `emit_count` is below `max_attempts`.  Results are ordered oldest
+    /// first so the retry worker processes them in FIFO order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Internal`] if the database query fails.
+    pub async fn query_for_retry(
+        &self,
+        max_attempts: i32,
+    ) -> Result<Vec<WebhookReceipt>, StorageError> {
+        let sql = format!(
+            "{SELECT_COLUMNS} WHERE processing_state = 'emit_failed' AND emit_count < $1 \
+             ORDER BY received_at ASC LIMIT 100"
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(max_attempts)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        rows.iter()
+            .map(|r| pg_row_to_receipt_row(r).and_then(receipt_from_row))
+            .collect()
+    }
+
+    /// Atomically increment `emit_count` and transition state after a failed
+    /// emit attempt.
+    ///
+    /// If `emit_count + 1 >= max_attempts` the receipt is moved to
+    /// `dead_lettered`; otherwise it stays in `emit_failed`.  The update is
+    /// performed in a single SQL statement to avoid races.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Internal`] if the database query fails.
+    pub async fn retry_failed(&self, id: Uuid, max_attempts: i32) -> Result<(), StorageError> {
+        let result = sqlx::query(
+            r"
+            UPDATE webhook_receipts
+            SET emit_count        = emit_count + 1,
+                processing_state  = CASE
+                    WHEN emit_count + 1 >= $2 THEN 'dead_lettered'
+                    ELSE 'emit_failed'
+                END
+            WHERE receipt_id = $1
+            ",
+        )
+        .bind(id)
+        .bind(max_attempts)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            tracing::warn!(receipt_id = %id, "retry_failed: no receipt found with this id");
+        }
+
+        Ok(())
+    }
+
+    /// Reset a receipt so it will be picked up by the retry worker again.
+    ///
+    /// Sets `processing_state` back to `emit_failed` and clears `emit_count`
+    /// to zero.  Used by CLI replay and dead-letter-queue retry commands.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Internal`] if the database query fails.
+    pub async fn reset_for_retry(&self, id: Uuid) -> Result<(), StorageError> {
+        let result = sqlx::query(
+            r"
+            UPDATE webhook_receipts
+            SET processing_state = 'emit_failed',
+                emit_count       = 0
+            WHERE receipt_id = $1
+            ",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(StorageError::Internal(format!(
+                "no receipt found with id {id}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Fetch receipts that share a given `external_reference`.
+    ///
+    /// Results are ordered newest first.  `limit` defaults to 50 when `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Internal`] if the database query fails.
+    pub async fn query_by_external_reference(
+        &self,
+        external_ref: &str,
+        limit: Option<i64>,
+    ) -> Result<Vec<WebhookReceipt>, StorageError> {
+        let sql = format!(
+            "{SELECT_COLUMNS} WHERE external_reference = $1 \
+             ORDER BY received_at DESC LIMIT $2"
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(external_ref)
+            .bind(limit.unwrap_or(50))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        rows.iter()
+            .map(|r| pg_row_to_receipt_row(r).and_then(receipt_from_row))
+            .collect()
+    }
+
+    /// Fetch receipts in a failed terminal state received on or after `since`.
+    ///
+    /// Covers both `emit_failed` and `dead_lettered` states.  An optional
+    /// `provider` filter narrows results to a single provider.  Results are
+    /// ordered oldest first.  `limit` defaults to 100 when `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Internal`] if the database query fails.
+    pub async fn query_failed_since(
+        &self,
+        provider: Option<&str>,
+        since: DateTime<Utc>,
+        limit: Option<i64>,
+    ) -> Result<Vec<WebhookReceipt>, StorageError> {
+        let sql = format!(
+            "{SELECT_COLUMNS} \
+             WHERE processing_state IN ('emit_failed', 'dead_lettered') \
+               AND received_at >= $1 \
+               AND ($3::text IS NULL OR provider_name = $3) \
+             ORDER BY received_at ASC LIMIT $2"
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(since)
+            .bind(limit.unwrap_or(100))
+            .bind(provider)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        rows.iter()
+            .map(|r| pg_row_to_receipt_row(r).and_then(receipt_from_row))
+            .collect()
+    }
+}

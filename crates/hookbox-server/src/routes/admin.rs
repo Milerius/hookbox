@@ -11,7 +11,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use hookbox::ProcessingState;
-use hookbox::traits::{Emitter, Storage};
+use hookbox::traits::{DedupeStrategy, Emitter, Storage};
 use hookbox::types::{NormalizedEvent, ReceiptFilter};
 
 use crate::AppState;
@@ -19,8 +19,8 @@ use crate::AppState;
 /// Check the `Authorization` header against the configured admin bearer token.
 ///
 /// If no token is configured, all requests are allowed through.
-fn check_auth(
-    state: &AppState,
+fn check_auth<S: Storage, D: DedupeStrategy, E: Emitter>(
+    state: &AppState<S, D, E>,
     headers: &HeaderMap,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     let Some(ref expected) = state.admin_token else {
@@ -62,8 +62,8 @@ pub struct ListReceiptsQuery {
 }
 
 /// List webhook receipts with optional filters.
-pub async fn list_receipts(
-    State(state): State<Arc<AppState>>,
+pub async fn list_receipts<S: Storage, D: DedupeStrategy, E: Emitter>(
+    State(state): State<Arc<AppState<S, D, E>>>,
     headers: HeaderMap,
     Query(params): Query<ListReceiptsQuery>,
 ) -> impl IntoResponse {
@@ -92,8 +92,8 @@ pub async fn list_receipts(
 }
 
 /// Get a single webhook receipt by ID.
-pub async fn get_receipt(
-    State(state): State<Arc<AppState>>,
+pub async fn get_receipt<S: Storage, D: DedupeStrategy, E: Emitter>(
+    State(state): State<Arc<AppState<S, D, E>>>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
@@ -120,8 +120,8 @@ pub async fn get_receipt(
 
 /// Replay a previously stored receipt by re-emitting its normalised event
 /// and transitioning the receipt to the `Replayed` state.
-pub async fn replay_receipt(
-    State(state): State<Arc<AppState>>,
+pub async fn replay_receipt<S: Storage, D: DedupeStrategy, E: Emitter>(
+    State(state): State<Arc<AppState<S, D, E>>>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
@@ -189,8 +189,8 @@ pub async fn replay_receipt(
 }
 
 /// List dead-lettered receipts (receipts in the `DeadLettered` state).
-pub async fn list_dlq(
-    State(state): State<Arc<AppState>>,
+pub async fn list_dlq<S: Storage, D: DedupeStrategy, E: Emitter>(
+    State(state): State<Arc<AppState<S, D, E>>>,
     headers: HeaderMap,
     Query(params): Query<ListReceiptsQuery>,
 ) -> impl IntoResponse {

@@ -96,6 +96,20 @@ Prometheus metrics exposed at `/metrics`:
 | `hookbox_dlq_depth` | Gauge | `provider` |
 | `hookbox_inflight_count` | Gauge | |
 
+## Retry Worker
+
+A background task periodically retries receipts stuck in `EmitFailed` state.
+
+Configuration via `hookbox.toml`:
+
+```toml
+[retry]
+interval_seconds = 30
+max_attempts = 5
+```
+
+After `max_attempts` failed retries, receipts are atomically promoted to `DeadLettered`.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](../../LICENSE-APACHE) or [MIT License](../../LICENSE-MIT) at your option.

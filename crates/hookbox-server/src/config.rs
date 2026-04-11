@@ -21,6 +21,9 @@ pub struct HookboxConfig {
     /// Admin API settings.
     #[serde(default)]
     pub admin: AdminConfig,
+    /// Retry worker settings.
+    #[serde(default)]
+    pub retry: RetryConfig,
 }
 
 /// HTTP server bind and limit settings.
@@ -101,6 +104,26 @@ pub struct AdminConfig {
     pub bearer_token: Option<String>,
 }
 
+/// Retry worker configuration.
+#[derive(Debug, Deserialize)]
+pub struct RetryConfig {
+    /// Retry interval in seconds (default: 30).
+    #[serde(default = "default_retry_interval")]
+    pub interval_seconds: u64,
+    /// Maximum retry attempts before moving to DLQ (default: 5).
+    #[serde(default = "default_max_attempts")]
+    pub max_attempts: i32,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            interval_seconds: default_retry_interval(),
+            max_attempts: default_max_attempts(),
+        }
+    }
+}
+
 fn default_host() -> String {
     "0.0.0.0".to_owned()
 }
@@ -125,6 +148,14 @@ fn default_provider_type() -> String {
     "hmac-sha256".to_owned()
 }
 
+const fn default_retry_interval() -> u64 {
+    30
+}
+
+const fn default_max_attempts() -> i32 {
+    5
+}
+
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "expect is acceptable in test code")]
 mod tests {
@@ -146,6 +177,8 @@ url = "postgres://localhost/hookbox"
         assert!(config.providers.is_empty());
         assert_eq!(config.dedupe.lru_capacity, 10_000);
         assert!(config.admin.bearer_token.is_none());
+        assert_eq!(config.retry.interval_seconds, 30);
+        assert_eq!(config.retry.max_attempts, 5);
     }
 
     #[test]
@@ -174,6 +207,10 @@ lru_capacity = 50000
 
 [admin]
 bearer_token = "supersecret"
+
+[retry]
+interval_seconds = 15
+max_attempts = 3
 "#;
         let config: HookboxConfig = toml::from_str(toml_str).expect("full config should parse");
 
@@ -197,5 +234,7 @@ bearer_token = "supersecret"
 
         assert_eq!(config.dedupe.lru_capacity, 50_000);
         assert_eq!(config.admin.bearer_token.as_deref(), Some("supersecret"));
+        assert_eq!(config.retry.interval_seconds, 15);
+        assert_eq!(config.retry.max_attempts, 3);
     }
 }

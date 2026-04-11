@@ -78,7 +78,7 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 # Types
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -94,6 +94,9 @@ anyhow = "1"
 toml = "0.8.23"
 
 # Testing
+reqwest = { version = "0.12", features = ["json"] }
+async-trait = "0.1"
+http-body-util = "0.1"
 bolero = "0.13"
 cucumber = "0.22"
 futures = "0.3"

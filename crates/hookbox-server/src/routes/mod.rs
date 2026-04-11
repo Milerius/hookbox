@@ -3,3 +3,6 @@
 pub mod admin;
 pub mod health;
 pub mod ingest;
+
+#[cfg(test)]
+mod tests;
