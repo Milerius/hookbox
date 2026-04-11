@@ -18,6 +18,12 @@ ignore = [
     # Not used in production code. Conditions (custom logger + thread_rng + reseed) don't
     # apply in our test harness. Fix: upgrade to rand 0.9.3+ when rsa crate supports it.
     { id = "RUSTSEC-2026-0097", reason = "dev-dependency only (RSA test keygen); conditions not met in test harness" },
+    # RUSTSEC-2025-0134: rustls-pemfile is unmaintained (archived Aug 2025).
+    # Transitive dependency via async-nats. Using rustls-pki-types internally; no action needed.
+    { id = "RUSTSEC-2025-0134", reason = "transitive via async-nats; crate is a thin wrapper around rustls-pki-types" },
+    # RUSTSEC-2026-0049: webpki CRL Distribution Point matching logic flaw.
+    # Transitive dependency via AWS SDK. We do not use CRL validation.
+    { id = "RUSTSEC-2026-0049", reason = "transitive via AWS SDK; CRL validation not used in hookbox" },
 ]
 
 [licenses]
@@ -64,6 +70,23 @@ skip = [
     { crate = "const-oid@0.9", reason = "rsa crate depends on older der stack with const-oid 0.9" },
     # reqwest native-tls path pulls core-foundation 0.10; hyper-util pulls 0.9
     { crate = "core-foundation@0.9", reason = "hyper-util depends on core-foundation 0.9; native-tls uses 0.10" },
+    # AWS SDK duplicates: aws-smithy-http-client uses hyper 0.14 alongside hyper 1.x
+    { crate = "h2@0.3", reason = "AWS SDK uses hyper 0.14 which depends on h2 0.3" },
+    { crate = "http@0.2", reason = "AWS SDK uses http 0.2 alongside http 1.x" },
+    { crate = "http-body@0.4", reason = "AWS SDK uses http-body 0.4 alongside 1.x" },
+    { crate = "hyper@0.14", reason = "AWS SDK uses hyper 0.14 alongside hyper 1.x" },
+    { crate = "hyper-rustls@0.24", reason = "AWS SDK uses hyper-rustls 0.24 alongside 0.27" },
+    { crate = "rustls@0.21", reason = "AWS SDK transitively depends on rustls 0.21" },
+    { crate = "rustls-native-certs@0.7", reason = "AWS SDK transitively depends on older rustls-native-certs" },
+    { crate = "rustls-webpki@0.101", reason = "AWS SDK transitively depends on older rustls-webpki" },
+    { crate = "rustls-webpki@0.102", reason = "AWS SDK transitively depends on rustls-webpki 0.102" },
+    # thiserror duplicates: thiserror 1.x vs 2.x from different transitive deps
+    { crate = "thiserror@1", reason = "AWS SDK transitively depends on thiserror 1.x; workspace uses 2.x" },
+    { crate = "thiserror-impl@1", reason = "transitive via thiserror 1.x" },
+    { crate = "security-framework@2.11", reason = "AWS SDK transitively depends on older security-framework" },
+    { crate = "socket2@0.5", reason = "AWS SDK transitively depends on socket2 0.5" },
+    { crate = "tokio-rustls@0.24", reason = "AWS SDK transitively depends on tokio-rustls 0.24" },
+    { crate = "openssl-probe@0.1", reason = "AWS SDK transitively depends on older openssl-probe" },
 ]
 
 [sources]
