@@ -44,6 +44,14 @@ pub fn run(config_path: &str) -> anyhow::Result<()> {
 
 /// Async server startup: tracing, database, migrations, pipeline, and HTTP serve.
 async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        config.retry.interval_seconds >= 1,
+        "retry.interval_seconds must be >= 1"
+    );
+    anyhow::ensure!(
+        config.retry.max_attempts >= 1,
+        "retry.max_attempts must be >= 1"
+    );
     // Install the Prometheus metrics recorder so that metrics::counter! /
     // metrics::histogram! macros emit real data instead of no-ops.
     let prometheus = PrometheusBuilder::new()

@@ -28,11 +28,7 @@ async fn setup() -> (PgPool, PostgresStorage) {
 
 /// Helper to ingest a test receipt directly via the pipeline.
 /// Returns the receipt ID of the ingested receipt.
-async fn ingest_test_receipt(
-    storage: &PostgresStorage,
-    provider: &str,
-    body: &[u8],
-) -> uuid::Uuid {
+async fn ingest_test_receipt(storage: &PostgresStorage, provider: &str, body: &[u8]) -> uuid::Uuid {
     let (emitter, mut rx) = ChannelEmitter::new(16);
 
     let pipeline = HookboxPipeline::builder()
@@ -121,8 +117,7 @@ async fn retry_failed_promotes_to_dlq_at_max() {
 #[tokio::test]
 async fn query_failed_since_filters_correctly() {
     let (_pool, storage) = setup().await;
-    let id =
-        ingest_test_receipt(&storage, "cli_failed_since", b"failed_since_body_unique_4").await;
+    let id = ingest_test_receipt(&storage, "cli_failed_since", b"failed_since_body_unique_4").await;
 
     // Set to EmitFailed
     storage

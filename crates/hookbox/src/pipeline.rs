@@ -126,21 +126,27 @@ where
                         .record(ingest_start.elapsed().as_secs_f64());
                     return Ok(IngestResult::VerificationFailed { reason });
                 }
-                status => {
-                    let status_label = match status {
-                        VerificationStatus::Verified => "verified",
-                        VerificationStatus::Skipped => "skipped",
-                        VerificationStatus::Failed => "failed",
-                    };
+                VerificationStatus::Verified => {
                     let reason_label = result.reason.clone().unwrap_or_else(|| "none".to_owned());
                     metrics::counter!(
                         "hookbox_verification_results_total",
                         "provider" => provider.to_owned(),
-                        "status" => status_label,
+                        "status" => "verified",
                         "reason" => reason_label
                     )
                     .increment(1);
-                    (status, result.reason)
+                    (VerificationStatus::Verified, result.reason)
+                }
+                VerificationStatus::Skipped => {
+                    let reason_label = result.reason.clone().unwrap_or_else(|| "none".to_owned());
+                    metrics::counter!(
+                        "hookbox_verification_results_total",
+                        "provider" => provider.to_owned(),
+                        "status" => "skipped",
+                        "reason" => reason_label
+                    )
+                    .increment(1);
+                    (VerificationStatus::Skipped, result.reason)
                 }
             }
         } else {

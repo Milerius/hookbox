@@ -70,7 +70,7 @@ hookbox dlq retry --database-url postgres://localhost/hookbox 550e8400-e29b-41d4
 
 ## Connection
 
-All commands accept `--database-url` for direct database access. Alternatively, set the `DATABASE_URL` environment variable:
+All commands except `serve` accept `--database-url` for direct database access. Alternatively, set the `DATABASE_URL` environment variable:
 
 ```bash
 export DATABASE_URL=postgres://localhost/hookbox

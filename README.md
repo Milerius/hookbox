@@ -99,7 +99,7 @@ hookbox dlq inspect --database-url <url> <receipt_id>
 hookbox dlq retry --database-url <url> <receipt_id>
 ```
 
-All commands accept `--database-url` or the `DATABASE_URL` environment variable for direct database access.
+All commands except `serve` accept `--database-url` or the `DATABASE_URL` environment variable for direct database access. The `serve` command uses `--config` with a TOML file instead.
 
 ## Design principles
 
