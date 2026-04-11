@@ -7,6 +7,7 @@ use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use http::HeaderMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use hookbox::dedupe::InMemoryRecentDedupe;
 use hookbox::emitter::ChannelEmitter;
@@ -75,13 +76,15 @@ fn bench_ingest(c: &mut Criterion) {
                 .emitter(emitter)
                 .build();
 
-            let body = Bytes::from(vec![b'x'; size]);
+            let base_body = vec![b'x'; size];
+            let counter = AtomicU64::new(0);
 
             b.to_async(&rt).iter(|| {
+                let n = counter.fetch_add(1, Ordering::Relaxed);
                 let body = Bytes::from(format!(
                     "{}{}",
-                    uuid::Uuid::new_v4(),
-                    std::str::from_utf8(&body).unwrap_or("")
+                    n,
+                    String::from_utf8_lossy(&base_body)
                 ));
                 let headers = HeaderMap::new();
                 async {
