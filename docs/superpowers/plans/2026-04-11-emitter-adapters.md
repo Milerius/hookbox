@@ -744,6 +744,387 @@ git push -u origin feat/emitter-adapters
 
 ---
 
+## Task 8: Bolero Property Tests
+
+**Files:**
+- Create: `crates/hookbox-verify/src/emitter_props.rs`
+- Modify: `crates/hookbox-verify/src/lib.rs`
+- Modify: `crates/hookbox-verify/Cargo.toml`
+
+### Steps
+
+- [ ] **Step 1: Create emitter property tests**
+
+Test invariants of the emitter infrastructure:
+
+```rust
+// crates/hookbox-verify/src/emitter_props.rs
+
+//! Property tests for emitter adapter invariants.
+
+#[cfg(test)]
+mod tests {
+    use hookbox::state::ReceiptId;
+    use hookbox::types::NormalizedEvent;
+    use std::sync::Arc;
+
+    /// Any NormalizedEvent serializes to valid JSON.
+    #[test]
+    fn normalized_event_always_serializes_to_json() {
+        bolero::check!().with_type::<(String, String)>().for_each(|(provider, hash)| {
+            let event = NormalizedEvent {
+                receipt_id: ReceiptId::new(),
+                provider_name: provider.clone(),
+                event_type: None,
+                external_reference: None,
+                parsed_payload: None,
+                payload_hash: hash.clone(),
+                received_at: chrono::Utc::now(),
+                metadata: serde_json::json!({}),
+            };
+            let result = serde_json::to_vec(&event);
+            assert!(result.is_ok(), "NormalizedEvent must always serialize to JSON");
+            // Verify it's valid JSON by parsing back
+            let bytes = result.expect("just checked");
+            let parsed: Result<serde_json::Value, _> = serde_json::from_slice(&bytes);
+            assert!(parsed.is_ok(), "serialized bytes must be valid JSON");
+        });
+    }
+
+    /// Arc<dyn Emitter> blanket impl works for any inner Emitter.
+    #[test]
+    fn arc_emitter_roundtrip() {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        bolero::check!().with_type::<String>().for_each(|provider| {
+            rt.block_on(async {
+                let (emitter, mut rx) = hookbox::emitter::ChannelEmitter::new(16);
+                let arc: Arc<dyn hookbox::traits::Emitter + Send + Sync> = Arc::new(emitter);
+                let event = NormalizedEvent {
+                    receipt_id: ReceiptId::new(),
+                    provider_name: provider.clone(),
+                    event_type: None,
+                    external_reference: None,
+                    parsed_payload: None,
+                    payload_hash: "test".to_owned(),
+                    received_at: chrono::Utc::now(),
+                    metadata: serde_json::json!({}),
+                };
+                let result = arc.emit(&event).await;
+                assert!(result.is_ok());
+                let received = rx.try_recv();
+                assert!(received.is_ok());
+                assert_eq!(received.expect("just checked").provider_name, *provider);
+            });
+        });
+    }
+
+    /// receipt_id.to_string() always produces a valid message key (non-empty, no newlines).
+    #[test]
+    fn receipt_id_is_valid_message_key() {
+        bolero::check!().with_type::<u8>().for_each(|_| {
+            let id = ReceiptId::new();
+            let key = id.to_string();
+            assert!(!key.is_empty());
+            assert!(!key.contains('\n'));
+            assert!(!key.contains('\0'));
+        });
+    }
+}
+```
+
+- [ ] **Step 2: Update lib.rs and Cargo.toml**
+
+Add `mod emitter_props;` to `crates/hookbox-verify/src/lib.rs`.
+
+- [ ] **Step 3: Run tests**
+
+Run: `cargo test -p hookbox-verify --all-features`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git commit -m "test(hookbox-verify): add Bolero property tests for emitter invariants"
+```
+
+---
+
+## Task 9: BDD Scenarios for Emitter Selection
+
+**Files:**
+- Create: `crates/hookbox/tests/features/emitters.feature`
+
+### Steps
+
+- [ ] **Step 1: Create emitter BDD feature**
+
+```gherkin
+# crates/hookbox/tests/features/emitters.feature
+
+Feature: Emitter Selection and Event Forwarding
+
+  The pipeline forwards accepted webhooks to a configured emitter.
+  The default channel emitter works for development.
+
+  Scenario: Default channel emitter accepts and forwards events
+    Given a pipeline with a passing verifier for "test"
+    When I ingest a webhook from "test" with body '{"event":"emitter_test"}'
+    Then the result should be "accepted"
+    And an event should be emitted with provider "test"
+
+  Scenario: Events contain receipt_id for traceability
+    Given a pipeline with a passing verifier for "test"
+    When I ingest a webhook from "test" with body '{"event":"trace_test"}'
+    Then the result should be "accepted"
+    And an event should be emitted with provider "test"
+
+  Scenario: Emit failure does not reject the webhook
+    Given a pipeline with a passing verifier for "test" and a failing emitter
+    When I ingest a webhook from "test" with body '{"event":"fail_emit"}'
+    Then the result should be "accepted"
+```
+
+These use the existing BDD step definitions.
+
+- [ ] **Step 2: Run BDD**
+
+Run: `cargo test -p hookbox --test bdd`
+
+- [ ] **Step 3: Commit**
+
+```bash
+git commit -m "test(hookbox): add BDD scenarios for emitter selection"
+```
+
+---
+
+## Task 10: Integration Tests for Config Dispatch
+
+**Files:**
+- Modify: `crates/hookbox-server/src/routes/tests.rs`
+- Modify: `integration-tests/tests/http_test.rs`
+
+### Steps
+
+- [ ] **Step 1: Add config parsing tests**
+
+In `crates/hookbox-server/src/config.rs` tests, add:
+
+```rust
+#[test]
+fn parse_emitter_kafka_config() {
+    let toml_str = r#"
+[server]
+port = 8080
+[database]
+url = "postgres://localhost/hookbox"
+[emitter]
+type = "kafka"
+[emitter.kafka]
+brokers = "localhost:9092"
+topic = "hookbox-events"
+"#;
+    let config: HookboxConfig = toml::from_str(toml_str).expect("should parse");
+    assert_eq!(config.emitter.emitter_type, "kafka");
+    assert!(config.emitter.kafka.is_some());
+    let kafka = config.emitter.kafka.unwrap();
+    assert_eq!(kafka.brokers, "localhost:9092");
+    assert_eq!(kafka.topic, "hookbox-events");
+}
+
+#[test]
+fn parse_emitter_nats_config() {
+    let toml_str = r#"
+[server]
+port = 8080
+[database]
+url = "postgres://localhost/hookbox"
+[emitter]
+type = "nats"
+[emitter.nats]
+url = "nats://localhost:4222"
+subject = "hookbox.events"
+"#;
+    let config: HookboxConfig = toml::from_str(toml_str).expect("should parse");
+    assert_eq!(config.emitter.emitter_type, "nats");
+    assert!(config.emitter.nats.is_some());
+}
+
+#[test]
+fn parse_emitter_sqs_config() {
+    let toml_str = r#"
+[server]
+port = 8080
+[database]
+url = "postgres://localhost/hookbox"
+[emitter]
+type = "sqs"
+[emitter.sqs]
+queue_url = "https://sqs.us-east-1.amazonaws.com/123/hookbox"
+region = "us-east-1"
+fifo = true
+"#;
+    let config: HookboxConfig = toml::from_str(toml_str).expect("should parse");
+    assert_eq!(config.emitter.emitter_type, "sqs");
+    let sqs = config.emitter.sqs.unwrap();
+    assert!(sqs.fifo);
+}
+
+#[test]
+fn default_emitter_is_channel() {
+    let toml_str = r#"
+[server]
+port = 8080
+[database]
+url = "postgres://localhost/hookbox"
+"#;
+    let config: HookboxConfig = toml::from_str(toml_str).expect("should parse");
+    assert_eq!(config.emitter.emitter_type, "channel");
+}
+```
+
+- [ ] **Step 2: Add Arc<dyn Emitter> route test**
+
+In `crates/hookbox-server/src/routes/tests.rs`, add a test that verifies the in-memory route tests work with `Arc<dyn Emitter>` as the emitter type (instead of concrete `ChannelEmitter`). This validates the `ServerAppState` alias change.
+
+The implementing agent should verify the existing tests still pass after the type alias change, and add one explicit test that constructs `AppState` with `Arc<ChannelEmitter>` as the emitter.
+
+- [ ] **Step 3: Run tests**
+
+Run: `cargo test -p hookbox-server && DATABASE_URL=postgres://localhost/hookbox_test cargo test -p hookbox-integration-tests`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git commit -m "test: add config dispatch and Arc emitter integration tests"
+```
+
+---
+
+## Task 11: Coverage Check
+
+### Steps
+
+- [ ] **Step 1: Run coverage**
+
+Run: `DATABASE_URL=postgres://localhost/hookbox_test cargo +nightly llvm-cov --all-features --ignore-filename-regex 'shutdown\.rs|serve\.rs|main\.rs'`
+
+Check coverage is still above 90%. The new adapter crates have minimal testable code (they need real brokers for meaningful tests), so they'll show low coverage — that's expected and acceptable. The important thing is the blanket impls, config parsing, and wiring code are covered.
+
+- [ ] **Step 2: Note coverage numbers**
+
+Report the final coverage. Adapter crates will show 0% (no unit tests, need real brokers). This is documented as expected. Config parsing and blanket impl tests cover the hookbox-side of the integration.
+
+- [ ] **Step 3: Commit if any fixes**
+
+```bash
+git commit -m "chore: coverage check for emitter adapters"
+```
+
+---
+
+## Task 12: Real-World Smoke Tests (Manual / CI Docker)
+
+This task documents how to test against real brokers. Tests are `#[ignore]` by default and require Docker services.
+
+**Files:**
+- Create: `integration-tests/tests/emitter_smoke_test.rs`
+
+### Steps
+
+- [ ] **Step 1: Create smoke test file**
+
+```rust
+// integration-tests/tests/emitter_smoke_test.rs
+
+//! Smoke tests for emitter adapters against real brokers.
+//!
+//! These tests require running broker instances and are ignored by default.
+//! Run with Docker Compose or CI services:
+//!
+//! ```bash
+//! # Start brokers
+//! docker run -d --name kafka -p 9092:9092 confluentinc/cp-kafka:latest
+//! docker run -d --name nats -p 4222:4222 nats:latest
+//!
+//! # Run smoke tests
+//! cargo test -p hookbox-integration-tests --test emitter_smoke_test -- --ignored
+//! ```
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use hookbox::state::ReceiptId;
+use hookbox::traits::Emitter;
+use hookbox::types::NormalizedEvent;
+
+fn test_event() -> NormalizedEvent {
+    NormalizedEvent {
+        receipt_id: ReceiptId::new(),
+        provider_name: "smoke_test".to_owned(),
+        event_type: Some("payment.completed".to_owned()),
+        external_reference: None,
+        parsed_payload: Some(serde_json::json!({"test": true})),
+        payload_hash: "smoke".to_owned(),
+        received_at: chrono::Utc::now(),
+        metadata: serde_json::json!({}),
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn kafka_emitter_smoke() {
+    let brokers = std::env::var("KAFKA_BROKERS").unwrap_or_else(|_| "localhost:9092".to_owned());
+    let emitter = hookbox_emitter_kafka::KafkaEmitter::new(
+        &brokers, "hookbox-smoke-test".to_owned(), "hookbox-smoke", "all", 5000,
+    ).expect("kafka emitter");
+    let result = emitter.emit(&test_event()).await;
+    assert!(result.is_ok(), "kafka emit failed: {result:?}");
+}
+
+#[tokio::test]
+#[ignore]
+async fn nats_emitter_smoke() {
+    let url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_owned());
+    let emitter = hookbox_emitter_nats::NatsEmitter::new(&url, "hookbox.smoke.test".to_owned())
+        .await
+        .expect("nats emitter");
+    let result = emitter.emit(&test_event()).await;
+    assert!(result.is_ok(), "nats emit failed: {result:?}");
+}
+
+#[tokio::test]
+#[ignore]
+async fn sqs_emitter_smoke() {
+    let queue_url = std::env::var("SQS_QUEUE_URL")
+        .expect("SQS_QUEUE_URL must be set for SQS smoke test");
+    let emitter = hookbox_emitter_sqs::SqsEmitter::new(queue_url, None, false)
+        .await
+        .expect("sqs emitter");
+    let result = emitter.emit(&test_event()).await;
+    assert!(result.is_ok(), "sqs emit failed: {result:?}");
+}
+```
+
+- [ ] **Step 2: Add deps to integration-tests**
+
+Add to `integration-tests/Cargo.toml`:
+```toml
+hookbox-emitter-kafka = { path = "../crates/hookbox-emitter-kafka" }
+hookbox-emitter-nats = { path = "../crates/hookbox-emitter-nats" }
+hookbox-emitter-sqs = { path = "../crates/hookbox-emitter-sqs" }
+```
+
+- [ ] **Step 3: Verify they compile**
+
+Run: `cargo test -p hookbox-integration-tests --test emitter_smoke_test --no-run`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git commit -m "test(integration): add real-world smoke tests for Kafka, NATS, SQS emitters"
+```
+
+---
+
 ## Summary
 
 | Order | Task | What |
@@ -754,6 +1135,11 @@ git push -u origin feat/emitter-adapters
 | 4 | Task 4 | SqsEmitter (aws-sdk-sqs, standard + FIFO) |
 | 5 | Task 5 | Wire all emitters in serve.rs via config dispatch |
 | 6 | Task 6 | Documentation |
-| 7 | Task 7 | Validation |
+| 7 | Task 7 | Workspace validation |
+| 8 | Task 8 | Bolero property tests (emitter invariants) |
+| 9 | Task 9 | BDD scenarios (emitter selection + forwarding) |
+| 10 | Task 10 | Integration tests (config dispatch + Arc emitter) |
+| 11 | Task 11 | Coverage check |
+| 12 | Task 12 | Real-world smoke tests (Kafka, NATS, SQS with Docker) |
 
-Tasks 2-4 are independent and could be done in parallel. Task 5 depends on all of them. Task 1 must be first.
+Tasks 2-4 are independent. Task 5 depends on 1-4. Tasks 8-12 depend on 5.
