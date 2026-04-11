@@ -117,7 +117,8 @@ impl SignatureVerifier for WalapayVerifier {
 
         // 3. Build signed content bytes: "{msg_id}.{timestamp}.{body}".
         // Use raw bytes directly so non-UTF-8 payloads are handled correctly.
-        let mut signed_content = Vec::with_capacity(msg_id.len() + 1 + ts_str.len() + 1 + body.len());
+        let mut signed_content =
+            Vec::with_capacity(msg_id.len() + 1 + ts_str.len() + 1 + body.len());
         signed_content.extend_from_slice(msg_id.as_bytes());
         signed_content.push(b'.');
         signed_content.extend_from_slice(ts_str.as_bytes());
@@ -174,7 +175,8 @@ mod tests {
 
     fn compute_sig(key: &[u8], msg_id: &str, timestamp: u64, body: &[u8]) -> String {
         let ts_str = timestamp.to_string();
-        let mut signed_content = Vec::with_capacity(msg_id.len() + 1 + ts_str.len() + 1 + body.len());
+        let mut signed_content =
+            Vec::with_capacity(msg_id.len() + 1 + ts_str.len() + 1 + body.len());
         signed_content.extend_from_slice(msg_id.as_bytes());
         signed_content.push(b'.');
         signed_content.extend_from_slice(ts_str.as_bytes());

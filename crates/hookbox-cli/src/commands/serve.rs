@@ -217,8 +217,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
                     .header
                     .clone()
                     .unwrap_or_else(|| format!("X-{name}-Signature"));
-                let verifier =
-                    GenericHmacVerifier::new(name, secret.as_bytes().to_vec(), header);
+                let verifier = GenericHmacVerifier::new(name, secret.as_bytes().to_vec(), header);
                 builder = builder.verifier(verifier);
             }
         }
