@@ -5,10 +5,9 @@
 
 #![expect(
     clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
     reason = "expect/unwrap/panic are acceptable in test code"
 )]
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -76,7 +75,7 @@ async fn ingest_one(pool: &PgPool) -> Uuid {
     receipt_id.0
 }
 
-/// Test 1: Worker retries an EmitFailed receipt and moves it to Emitted.
+/// Test 1: Worker retries an `EmitFailed` receipt and moves it to `Emitted`.
 #[tokio::test]
 async fn worker_retries_emit_failed_receipt() {
     let _guard = worker_test_lock().lock().await;
@@ -90,8 +89,8 @@ async fn worker_retries_emit_failed_receipt() {
     ));
 
     // Create emitter whose receiver is immediately dropped → emit will fail
-    let (failing_emitter, _rx_drop) = ChannelEmitter::new(1);
-    drop(_rx_drop); // receiver gone → send returns Err → EmitFailed
+    let (failing_emitter, rx_drop) = ChannelEmitter::new(1);
+    drop(rx_drop); // receiver gone → send returns Err → EmitFailed
 
     let pipeline = HookboxPipeline::builder()
         .storage(PostgresStorage::new(pool.clone()))
@@ -154,7 +153,7 @@ async fn worker_retries_emit_failed_receipt() {
     );
 }
 
-/// Test 2: Worker promotes a receipt to DeadLettered after max_attempts.
+/// Test 2: Worker promotes a receipt to `DeadLettered` after `max_attempts`.
 #[tokio::test]
 async fn worker_promotes_to_dlq_after_max_attempts() {
     let _guard = worker_test_lock().lock().await;
@@ -194,8 +193,8 @@ async fn worker_promotes_to_dlq_after_max_attempts() {
     );
 
     // --- Step 4: create failing emitter (dropped receiver) ---
-    let (failing_emitter, _rx_drop) = ChannelEmitter::new(1);
-    drop(_rx_drop);
+    let (failing_emitter, rx_drop) = ChannelEmitter::new(1);
+    drop(rx_drop);
 
     // --- Step 5: spawn RetryWorker with 100ms interval, max_attempts=5 ---
     let worker = RetryWorker::new(
