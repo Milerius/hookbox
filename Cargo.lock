@@ -1421,9 +1421,13 @@ name = "hookbox-verify"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bolero",
+ "hex",
+ "hmac 0.13.0",
  "hookbox",
  "serde_json",
+ "sha2 0.11.0",
  "tokio",
 ]
 

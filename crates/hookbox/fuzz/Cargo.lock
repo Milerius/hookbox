@@ -262,6 +262,8 @@ dependencies = [
 name = "hookbox-fuzz"
 version = "0.0.0"
 dependencies = [
+ "base64",
+ "hex",
  "hookbox",
  "libfuzzer-sys",
  "serde_json",
