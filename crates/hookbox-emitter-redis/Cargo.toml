@@ -1,0 +1,20 @@
+[package]
+name = "hookbox-emitter-redis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Redis Streams emitter adapter for hookbox."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+hookbox.workspace = true
+redis.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tracing.workspace = true

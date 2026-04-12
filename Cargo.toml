@@ -9,6 +9,7 @@ members = [
     "crates/hookbox-verify",
     "crates/hookbox-emitter-kafka",
     "crates/hookbox-emitter-nats",
+    "crates/hookbox-emitter-redis",
     "crates/hookbox-emitter-sqs",
     "integration-tests",
 ]
@@ -53,6 +54,7 @@ hookbox-server = { path = "crates/hookbox-server", version = "0.1.0" }
 hookbox-cli = { path = "crates/hookbox-cli", version = "0.1.0" }
 hookbox-emitter-kafka = { path = "crates/hookbox-emitter-kafka", version = "0.1.0" }
 hookbox-emitter-nats = { path = "crates/hookbox-emitter-nats", version = "0.1.0" }
+hookbox-emitter-redis = { path = "crates/hookbox-emitter-redis", version = "0.1.0" }
 hookbox-emitter-sqs = { path = "crates/hookbox-emitter-sqs", version = "0.1.0" }
 
 # Async runtime
