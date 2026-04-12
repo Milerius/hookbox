@@ -124,6 +124,8 @@ async fn sqs_emitter_fifo_round_trip() {
 
 #[tokio::test]
 async fn sqs_emitter_standard_round_trip() {
+    // LocalStack 3.0 (the testcontainers-modules default) does not return
+    // `Attributes` via the JSON protocol. LocalStack 3.8+ fixes this.
     let container = LocalStack::default().with_tag("3.8").start().await.unwrap();
     let host = container.get_host().await.unwrap();
     let port = container.get_host_port_ipv4(4566).await.unwrap();
