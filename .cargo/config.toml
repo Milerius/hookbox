@@ -1,0 +1,6 @@
+[env]
+# Colima exposes its Docker socket at a non-standard path.
+# Testcontainers (and the Docker client library) respect DOCKER_HOST, so set
+# it here so that `cargo test` works out-of-the-box on Colima without
+# requiring per-shell exports.
+DOCKER_HOST = "unix:///Users/milerius/.colima/default/docker.sock"
