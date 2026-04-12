@@ -16,7 +16,6 @@ use async_trait::async_trait;
 use axum::body::Body;
 use hookbox::HookboxPipeline;
 use hookbox::dedupe::{InMemoryRecentDedupe, LayeredDedupe};
-use hookbox::emitter::ChannelEmitter;
 use hookbox::state::{VerificationResult, VerificationStatus};
 use hookbox::traits::SignatureVerifier;
 use hookbox_postgres::{PostgresStorage, StorageDedupe};
@@ -67,18 +66,12 @@ async fn setup_pool() -> PgPool {
     pool
 }
 
-async fn drain(mut rx: tokio::sync::mpsc::Receiver<hookbox::NormalizedEvent>) {
-    while rx.recv().await.is_some() {}
-}
-
 #[tokio::test]
 async fn full_http_flow() {
     let _guard = http_test_lock().lock().await;
     // Setup
     let pool = setup_pool().await;
     let storage = PostgresStorage::new(pool.clone());
-    let (emitter, rx) = ChannelEmitter::new(16);
-    tokio::spawn(drain(rx));
 
     let dedupe = LayeredDedupe::new(
         InMemoryRecentDedupe::new(100),
@@ -93,7 +86,7 @@ async fn full_http_flow() {
     let pipeline = HookboxPipeline::builder()
         .storage(storage)
         .dedupe(dedupe)
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
 
     let state = Arc::new(AppState {
@@ -197,8 +190,6 @@ async fn full_http_flow() {
 async fn admin_auth_token_enforcement() {
     let pool = setup_pool_no_delete().await;
     let storage = PostgresStorage::new(pool.clone());
-    let (emitter, rx) = ChannelEmitter::new(16);
-    tokio::spawn(drain(rx));
 
     let dedupe = LayeredDedupe::new(
         InMemoryRecentDedupe::new(100),
@@ -212,7 +203,7 @@ async fn admin_auth_token_enforcement() {
     let pipeline = HookboxPipeline::builder()
         .storage(storage)
         .dedupe(dedupe)
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
 
     let state = Arc::new(AppState {
@@ -265,8 +256,6 @@ async fn admin_auth_token_enforcement() {
 async fn admin_auth_non_ascii_header_rejected() {
     let pool = setup_pool_no_delete().await;
     let storage = PostgresStorage::new(pool.clone());
-    let (emitter, rx) = ChannelEmitter::new(16);
-    tokio::spawn(drain(rx));
 
     let dedupe = LayeredDedupe::new(
         InMemoryRecentDedupe::new(100),
@@ -280,7 +269,7 @@ async fn admin_auth_non_ascii_header_rejected() {
     let pipeline = HookboxPipeline::builder()
         .storage(storage)
         .dedupe(dedupe)
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
 
     let state = Arc::new(AppState {
@@ -319,8 +308,6 @@ async fn admin_auth_non_ascii_header_rejected() {
 async fn ingest_verification_failed_returns_401() {
     let pool = setup_pool_no_delete().await;
     let storage = PostgresStorage::new(pool.clone());
-    let (emitter, rx) = ChannelEmitter::new(16);
-    tokio::spawn(drain(rx));
 
     let dedupe = LayeredDedupe::new(
         InMemoryRecentDedupe::new(100),
@@ -334,7 +321,7 @@ async fn ingest_verification_failed_returns_401() {
     let pipeline = HookboxPipeline::builder()
         .storage(storage)
         .dedupe(dedupe)
-        .emitter(emitter)
+        .emitter_names(vec![])
         .verifier(AlwaysFailVerifier)
         .build();
 
@@ -373,8 +360,6 @@ async fn ingest_verification_failed_returns_401() {
 async fn metrics_no_recorder_returns_fallback_message() {
     let pool = setup_pool_no_delete().await;
     let storage = PostgresStorage::new(pool.clone());
-    let (emitter, rx) = ChannelEmitter::new(16);
-    tokio::spawn(drain(rx));
 
     let dedupe = LayeredDedupe::new(
         InMemoryRecentDedupe::new(100),
@@ -384,7 +369,7 @@ async fn metrics_no_recorder_returns_fallback_message() {
     let pipeline = HookboxPipeline::builder()
         .storage(storage)
         .dedupe(dedupe)
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
 
     // Explicitly set prometheus to None — do NOT install a recorder.
@@ -420,8 +405,6 @@ async fn metrics_no_recorder_returns_fallback_message() {
 async fn readyz_no_pool_returns_503() {
     let pool = setup_pool_no_delete().await;
     let storage = PostgresStorage::new(pool.clone());
-    let (emitter, rx) = ChannelEmitter::new(16);
-    tokio::spawn(drain(rx));
 
     let dedupe = LayeredDedupe::new(
         InMemoryRecentDedupe::new(100),
@@ -431,7 +414,7 @@ async fn readyz_no_pool_returns_503() {
     let pipeline = HookboxPipeline::builder()
         .storage(storage)
         .dedupe(dedupe)
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
 
     // Explicitly set pool to None — readyz should return 503.

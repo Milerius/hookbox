@@ -251,6 +251,111 @@ impl Storage for PostgresStorage {
         })
     }
 
+    /// Atomically insert the receipt and one pending delivery row per emitter
+    /// name, all within a single transaction.
+    ///
+    /// If the receipt already exists (duplicate `dedupe_key`), the transaction
+    /// is rolled back and [`StoreResult::Duplicate`] is returned without
+    /// inserting any delivery rows.
+    async fn store_with_deliveries(
+        &self,
+        receipt: &WebhookReceipt,
+        emitter_names: &[String],
+    ) -> Result<StoreResult, StorageError> {
+        let processing_state = serialize_enum(&receipt.processing_state)?;
+        let verification_status = serialize_enum(&receipt.verification_status)?;
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        // Insert the receipt (same logic as `store`, but against the transaction).
+        let inserted: Option<Uuid> = sqlx::query_scalar(
+            r"
+            INSERT INTO webhook_receipts (
+                receipt_id, provider_name, provider_event_id, external_reference,
+                dedupe_key, payload_hash, raw_body, parsed_payload, raw_headers,
+                normalized_event_type, verification_status, verification_reason,
+                processing_state, emit_count, last_error, received_at, processed_at,
+                metadata
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                $13, $14, $15, $16, $17, $18
+            )
+            ON CONFLICT (dedupe_key) DO NOTHING
+            RETURNING receipt_id
+            ",
+        )
+        .bind(receipt.receipt_id.0)
+        .bind(&receipt.provider_name)
+        .bind(&receipt.provider_event_id)
+        .bind(&receipt.external_reference)
+        .bind(&receipt.dedupe_key)
+        .bind(&receipt.payload_hash)
+        .bind(&receipt.raw_body)
+        .bind(&receipt.parsed_payload)
+        .bind(&receipt.raw_headers)
+        .bind(&receipt.normalized_event_type)
+        .bind(&verification_status)
+        .bind(&receipt.verification_reason)
+        .bind(&processing_state)
+        .bind(receipt.emit_count)
+        .bind(&receipt.last_error)
+        .bind(receipt.received_at)
+        .bind(receipt.processed_at)
+        .bind(&receipt.metadata)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        if inserted.is_none() {
+            // Conflict — fetch the existing id and roll back (nothing to undo,
+            // but explicit rollback keeps the connection state clean).
+            tx.rollback()
+                .await
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+            let existing: Uuid = sqlx::query_scalar(
+                "SELECT receipt_id FROM webhook_receipts WHERE dedupe_key = $1",
+            )
+            .bind(&receipt.dedupe_key)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+            return Ok(StoreResult::Duplicate {
+                existing_id: ReceiptId(existing),
+            });
+        }
+
+        // Insert one pending delivery row per emitter name.
+        let now = chrono::Utc::now();
+        for name in emitter_names {
+            sqlx::query(
+                r"
+                INSERT INTO webhook_deliveries
+                    (delivery_id, receipt_id, emitter_name, state, next_attempt_at, created_at)
+                VALUES
+                    (gen_random_uuid(), $1, $2, 'pending', $3, $3)
+                ",
+            )
+            .bind(receipt.receipt_id.0)
+            .bind(name)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        Ok(StoreResult::Stored)
+    }
+
     /// Retrieve a single [`WebhookReceipt`] by its [`Uuid`].
     ///
     /// Returns `Ok(None)` when no receipt with the given ID exists.

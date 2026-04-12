@@ -19,14 +19,14 @@ use sqlx::PgPool;
 
 use hookbox::dedupe::{InMemoryRecentDedupe, LayeredDedupe};
 use hookbox::pipeline::HookboxPipeline;
-use hookbox::traits::{DedupeStrategy, Emitter, Storage};
+use hookbox::traits::{DedupeStrategy, Storage};
 use hookbox_postgres::{PostgresStorage, StorageDedupe};
 
 /// Shared application state, threaded through all Axum handlers via
-/// `State<Arc<AppState<S, D, E>>>`.
-pub struct AppState<S: Storage, D: DedupeStrategy, E: Emitter> {
+/// `State<Arc<AppState<S, D>>>`.
+pub struct AppState<S: Storage, D: DedupeStrategy> {
     /// The ingest pipeline wired with backend types.
-    pub pipeline: HookboxPipeline<S, D, E>,
+    pub pipeline: HookboxPipeline<S, D>,
     /// Database connection pool, used independently for health checks.
     /// `None` when running without a database (e.g. in tests).
     pub pool: Option<PgPool>,
@@ -37,47 +37,41 @@ pub struct AppState<S: Storage, D: DedupeStrategy, E: Emitter> {
 }
 
 /// Concrete [`AppState`] used by the production server binary.
-///
-/// The emitter is erased to `Arc<dyn Emitter + Send + Sync>` so that the
-/// server can select the emitter backend at runtime from configuration
-/// without changing the type signature of the router or handlers.
 pub type ServerAppState = AppState<
     PostgresStorage,
     LayeredDedupe<InMemoryRecentDedupe, StorageDedupe>,
-    Arc<dyn Emitter + Send + Sync>,
 >;
 
 /// Build the Axum [`Router`] with all hookbox routes wired to the given state.
 ///
 /// `body_limit` sets the maximum request body size in bytes via
 /// [`DefaultBodyLimit::max`].
-pub fn build_router<S, D, E>(state: Arc<AppState<S, D, E>>, body_limit: usize) -> Router
+pub fn build_router<S, D>(state: Arc<AppState<S, D>>, body_limit: usize) -> Router
 where
     S: Storage + 'static,
     D: DedupeStrategy + 'static,
-    E: Emitter + 'static,
 {
     Router::new()
         .route(
             "/webhooks/{provider}",
-            post(routes::ingest::ingest_webhook::<S, D, E>),
+            post(routes::ingest::ingest_webhook::<S, D>),
         )
         .route("/healthz", get(routes::health::healthz))
-        .route("/readyz", get(routes::health::readyz::<S, D, E>))
+        .route("/readyz", get(routes::health::readyz::<S, D>))
         .route(
             "/api/receipts",
-            get(routes::admin::list_receipts::<S, D, E>),
+            get(routes::admin::list_receipts::<S, D>),
         )
         .route(
             "/api/receipts/{id}",
-            get(routes::admin::get_receipt::<S, D, E>),
+            get(routes::admin::get_receipt::<S, D>),
         )
         .route(
             "/api/receipts/{id}/replay",
-            post(routes::admin::replay_receipt::<S, D, E>),
+            post(routes::admin::replay_receipt::<S, D>),
         )
-        .route("/api/dlq", get(routes::admin::list_dlq::<S, D, E>))
-        .route("/metrics", get(routes::health::metrics::<S, D, E>))
+        .route("/api/dlq", get(routes::admin::list_dlq::<S, D>))
+        .route("/metrics", get(routes::health::metrics::<S, D>))
         .with_state(state)
         .layer(DefaultBodyLimit::max(body_limit))
 }

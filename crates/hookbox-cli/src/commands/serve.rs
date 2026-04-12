@@ -109,10 +109,11 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     let worker_emitter: Box<dyn Emitter + Send + Sync> = Box::new(Arc::clone(&emitter));
 
     // Build pipeline and register provider verifiers from config.
+    // Emitter names are not yet wired here — Phase 7 (EmitterWorker) will
+    // plumb them from config.  For now the pipeline creates no delivery rows.
     let mut builder = HookboxPipeline::builder()
         .storage(storage)
-        .dedupe(dedupe)
-        .emitter(emitter);
+        .dedupe(dedupe);
 
     for (name, provider) in &config.providers {
         match provider.verifier_type.as_str() {

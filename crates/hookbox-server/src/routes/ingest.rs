@@ -10,14 +10,14 @@ use bytes::Bytes;
 use serde_json::json;
 
 use hookbox::IngestResult;
-use hookbox::traits::{DedupeStrategy, Emitter, Storage};
+use hookbox::traits::{DedupeStrategy, Storage};
 
 use crate::AppState;
 
 /// Receive an inbound webhook event from the named provider and run it
-/// through the full ingest pipeline (verify, dedupe, store, emit).
-pub async fn ingest_webhook<S: Storage, D: DedupeStrategy, E: Emitter>(
-    State(state): State<Arc<AppState<S, D, E>>>,
+/// through the full ingest pipeline (verify, dedupe, store).
+pub async fn ingest_webhook<S: Storage, D: DedupeStrategy>(
+    State(state): State<Arc<AppState<S, D>>>,
     Path(provider): Path<String>,
     headers: HeaderMap,
     body: Bytes,

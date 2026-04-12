@@ -10,7 +10,6 @@
 use bytes::Bytes;
 use hookbox::HookboxPipeline;
 use hookbox::dedupe::InMemoryRecentDedupe;
-use hookbox::emitter::ChannelEmitter;
 use hookbox::state::ProcessingState;
 use hookbox::traits::Storage;
 use hookbox_postgres::PostgresStorage;
@@ -32,20 +31,17 @@ async fn setup() -> (PgPool, PostgresStorage) {
 async fn ingest_test_receipt(storage: &PostgresStorage, provider: &str) -> uuid::Uuid {
     let unique_body = uuid::Uuid::new_v4().to_string();
     let body = unique_body.as_bytes();
-    let (emitter, mut rx) = ChannelEmitter::new(16);
 
     let pipeline = HookboxPipeline::builder()
         .storage(storage.clone())
         .dedupe(InMemoryRecentDedupe::new(100))
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
 
     let result = pipeline
         .ingest(provider, HeaderMap::new(), Bytes::from(body.to_vec()))
         .await
         .expect("ingest should succeed");
-    // drain one event
-    let _ = rx.try_recv();
 
     // Extract the receipt ID from the result
     match result {

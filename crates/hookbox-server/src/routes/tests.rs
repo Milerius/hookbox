@@ -13,12 +13,11 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 use hookbox::dedupe::InMemoryRecentDedupe;
-use hookbox::emitter::ChannelEmitter;
 use hookbox::error::StorageError;
 use hookbox::pipeline::HookboxPipeline;
 use hookbox::state::{ProcessingState, StoreResult, VerificationResult, VerificationStatus};
 use hookbox::traits::{SignatureVerifier, Storage};
-use hookbox::types::{NormalizedEvent, ReceiptFilter, WebhookReceipt};
+use hookbox::types::{ReceiptFilter, WebhookReceipt};
 
 use crate::AppState;
 
@@ -106,19 +105,13 @@ impl Storage for MemoryStorage {
     }
 }
 
-/// Build a test app with in-memory backends. Returns the router and a receiver
-/// that must be kept alive for the duration of the test (dropping it causes
-/// emit failures).
-fn build_test_app(
-    admin_token: Option<String>,
-) -> (Router, tokio::sync::mpsc::Receiver<NormalizedEvent>) {
-    let (emitter, receiver) = ChannelEmitter::new(64);
-    let pipeline =
-        HookboxPipeline::<MemoryStorage, InMemoryRecentDedupe, ChannelEmitter>::builder()
-            .storage(MemoryStorage::new())
-            .dedupe(InMemoryRecentDedupe::new(1000))
-            .emitter(emitter)
-            .build();
+/// Build a test app with in-memory backends.
+fn build_test_app(admin_token: Option<String>) -> Router {
+    let pipeline = HookboxPipeline::<MemoryStorage, InMemoryRecentDedupe>::builder()
+        .storage(MemoryStorage::new())
+        .dedupe(InMemoryRecentDedupe::new(1000))
+        .emitter_names(vec![])
+        .build();
 
     let state = Arc::new(AppState {
         pipeline,
@@ -127,8 +120,7 @@ fn build_test_app(
         prometheus: None,
     });
 
-    let router = crate::build_router(state, 1024 * 1024);
-    (router, receiver)
+    crate::build_router(state, 1024 * 1024)
 }
 
 /// Extract the response body as a JSON value.
@@ -141,7 +133,7 @@ async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
 
 #[tokio::test]
 async fn ingest_valid_webhook_returns_200_accepted() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     let response = app
         .oneshot(
@@ -163,7 +155,7 @@ async fn ingest_valid_webhook_returns_200_accepted() {
 
 #[tokio::test]
 async fn ingest_duplicate_returns_200_duplicate() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     // First request.
     let resp1 = app
@@ -201,7 +193,7 @@ async fn ingest_duplicate_returns_200_duplicate() {
 
 #[tokio::test]
 async fn ingest_no_verifier_returns_200_accepted() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     let response = app
         .oneshot(
@@ -224,7 +216,7 @@ async fn ingest_no_verifier_returns_200_accepted() {
 
 #[tokio::test]
 async fn healthz_returns_200() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     let response = app
         .oneshot(
@@ -241,7 +233,7 @@ async fn healthz_returns_200() {
 
 #[tokio::test]
 async fn readyz_without_pool_returns_503() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     let response = app
         .oneshot(
@@ -260,7 +252,7 @@ async fn readyz_without_pool_returns_503() {
 
 #[tokio::test]
 async fn list_receipts_empty() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     let response = app
         .oneshot(
@@ -280,7 +272,7 @@ async fn list_receipts_empty() {
 
 #[tokio::test]
 async fn list_receipts_after_ingest() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     // Ingest a webhook first.
     let ingest_resp = app
@@ -319,7 +311,7 @@ async fn list_receipts_after_ingest() {
 
 #[tokio::test]
 async fn get_receipt_not_found() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
     let random_id = Uuid::new_v4();
 
     let response = app
@@ -337,7 +329,7 @@ async fn get_receipt_not_found() {
 
 #[tokio::test]
 async fn list_dlq_empty() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     let response = app
         .oneshot(
@@ -359,7 +351,7 @@ async fn list_dlq_empty() {
 
 #[tokio::test]
 async fn admin_missing_token_returns_401() {
-    let (app, _rx) = build_test_app(Some("secret".to_owned()));
+    let app = build_test_app(Some("secret".to_owned()));
 
     let response = app
         .oneshot(
@@ -376,7 +368,7 @@ async fn admin_missing_token_returns_401() {
 
 #[tokio::test]
 async fn admin_wrong_token_returns_401() {
-    let (app, _rx) = build_test_app(Some("secret".to_owned()));
+    let app = build_test_app(Some("secret".to_owned()));
 
     let response = app
         .oneshot(
@@ -394,7 +386,7 @@ async fn admin_wrong_token_returns_401() {
 
 #[tokio::test]
 async fn admin_correct_token_returns_200() {
-    let (app, _rx) = build_test_app(Some("secret".to_owned()));
+    let app = build_test_app(Some("secret".to_owned()));
 
     let response = app
         .oneshot(
@@ -412,7 +404,7 @@ async fn admin_correct_token_returns_200() {
 
 #[tokio::test]
 async fn admin_no_token_configured_allows_all() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     let response = app
         .oneshot(
@@ -431,7 +423,7 @@ async fn admin_no_token_configured_allows_all() {
 
 #[tokio::test]
 async fn metrics_endpoint_returns_200() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     let response = app
         .oneshot(
@@ -451,13 +443,11 @@ async fn metrics_endpoint_with_prometheus_handle_renders_metrics() {
     // Covers `Some(handle) => handle.render()` in health.rs.
     use metrics_exporter_prometheus::PrometheusBuilder;
 
-    let (emitter, _rx) = ChannelEmitter::new(64);
-    let pipeline =
-        HookboxPipeline::<MemoryStorage, InMemoryRecentDedupe, ChannelEmitter>::builder()
-            .storage(MemoryStorage::new())
-            .dedupe(InMemoryRecentDedupe::new(1000))
-            .emitter(emitter)
-            .build();
+    let pipeline = HookboxPipeline::<MemoryStorage, InMemoryRecentDedupe>::builder()
+        .storage(MemoryStorage::new())
+        .dedupe(InMemoryRecentDedupe::new(1000))
+        .emitter_names(vec![])
+        .build();
 
     // Install a prometheus recorder — may fail if already installed in this process.
     // We proceed only if we get a valid handle.
@@ -496,7 +486,7 @@ async fn metrics_endpoint_with_prometheus_handle_renders_metrics() {
 #[tokio::test]
 async fn replay_receipt_returns_200() {
     // Keep _rx alive so the ChannelEmitter does not return a send error.
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     // Ingest a webhook.
     let ingest_resp = app
@@ -536,7 +526,7 @@ async fn replay_receipt_returns_200() {
 
 #[tokio::test]
 async fn replay_nonexistent_returns_404() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
     let random_id = Uuid::new_v4();
 
     let response = app
@@ -555,7 +545,7 @@ async fn replay_nonexistent_returns_404() {
 
 #[tokio::test]
 async fn list_receipts_with_provider_filter() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     // Ingest for provider "alpha".
     let alpha_resp = app
@@ -612,9 +602,10 @@ async fn list_receipts_with_provider_filter() {
 
 #[tokio::test]
 async fn list_receipts_with_state_filter() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
-    // Ingest a webhook (it will be in Stored state).
+    // Ingest a webhook — after the Phase 6 fan-out refactor the pipeline
+    // no longer emits inline, so receipts remain in the `Stored` state.
     let ingest_resp = app
         .clone()
         .oneshot(
@@ -629,12 +620,12 @@ async fn list_receipts_with_state_filter() {
         .unwrap();
     assert_eq!(ingest_resp.status(), StatusCode::OK);
 
-    // Filter by state=emitted (the pipeline transitions from Stored → Emitted
-    // after a successful emit, which happens synchronously in the test channel).
+    // Filter by state=stored (no inline emit means receipts stay in Stored state
+    // until EmitterWorker picks them up in Phase 7).
     let list_resp = app
         .oneshot(
             Request::builder()
-                .uri("/api/receipts?state=emitted")
+                .uri("/api/receipts?state=stored")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -646,13 +637,13 @@ async fn list_receipts_with_state_filter() {
     let receipts = json.as_array().unwrap();
     assert!(
         !receipts.is_empty(),
-        "expected at least one receipt with state=emitted"
+        "expected at least one receipt with state=stored"
     );
 }
 
 #[tokio::test]
 async fn list_receipts_with_limit() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     // Ingest 3 distinct webhooks.
     for i in 0..3u8 {
@@ -696,7 +687,7 @@ async fn list_receipts_with_limit() {
 
 #[tokio::test]
 async fn get_receipt_after_ingest() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     // Ingest a webhook.
     let ingest_resp = app
@@ -745,7 +736,7 @@ async fn get_receipt_after_ingest() {
 
 #[tokio::test]
 async fn ingest_empty_body() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     let response = app
         .oneshot(
@@ -765,7 +756,7 @@ async fn ingest_empty_body() {
 
 #[tokio::test]
 async fn ingest_non_json_body() {
-    let (app, _rx) = build_test_app(None);
+    let app = build_test_app(None);
 
     let response = app
         .oneshot(
@@ -806,15 +797,13 @@ impl SignatureVerifier for RejectVerifier {
 
 /// Build a test app that has a [`RejectVerifier`] registered for the
 /// `"reject-provider"` provider name.
-fn build_test_app_with_reject_verifier() -> (Router, tokio::sync::mpsc::Receiver<NormalizedEvent>) {
-    let (emitter, receiver) = ChannelEmitter::new(64);
-    let pipeline =
-        HookboxPipeline::<MemoryStorage, InMemoryRecentDedupe, ChannelEmitter>::builder()
-            .storage(MemoryStorage::new())
-            .dedupe(InMemoryRecentDedupe::new(1000))
-            .emitter(emitter)
-            .verifier(RejectVerifier)
-            .build();
+fn build_test_app_with_reject_verifier() -> Router {
+    let pipeline = HookboxPipeline::<MemoryStorage, InMemoryRecentDedupe>::builder()
+        .storage(MemoryStorage::new())
+        .dedupe(InMemoryRecentDedupe::new(1000))
+        .emitter_names(vec![])
+        .verifier(RejectVerifier)
+        .build();
 
     let state = Arc::new(AppState {
         pipeline,
@@ -823,13 +812,12 @@ fn build_test_app_with_reject_verifier() -> (Router, tokio::sync::mpsc::Receiver
         prometheus: None,
     });
 
-    let router = crate::build_router(state, 1024 * 1024);
-    (router, receiver)
+    crate::build_router(state, 1024 * 1024)
 }
 
 #[tokio::test]
 async fn ingest_verification_failed_returns_401() {
-    let (app, _rx) = build_test_app_with_reject_verifier();
+    let app = build_test_app_with_reject_verifier();
 
     let response = app
         .oneshot(
@@ -851,9 +839,11 @@ async fn ingest_verification_failed_returns_401() {
 
 // ── Replay emit failure (receiver dropped) ──────────────────────────
 
+/// Inline emit was removed in the Phase 6 fan-out refactor; replay now only
+/// transitions state, so it always succeeds when the receipt exists.
 #[tokio::test]
-async fn replay_with_closed_emitter_returns_500() {
-    let (app, rx) = build_test_app(None);
+async fn replay_succeeds_without_inline_emit() {
+    let app = build_test_app(None);
 
     // Ingest a webhook.
     let ingest_resp = app
@@ -864,7 +854,7 @@ async fn replay_with_closed_emitter_returns_500() {
                 .uri("/webhooks/test")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"event":"replay-fail","id":"unique-replay-fail-1"}"#,
+                    r#"{"event":"replay-no-emit","id":"unique-replay-no-emit-1"}"#,
                 ))
                 .unwrap(),
         )
@@ -874,10 +864,7 @@ async fn replay_with_closed_emitter_returns_500() {
     let ingest_json = body_json(ingest_resp).await;
     let receipt_id = ingest_json["receipt_id"].as_str().unwrap().to_owned();
 
-    // Drop the receiver so the emitter channel is closed.
-    drop(rx);
-
-    // Replay should fail because the emitter cannot send.
+    // Replay should succeed — no inline emit means no channel-send failure.
     let replay_resp = app
         .oneshot(
             Request::builder()
@@ -889,16 +876,16 @@ async fn replay_with_closed_emitter_returns_500() {
         .await
         .unwrap();
 
-    assert_eq!(replay_resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(replay_resp.status(), StatusCode::OK);
     let json = body_json(replay_resp).await;
-    assert!(json["error"].as_str().unwrap().contains("emit failed"));
+    assert_eq!(json["status"], "replayed");
 }
 
 // ── Admin auth: non-UTF-8 authorization header ──────────────────────
 
 #[tokio::test]
 async fn admin_non_utf8_auth_header_returns_401() {
-    let (app, _rx) = build_test_app(Some("secret".to_owned()));
+    let app = build_test_app(Some("secret".to_owned()));
 
     // Send a header value with bytes that are valid for HTTP but not a
     // valid bearer-token match.
@@ -948,14 +935,12 @@ impl Storage for FailingStorage {
 }
 
 /// Build a test app with a [`FailingStorage`] backend.
-fn build_failing_app() -> (Router, tokio::sync::mpsc::Receiver<NormalizedEvent>) {
-    let (emitter, receiver) = ChannelEmitter::new(64);
-    let pipeline =
-        HookboxPipeline::<FailingStorage, InMemoryRecentDedupe, ChannelEmitter>::builder()
-            .storage(FailingStorage)
-            .dedupe(InMemoryRecentDedupe::new(1000))
-            .emitter(emitter)
-            .build();
+fn build_failing_app() -> Router {
+    let pipeline = HookboxPipeline::<FailingStorage, InMemoryRecentDedupe>::builder()
+        .storage(FailingStorage)
+        .dedupe(InMemoryRecentDedupe::new(1000))
+        .emitter_names(vec![])
+        .build();
 
     let state = Arc::new(AppState {
         pipeline,
@@ -964,13 +949,12 @@ fn build_failing_app() -> (Router, tokio::sync::mpsc::Receiver<NormalizedEvent>)
         prometheus: None,
     });
 
-    let router = crate::build_router(state, 1024 * 1024);
-    (router, receiver)
+    crate::build_router(state, 1024 * 1024)
 }
 
 #[tokio::test]
 async fn list_receipts_storage_error_returns_500() {
-    let (app, _rx) = build_failing_app();
+    let app = build_failing_app();
 
     let response = app
         .oneshot(
@@ -989,7 +973,7 @@ async fn list_receipts_storage_error_returns_500() {
 
 #[tokio::test]
 async fn get_receipt_storage_error_returns_500() {
-    let (app, _rx) = build_failing_app();
+    let app = build_failing_app();
     let id = Uuid::new_v4();
 
     let response = app
@@ -1009,7 +993,7 @@ async fn get_receipt_storage_error_returns_500() {
 
 #[tokio::test]
 async fn replay_receipt_storage_error_returns_500() {
-    let (app, _rx) = build_failing_app();
+    let app = build_failing_app();
     let id = Uuid::new_v4();
 
     let response = app
@@ -1030,7 +1014,7 @@ async fn replay_receipt_storage_error_returns_500() {
 
 #[tokio::test]
 async fn list_dlq_storage_error_returns_500() {
-    let (app, _rx) = build_failing_app();
+    let app = build_failing_app();
 
     let response = app
         .oneshot(
@@ -1049,7 +1033,7 @@ async fn list_dlq_storage_error_returns_500() {
 
 #[tokio::test]
 async fn ingest_storage_error_returns_500() {
-    let (app, _rx) = build_failing_app();
+    let app = build_failing_app();
 
     let response = app
         .oneshot(
@@ -1072,7 +1056,7 @@ async fn ingest_storage_error_returns_500() {
 
 #[tokio::test]
 async fn get_receipt_missing_token_returns_401() {
-    let (app, _rx) = build_test_app(Some("secret".to_owned()));
+    let app = build_test_app(Some("secret".to_owned()));
     let id = Uuid::new_v4();
 
     let response = app
@@ -1090,7 +1074,7 @@ async fn get_receipt_missing_token_returns_401() {
 
 #[tokio::test]
 async fn replay_receipt_missing_token_returns_401() {
-    let (app, _rx) = build_test_app(Some("secret".to_owned()));
+    let app = build_test_app(Some("secret".to_owned()));
     let id = Uuid::new_v4();
 
     let response = app
@@ -1109,7 +1093,7 @@ async fn replay_receipt_missing_token_returns_401() {
 
 #[tokio::test]
 async fn list_dlq_missing_token_returns_401() {
-    let (app, _rx) = build_test_app(Some("secret".to_owned()));
+    let app = build_test_app(Some("secret".to_owned()));
 
     let response = app
         .oneshot(
@@ -1167,13 +1151,11 @@ impl Storage for UpdateFailStorage {
 
 #[tokio::test]
 async fn replay_update_state_failure_returns_500() {
-    let (emitter, _rx) = ChannelEmitter::new(64);
-    let pipeline =
-        HookboxPipeline::<UpdateFailStorage, InMemoryRecentDedupe, ChannelEmitter>::builder()
-            .storage(UpdateFailStorage::new())
-            .dedupe(InMemoryRecentDedupe::new(1000))
-            .emitter(emitter)
-            .build();
+    let pipeline = HookboxPipeline::<UpdateFailStorage, InMemoryRecentDedupe>::builder()
+        .storage(UpdateFailStorage::new())
+        .dedupe(InMemoryRecentDedupe::new(1000))
+        .emitter_names(vec![])
+        .build();
 
     let state = Arc::new(AppState {
         pipeline,

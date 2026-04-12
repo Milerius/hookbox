@@ -14,18 +14,16 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use cucumber::{World, given, then, when};
 use http::HeaderMap;
-use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use hookbox::dedupe::InMemoryRecentDedupe;
-use hookbox::emitter::ChannelEmitter;
-use hookbox::error::{EmitError, StorageError};
+use hookbox::error::StorageError;
 use hookbox::pipeline::HookboxPipeline;
 use hookbox::state::{
     IngestResult, ProcessingState, StoreResult, VerificationResult, VerificationStatus,
 };
-use hookbox::traits::{Emitter, SignatureVerifier, Storage};
-use hookbox::types::{NormalizedEvent, ReceiptFilter, WebhookReceipt};
+use hookbox::traits::{SignatureVerifier, Storage};
+use hookbox::types::{ReceiptFilter, WebhookReceipt};
 
 // ── Test helpers ─────────────────────────────────────────────────────────
 
@@ -130,49 +128,14 @@ impl SignatureVerifier for FailVerifier {
     }
 }
 
-/// Emitter that always fails.
-struct FailEmitter;
-
-#[async_trait]
-impl Emitter for FailEmitter {
-    async fn emit(&self, _event: &NormalizedEvent) -> Result<(), EmitError> {
-        Err(EmitError::Downstream("test_failure".to_owned()))
-    }
-}
-
-// ── Pipeline wrapper ─────────────────────────────────────────────────────
-
-/// Enum to hold either a channel-emitting pipeline or a fail-emitting pipeline,
-/// since the pipeline is generic over emitter type.
-enum PipelineVariant {
-    Channel(HookboxPipeline<MemoryStorage, InMemoryRecentDedupe, ChannelEmitter>),
-    Fail(HookboxPipeline<MemoryStorage, InMemoryRecentDedupe, FailEmitter>),
-}
-
-impl PipelineVariant {
-    async fn ingest(
-        &self,
-        provider: &str,
-        headers: HeaderMap,
-        body: Bytes,
-    ) -> Result<IngestResult, hookbox::IngestError> {
-        match self {
-            PipelineVariant::Channel(p) => p.ingest(provider, headers, body).await,
-            PipelineVariant::Fail(p) => p.ingest(provider, headers, body).await,
-        }
-    }
-}
-
 // ── World ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Default, World)]
 #[world(init = Self::new)]
 struct IngestWorld {
-    /// The pipeline variant is stored as an Option because World requires Default.
-    /// We use a raw pointer trick via Box to erase the type.
+    /// The pipeline is stored as an Option because World requires Default.
     pipeline: Option<PipelineBox>,
     results: Vec<IngestResult>,
-    emitter_rx: Option<mpsc::Receiver<NormalizedEvent>>,
 }
 
 /// Type-erased pipeline box so that `IngestWorld` can derive `Debug`.
@@ -184,33 +147,24 @@ impl std::fmt::Debug for PipelineBox {
     }
 }
 
+type Pipeline = HookboxPipeline<MemoryStorage, InMemoryRecentDedupe>;
+
 impl IngestWorld {
     fn new() -> Self {
         Self {
             pipeline: None,
             results: Vec::new(),
-            emitter_rx: None,
         }
     }
 
-    fn set_channel_pipeline(
-        &mut self,
-        pipeline: HookboxPipeline<MemoryStorage, InMemoryRecentDedupe, ChannelEmitter>,
-    ) {
-        self.pipeline = Some(PipelineBox(Box::new(PipelineVariant::Channel(pipeline))));
+    fn set_pipeline(&mut self, pipeline: Pipeline) {
+        self.pipeline = Some(PipelineBox(Box::new(pipeline)));
     }
 
-    fn set_fail_pipeline(
-        &mut self,
-        pipeline: HookboxPipeline<MemoryStorage, InMemoryRecentDedupe, FailEmitter>,
-    ) {
-        self.pipeline = Some(PipelineBox(Box::new(PipelineVariant::Fail(pipeline))));
-    }
-
-    fn pipeline(&self) -> &PipelineVariant {
+    fn pipeline(&self) -> &Pipeline {
         self.pipeline
             .as_ref()
-            .and_then(|b| b.0.downcast_ref::<PipelineVariant>())
+            .and_then(|b| b.0.downcast_ref::<Pipeline>())
             .unwrap()
     }
 }
@@ -219,57 +173,38 @@ impl IngestWorld {
 
 #[given(expr = "a pipeline with a passing verifier for {string}")]
 async fn given_pipeline_with_passing_verifier(world: &mut IngestWorld, provider: String) {
-    let (emitter, rx) = ChannelEmitter::new(16);
     let pipeline = HookboxPipeline::builder()
         .storage(MemoryStorage::new())
         .dedupe(InMemoryRecentDedupe::new(100))
-        .emitter(emitter)
+        .emitter_names(vec![])
         .verifier(PassVerifier {
             provider: provider.clone(),
         })
         .build();
-    world.set_channel_pipeline(pipeline);
-    world.emitter_rx = Some(rx);
+    world.set_pipeline(pipeline);
 }
 
 #[given(expr = "a pipeline with a failing verifier for {string}")]
 async fn given_pipeline_with_failing_verifier(world: &mut IngestWorld, provider: String) {
-    let (emitter, rx) = ChannelEmitter::new(16);
     let pipeline = HookboxPipeline::builder()
         .storage(MemoryStorage::new())
         .dedupe(InMemoryRecentDedupe::new(100))
-        .emitter(emitter)
+        .emitter_names(vec![])
         .verifier(FailVerifier {
             provider: provider.clone(),
         })
         .build();
-    world.set_channel_pipeline(pipeline);
-    world.emitter_rx = Some(rx);
+    world.set_pipeline(pipeline);
 }
 
 #[given("a pipeline with no verifiers")]
 async fn given_pipeline_with_no_verifiers(world: &mut IngestWorld) {
-    let (emitter, rx) = ChannelEmitter::new(16);
     let pipeline = HookboxPipeline::builder()
         .storage(MemoryStorage::new())
         .dedupe(InMemoryRecentDedupe::new(100))
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
-    world.set_channel_pipeline(pipeline);
-    world.emitter_rx = Some(rx);
-}
-
-#[given(expr = "a pipeline with a passing verifier for {string} and a failing emitter")]
-async fn given_pipeline_with_failing_emitter(world: &mut IngestWorld, provider: String) {
-    let pipeline = HookboxPipeline::builder()
-        .storage(MemoryStorage::new())
-        .dedupe(InMemoryRecentDedupe::new(100))
-        .emitter(FailEmitter)
-        .verifier(PassVerifier {
-            provider: provider.clone(),
-        })
-        .build();
-    world.set_fail_pipeline(pipeline);
+    world.set_pipeline(pipeline);
 }
 
 #[when(expr = "I ingest a webhook from {string} with body {string}")]
@@ -286,22 +221,6 @@ async fn when_ingest_webhook(world: &mut IngestWorld, provider: String, body: St
 async fn then_result_should_be(world: &mut IngestWorld, expected: String) {
     assert_eq!(world.results.len(), 1, "expected exactly one result");
     assert_result_matches(&world.results[0], &expected);
-}
-
-#[then(expr = "an event should be emitted with provider {string}")]
-async fn then_event_emitted_with_provider(world: &mut IngestWorld, provider: String) {
-    let rx = world.emitter_rx.as_mut().unwrap();
-    let event = rx.try_recv().unwrap();
-    assert_eq!(event.provider_name, provider);
-}
-
-#[then(expr = "the emitted event payload_hash should be deterministic for body {string}")]
-async fn then_emitted_event_payload_hash_deterministic(world: &mut IngestWorld, body: String) {
-    let rx = world.emitter_rx.as_mut().unwrap();
-    let event = rx.try_recv().unwrap();
-
-    let expected_hash = hookbox::hash::compute_payload_hash(body.as_bytes());
-    assert_eq!(event.payload_hash, expected_hash);
 }
 
 #[then(expr = "the first result should be {string}")]

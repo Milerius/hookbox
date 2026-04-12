@@ -111,6 +111,7 @@ pub enum StoreResult {
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "unwrap is acceptable in test code")]
 mod tests {
     use super::*;
 

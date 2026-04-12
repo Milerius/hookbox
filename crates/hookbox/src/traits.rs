@@ -98,6 +98,27 @@ pub trait Storage: Send + Sync {
     /// All filter fields are optional; an empty filter returns all receipts
     /// up to any backend-enforced maximum.
     async fn query(&self, filter: ReceiptFilter) -> Result<Vec<WebhookReceipt>, StorageError>;
+
+    /// Atomically insert the receipt and one pending delivery row per emitter.
+    ///
+    /// Either all inserts succeed, or the entire transaction is rolled back.
+    /// Returns [`StoreResult`] (same shape as [`store`](Storage::store);
+    /// [`StoreResult::Duplicate`] short-circuits before any delivery rows are
+    /// inserted).
+    ///
+    /// The default implementation delegates to [`store`](Storage::store) and
+    /// ignores `emitter_names`, which keeps all existing mock implementations
+    /// compiling without modification.  Only [`PostgresStorage`] and the new
+    /// pipeline-unit-test mock override this to provide real transactional
+    /// behaviour.
+    async fn store_with_deliveries(
+        &self,
+        receipt: &WebhookReceipt,
+        emitter_names: &[String],
+    ) -> Result<StoreResult, StorageError> {
+        let _ = emitter_names;
+        self.store(receipt).await
+    }
 }
 
 /// Advisory fast-path duplicate detection.

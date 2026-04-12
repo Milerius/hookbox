@@ -11,16 +11,16 @@ use serde_json::json;
 use uuid::Uuid;
 
 use hookbox::ProcessingState;
-use hookbox::traits::{DedupeStrategy, Emitter, Storage};
-use hookbox::types::{NormalizedEvent, ReceiptFilter};
+use hookbox::traits::{DedupeStrategy, Storage};
+use hookbox::types::ReceiptFilter;
 
 use crate::AppState;
 
 /// Check the `Authorization` header against the configured admin bearer token.
 ///
 /// If no token is configured, all requests are allowed through.
-fn check_auth<S: Storage, D: DedupeStrategy, E: Emitter>(
-    state: &AppState<S, D, E>,
+fn check_auth<S: Storage, D: DedupeStrategy>(
+    state: &AppState<S, D>,
     headers: &HeaderMap,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     let Some(ref expected) = state.admin_token else {
@@ -62,8 +62,8 @@ pub struct ListReceiptsQuery {
 }
 
 /// List webhook receipts with optional filters.
-pub async fn list_receipts<S: Storage, D: DedupeStrategy, E: Emitter>(
-    State(state): State<Arc<AppState<S, D, E>>>,
+pub async fn list_receipts<S: Storage, D: DedupeStrategy>(
+    State(state): State<Arc<AppState<S, D>>>,
     headers: HeaderMap,
     Query(params): Query<ListReceiptsQuery>,
 ) -> impl IntoResponse {
@@ -92,8 +92,8 @@ pub async fn list_receipts<S: Storage, D: DedupeStrategy, E: Emitter>(
 }
 
 /// Get a single webhook receipt by ID.
-pub async fn get_receipt<S: Storage, D: DedupeStrategy, E: Emitter>(
-    State(state): State<Arc<AppState<S, D, E>>>,
+pub async fn get_receipt<S: Storage, D: DedupeStrategy>(
+    State(state): State<Arc<AppState<S, D>>>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
@@ -118,19 +118,24 @@ pub async fn get_receipt<S: Storage, D: DedupeStrategy, E: Emitter>(
     }
 }
 
-/// Replay a previously stored receipt by re-emitting its normalised event
-/// and transitioning the receipt to the `Replayed` state.
-pub async fn replay_receipt<S: Storage, D: DedupeStrategy, E: Emitter>(
-    State(state): State<Arc<AppState<S, D, E>>>,
+/// Replay a previously stored receipt by transitioning it to the `Replayed`
+/// state.
+///
+/// Inline emission has been removed in the Phase 6 fan-out refactor.
+/// Downstream delivery is now handled asynchronously by `EmitterWorker`
+/// (Phase 7).  This endpoint marks the receipt as replayed so that the
+/// worker will re-queue it on its next poll cycle.
+pub async fn replay_receipt<S: Storage, D: DedupeStrategy>(
+    State(state): State<Arc<AppState<S, D>>>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     if let Err(resp) = check_auth(&state, &headers) {
         return resp.into_response();
     }
-    // Fetch the receipt.
-    let receipt = match state.pipeline.storage().get(id).await {
-        Ok(Some(r)) => r,
+    // Verify the receipt exists before transitioning.
+    match state.pipeline.storage().get(id).await {
+        Ok(Some(_)) => {}
         Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
@@ -146,28 +151,6 @@ pub async fn replay_receipt<S: Storage, D: DedupeStrategy, E: Emitter>(
             )
                 .into_response();
         }
-    };
-
-    // Build normalised event from receipt.
-    let event = NormalizedEvent {
-        receipt_id: receipt.receipt_id,
-        provider_name: receipt.provider_name.clone(),
-        event_type: receipt.normalized_event_type.clone(),
-        external_reference: receipt.external_reference.clone(),
-        parsed_payload: receipt.parsed_payload.clone(),
-        payload_hash: receipt.payload_hash.clone(),
-        received_at: receipt.received_at,
-        metadata: receipt.metadata.clone(),
-    };
-
-    // Emit.
-    if let Err(e) = state.pipeline.emitter().emit(&event).await {
-        tracing::error!(error = %e, %id, "replay emit failed");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("emit failed: {e}")})),
-        )
-            .into_response();
     }
 
     // Transition to Replayed.
@@ -189,8 +172,8 @@ pub async fn replay_receipt<S: Storage, D: DedupeStrategy, E: Emitter>(
 }
 
 /// List dead-lettered receipts (receipts in the `DeadLettered` state).
-pub async fn list_dlq<S: Storage, D: DedupeStrategy, E: Emitter>(
-    State(state): State<Arc<AppState<S, D, E>>>,
+pub async fn list_dlq<S: Storage, D: DedupeStrategy>(
+    State(state): State<Arc<AppState<S, D>>>,
     headers: HeaderMap,
     Query(params): Query<ListReceiptsQuery>,
 ) -> impl IntoResponse {

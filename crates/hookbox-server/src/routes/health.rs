@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use tokio::time::{Duration, timeout};
 
-use hookbox::traits::{DedupeStrategy, Emitter, Storage};
+use hookbox::traits::{DedupeStrategy, Storage};
 
 use crate::AppState;
 
@@ -19,8 +19,8 @@ pub async fn healthz() -> StatusCode {
 /// Readiness probe — returns `200 OK` if the database is reachable within
 /// 2 seconds, `503 Service Unavailable` otherwise (including when no pool
 /// is configured).
-pub async fn readyz<S: Storage, D: DedupeStrategy, E: Emitter>(
-    State(state): State<Arc<AppState<S, D, E>>>,
+pub async fn readyz<S: Storage, D: DedupeStrategy>(
+    State(state): State<Arc<AppState<S, D>>>,
 ) -> impl IntoResponse {
     let Some(ref pool) = state.pool else {
         return StatusCode::SERVICE_UNAVAILABLE;
@@ -36,8 +36,8 @@ pub async fn readyz<S: Storage, D: DedupeStrategy, E: Emitter>(
 ///
 /// Returns the current Prometheus metrics in text exposition format if a
 /// recorder was installed, or a comment line indicating no recorder is active.
-pub async fn metrics<S: Storage, D: DedupeStrategy, E: Emitter>(
-    State(state): State<Arc<AppState<S, D, E>>>,
+pub async fn metrics<S: Storage, D: DedupeStrategy>(
+    State(state): State<Arc<AppState<S, D>>>,
 ) -> impl IntoResponse {
     match &state.prometheus {
         Some(handle) => handle.render(),

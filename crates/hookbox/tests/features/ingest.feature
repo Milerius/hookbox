@@ -1,13 +1,13 @@
 Feature: Webhook Ingest Pipeline
 
   The hookbox pipeline receives webhooks, verifies signatures,
-  deduplicates, stores durably, and emits downstream events.
+  deduplicates, and stores durably (with delivery rows).
+  Downstream emission is handled asynchronously by EmitterWorker.
 
   Scenario: Accept a valid webhook
     Given a pipeline with a passing verifier for "test"
     When I ingest a webhook from "test" with body '{"event":"payment.completed"}'
     Then the result should be "accepted"
-    And an event should be emitted with provider "test"
 
   Scenario: Reject a webhook with invalid signature
     Given a pipeline with a failing verifier for "badprovider"
@@ -26,7 +26,7 @@ Feature: Webhook Ingest Pipeline
     When I ingest a webhook from "unknown" with body '{"event":"test"}'
     Then the result should be "accepted"
 
-  Scenario: Accept webhook even when emit fails
-    Given a pipeline with a passing verifier for "test" and a failing emitter
+  Scenario: Accept webhook with emitter names configured
+    Given a pipeline with a passing verifier for "test"
     When I ingest a webhook from "test" with body '{"event":"test"}'
     Then the result should be "accepted"
