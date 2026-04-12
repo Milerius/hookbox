@@ -24,4 +24,4 @@ pub mod dedupe;
 pub mod storage;
 
 pub use dedupe::StorageDedupe;
-pub use storage::PostgresStorage;
+pub use storage::{DeliveryStorage, PostgresStorage};
