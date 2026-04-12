@@ -9,7 +9,6 @@ use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
 use hookbox::dedupe::{InMemoryRecentDedupe, LayeredDedupe};
-use hookbox::emitter::ChannelEmitter;
 use hookbox::pipeline::HookboxPipeline;
 use hookbox::traits::Emitter;
 use hookbox_postgres::{PostgresStorage, StorageDedupe};
@@ -20,6 +19,7 @@ use hookbox_providers::{
 use hookbox_server::ServerAppState;
 use hookbox_server::build_router;
 use hookbox_server::config::HookboxConfig;
+use hookbox_server::emitter_factory::{BuiltEmitter, build_emitter};
 use hookbox_server::shutdown::shutdown_signal;
 use hookbox_server::worker::RetryWorker;
 
@@ -94,73 +94,14 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     let storage_dedupe = StorageDedupe::new(pool.clone());
     let dedupe = LayeredDedupe::new(lru, storage_dedupe);
 
-    // Build the downstream emitter from config.
-    let emitter: Arc<dyn Emitter + Send + Sync> = match config.emitter.emitter_type.as_str() {
-        "kafka" => {
-            let cfg = config.emitter.kafka.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("[emitter.kafka] section required when type = \"kafka\"")
-            })?;
-            let emitter = hookbox_emitter_kafka::KafkaEmitter::new(
-                &cfg.brokers,
-                cfg.topic.clone(),
-                &cfg.client_id,
-                &cfg.acks,
-                cfg.timeout_ms,
-            )
-            .context("failed to create Kafka emitter")?;
-            tracing::info!(brokers = %cfg.brokers, topic = %cfg.topic, "emitter: kafka");
-            Arc::new(emitter)
-        }
-        "nats" => {
-            let cfg = config.emitter.nats.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("[emitter.nats] section required when type = \"nats\"")
-            })?;
-            let emitter = hookbox_emitter_nats::NatsEmitter::new(&cfg.url, cfg.subject.clone())
-                .await
-                .context("failed to create NATS emitter")?;
-            tracing::info!(subject = %cfg.subject, "emitter: nats");
-            Arc::new(emitter)
-        }
-        "sqs" => {
-            let cfg = config.emitter.sqs.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("[emitter.sqs] section required when type = \"sqs\"")
-            })?;
-            let emitter = hookbox_emitter_sqs::SqsEmitter::new(
-                cfg.queue_url.clone(),
-                cfg.region.as_deref(),
-                cfg.fifo,
-                cfg.endpoint_url.as_deref(),
-            )
-            .await
-            .context("failed to create SQS emitter")?;
-            tracing::info!(queue_url = %cfg.queue_url, fifo = %cfg.fifo, "emitter: sqs");
-            Arc::new(emitter)
-        }
-        "redis" => {
-            let cfg = config.emitter.redis.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("[emitter.redis] section required when type = \"redis\"")
-            })?;
-            let emitter = hookbox_emitter_redis::RedisEmitter::new(
-                &cfg.url,
-                cfg.stream.clone(),
-                cfg.maxlen,
-                cfg.timeout_ms,
-            )
-            .await
-            .context("failed to create Redis emitter")?;
-            tracing::info!(stream = %cfg.stream, "emitter: redis");
-            Arc::new(emitter)
-        }
-        "channel" => {
-            let (channel_emitter, rx) = ChannelEmitter::new(1024);
+    // Build the downstream emitter from config. The factory returns the
+    // production emitters as `Ready`; the development `channel` variant
+    // additionally yields a receiver that this binary drains for logging.
+    let emitter: Arc<dyn Emitter + Send + Sync> = match build_emitter(&config.emitter).await? {
+        BuiltEmitter::Ready(emitter) => emitter,
+        BuiltEmitter::Channel { emitter, rx } => {
             tokio::spawn(drain_emitter(rx));
-            tracing::info!("emitter: channel (development drain)");
-            Arc::new(channel_emitter)
-        }
-        other => {
-            anyhow::bail!(
-                "unknown emitter type {other:?}; valid values: kafka, nats, sqs, redis, channel"
-            );
+            emitter
         }
     };
 

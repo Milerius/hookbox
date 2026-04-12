@@ -2095,10 +2095,6 @@ dependencies = [
  "chrono",
  "clap",
  "hookbox",
- "hookbox-emitter-kafka",
- "hookbox-emitter-nats",
- "hookbox-emitter-redis",
- "hookbox-emitter-sqs",
  "hookbox-postgres",
  "hookbox-providers",
  "hookbox-server",
@@ -2244,11 +2240,16 @@ dependencies = [
 name = "hookbox-server"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum",
  "bytes",
  "chrono",
  "hookbox",
+ "hookbox-emitter-kafka",
+ "hookbox-emitter-nats",
+ "hookbox-emitter-redis",
+ "hookbox-emitter-sqs",
  "hookbox-postgres",
  "hookbox-providers",
  "http-body-util",
