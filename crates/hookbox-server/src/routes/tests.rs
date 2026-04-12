@@ -110,91 +110,97 @@ impl Storage for MemoryStorage {
     }
 }
 
-#[async_trait]
-impl DeliveryStorage for MemoryStorage {
-    type Error = StorageError;
+macro_rules! impl_noop_delivery_storage {
+    ($ty:ty) => {
+        #[async_trait]
+        impl DeliveryStorage for $ty {
+            type Error = StorageError;
 
-    async fn claim_pending(
-        &self,
-        _emitter_name: &str,
-        _batch_size: i64,
-    ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
-        Ok(Vec::new())
-    }
+            async fn claim_pending(
+                &self,
+                _emitter_name: &str,
+                _batch_size: i64,
+            ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
+                Ok(Vec::new())
+            }
 
-    async fn reclaim_expired(
-        &self,
-        _emitter_name: &str,
-        _lease_duration: std::time::Duration,
-    ) -> Result<u64, Self::Error> {
-        Ok(0)
-    }
+            async fn reclaim_expired(
+                &self,
+                _emitter_name: &str,
+                _lease_duration: std::time::Duration,
+            ) -> Result<u64, Self::Error> {
+                Ok(0)
+            }
 
-    async fn mark_emitted(&self, _delivery_id: DeliveryId) -> Result<(), Self::Error> {
-        Ok(())
-    }
+            async fn mark_emitted(&self, _delivery_id: DeliveryId) -> Result<(), Self::Error> {
+                Ok(())
+            }
 
-    async fn mark_failed(
-        &self,
-        _delivery_id: DeliveryId,
-        _attempt_count: i32,
-        _next_attempt_at: chrono::DateTime<chrono::Utc>,
-        _last_error: &str,
-    ) -> Result<(), Self::Error> {
-        Ok(())
-    }
+            async fn mark_failed(
+                &self,
+                _delivery_id: DeliveryId,
+                _attempt_count: i32,
+                _next_attempt_at: chrono::DateTime<chrono::Utc>,
+                _last_error: &str,
+            ) -> Result<(), Self::Error> {
+                Ok(())
+            }
 
-    async fn mark_dead_lettered(
-        &self,
-        _delivery_id: DeliveryId,
-        _last_error: &str,
-    ) -> Result<(), Self::Error> {
-        Ok(())
-    }
+            async fn mark_dead_lettered(
+                &self,
+                _delivery_id: DeliveryId,
+                _last_error: &str,
+            ) -> Result<(), Self::Error> {
+                Ok(())
+            }
 
-    async fn count_dlq(&self, _emitter_name: &str) -> Result<u64, Self::Error> {
-        Ok(0)
-    }
+            async fn count_dlq(&self, _emitter_name: &str) -> Result<u64, Self::Error> {
+                Ok(0)
+            }
 
-    async fn count_pending(&self, _emitter_name: &str) -> Result<u64, Self::Error> {
-        Ok(0)
-    }
+            async fn count_pending(&self, _emitter_name: &str) -> Result<u64, Self::Error> {
+                Ok(0)
+            }
 
-    async fn count_in_flight(&self, _emitter_name: &str) -> Result<u64, Self::Error> {
-        Ok(0)
-    }
+            async fn count_in_flight(&self, _emitter_name: &str) -> Result<u64, Self::Error> {
+                Ok(0)
+            }
 
-    async fn insert_replay(
-        &self,
-        _receipt_id: ReceiptId,
-        _emitter_name: &str,
-    ) -> Result<DeliveryId, Self::Error> {
-        Ok(DeliveryId::new())
-    }
+            async fn insert_replay(
+                &self,
+                _receipt_id: ReceiptId,
+                _emitter_name: &str,
+            ) -> Result<DeliveryId, Self::Error> {
+                Ok(DeliveryId::new())
+            }
 
-    async fn get_delivery(
-        &self,
-        _delivery_id: DeliveryId,
-    ) -> Result<Option<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
-        Ok(None)
-    }
+            async fn get_delivery(
+                &self,
+                _delivery_id: DeliveryId,
+            ) -> Result<Option<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
+                Ok(None)
+            }
 
-    async fn get_deliveries_for_receipt(
-        &self,
-        _receipt_id: ReceiptId,
-    ) -> Result<Vec<WebhookDelivery>, Self::Error> {
-        Ok(Vec::new())
-    }
+            async fn get_deliveries_for_receipt(
+                &self,
+                _receipt_id: ReceiptId,
+            ) -> Result<Vec<WebhookDelivery>, Self::Error> {
+                Ok(Vec::new())
+            }
 
-    async fn list_dlq(
-        &self,
-        _emitter_name: Option<&str>,
-        _limit: i64,
-        _offset: i64,
-    ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
-        Ok(Vec::new())
-    }
+            async fn list_dlq(
+                &self,
+                _emitter_name: Option<&str>,
+                _limit: i64,
+                _offset: i64,
+            ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
+                Ok(Vec::new())
+            }
+        }
+    };
 }
+
+impl_noop_delivery_storage!(MemoryStorage);
 
 /// Build a test app with in-memory backends.
 fn build_test_app(admin_token: Option<String>) -> Router {
@@ -1028,91 +1034,7 @@ impl Storage for FailingStorage {
     }
 }
 
-#[async_trait]
-impl DeliveryStorage for FailingStorage {
-    type Error = StorageError;
-
-    async fn claim_pending(
-        &self,
-        _emitter_name: &str,
-        _batch_size: i64,
-    ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
-        Ok(Vec::new())
-    }
-
-    async fn reclaim_expired(
-        &self,
-        _emitter_name: &str,
-        _lease_duration: std::time::Duration,
-    ) -> Result<u64, Self::Error> {
-        Ok(0)
-    }
-
-    async fn mark_emitted(&self, _delivery_id: DeliveryId) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    async fn mark_failed(
-        &self,
-        _delivery_id: DeliveryId,
-        _attempt_count: i32,
-        _next_attempt_at: chrono::DateTime<chrono::Utc>,
-        _last_error: &str,
-    ) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    async fn mark_dead_lettered(
-        &self,
-        _delivery_id: DeliveryId,
-        _last_error: &str,
-    ) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    async fn count_dlq(&self, _emitter_name: &str) -> Result<u64, Self::Error> {
-        Ok(0)
-    }
-
-    async fn count_pending(&self, _emitter_name: &str) -> Result<u64, Self::Error> {
-        Ok(0)
-    }
-
-    async fn count_in_flight(&self, _emitter_name: &str) -> Result<u64, Self::Error> {
-        Ok(0)
-    }
-
-    async fn insert_replay(
-        &self,
-        _receipt_id: ReceiptId,
-        _emitter_name: &str,
-    ) -> Result<DeliveryId, Self::Error> {
-        Ok(DeliveryId::new())
-    }
-
-    async fn get_delivery(
-        &self,
-        _delivery_id: DeliveryId,
-    ) -> Result<Option<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
-        Ok(None)
-    }
-
-    async fn get_deliveries_for_receipt(
-        &self,
-        _receipt_id: ReceiptId,
-    ) -> Result<Vec<WebhookDelivery>, Self::Error> {
-        Ok(Vec::new())
-    }
-
-    async fn list_dlq(
-        &self,
-        _emitter_name: Option<&str>,
-        _limit: i64,
-        _offset: i64,
-    ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
-        Ok(Vec::new())
-    }
-}
+impl_noop_delivery_storage!(FailingStorage);
 
 /// Build a test app with a [`FailingStorage`] backend.
 fn build_failing_app() -> Router {
@@ -1330,91 +1252,7 @@ impl Storage for UpdateFailStorage {
     }
 }
 
-#[async_trait]
-impl DeliveryStorage for UpdateFailStorage {
-    type Error = StorageError;
-
-    async fn claim_pending(
-        &self,
-        _emitter_name: &str,
-        _batch_size: i64,
-    ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
-        Ok(Vec::new())
-    }
-
-    async fn reclaim_expired(
-        &self,
-        _emitter_name: &str,
-        _lease_duration: std::time::Duration,
-    ) -> Result<u64, Self::Error> {
-        Ok(0)
-    }
-
-    async fn mark_emitted(&self, _delivery_id: DeliveryId) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    async fn mark_failed(
-        &self,
-        _delivery_id: DeliveryId,
-        _attempt_count: i32,
-        _next_attempt_at: chrono::DateTime<chrono::Utc>,
-        _last_error: &str,
-    ) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    async fn mark_dead_lettered(
-        &self,
-        _delivery_id: DeliveryId,
-        _last_error: &str,
-    ) -> Result<(), Self::Error> {
-        Ok(())
-    }
-
-    async fn count_dlq(&self, _emitter_name: &str) -> Result<u64, Self::Error> {
-        Ok(0)
-    }
-
-    async fn count_pending(&self, _emitter_name: &str) -> Result<u64, Self::Error> {
-        Ok(0)
-    }
-
-    async fn count_in_flight(&self, _emitter_name: &str) -> Result<u64, Self::Error> {
-        Ok(0)
-    }
-
-    async fn insert_replay(
-        &self,
-        _receipt_id: ReceiptId,
-        _emitter_name: &str,
-    ) -> Result<DeliveryId, Self::Error> {
-        Ok(DeliveryId::new())
-    }
-
-    async fn get_delivery(
-        &self,
-        _delivery_id: DeliveryId,
-    ) -> Result<Option<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
-        Ok(None)
-    }
-
-    async fn get_deliveries_for_receipt(
-        &self,
-        _receipt_id: ReceiptId,
-    ) -> Result<Vec<WebhookDelivery>, Self::Error> {
-        Ok(Vec::new())
-    }
-
-    async fn list_dlq(
-        &self,
-        _emitter_name: Option<&str>,
-        _limit: i64,
-        _offset: i64,
-    ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
-        Ok(Vec::new())
-    }
-}
+impl_noop_delivery_storage!(UpdateFailStorage);
 
 #[tokio::test]
 async fn replay_update_state_failure_returns_500() {

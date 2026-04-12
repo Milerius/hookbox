@@ -8,7 +8,7 @@
     clippy::unwrap_used,
     reason = "expect/unwrap are acceptable in test code"
 )]
-#![allow(clippy::panic)]
+#![expect(clippy::panic, reason = "panics are acceptable in test code")]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
