@@ -107,6 +107,18 @@ async-nats = "0.38"
 aws-sdk-sqs = "1"
 aws-config = { version = "1", features = ["behavior-version-latest", "credentials-login"] }
 
+# Redis client (used by hookbox-emitter-redis)
+redis = { version = "0.27", features = ["tokio-comp", "streams"] }
+
+# AWS credential types (used directly by the SQS round-trip integration test
+# to build a static credentials provider against LocalStack — re-exported by
+# aws-config but pulled in directly so the test imports are explicit).
+aws-credential-types = "1"
+
+# Test containers (used by emitter round-trip integration tests)
+testcontainers = "0.23"
+testcontainers-modules = "0.11"
+
 # Testing
 reqwest = { version = "0.12", features = ["json"] }
 async-trait = "0.1"
