@@ -1,6 +1,7 @@
 //! Processing state types for the webhook ingest pipeline.
 
 use std::fmt;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -245,4 +246,32 @@ pub struct WebhookDelivery {
     pub immutable: bool,
     /// Timestamp at which this delivery row was created.
     pub created_at: DateTime<Utc>,
+}
+
+/// Per-emitter retry policy for the background dispatch worker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryPolicy {
+    /// Maximum number of dispatch attempts before promoting to `dead_lettered`.
+    pub max_attempts: i32,
+    /// Backoff for attempt 1 (the first failure).
+    pub initial_backoff: Duration,
+    /// Hard cap on computed backoff.
+    pub max_backoff: Duration,
+    /// Exponential growth factor (`base *= multiplier` per attempt).
+    pub backoff_multiplier: f64,
+    /// Fractional jitter added to the computed base backoff.
+    /// Must be in `[0.0, 1.0]`. `0.0` = deterministic.
+    pub jitter: f64,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 5,
+            initial_backoff: Duration::from_secs(30),
+            max_backoff: Duration::from_secs(3600),
+            backoff_multiplier: 2.0,
+            jitter: 0.2,
+        }
+    }
 }
