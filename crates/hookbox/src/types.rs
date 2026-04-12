@@ -77,7 +77,7 @@ pub struct WebhookReceipt {
 /// Normalised, provider-agnostic view of a webhook event, suitable for
 /// downstream consumers that should not need to deal with raw bytes or
 /// provider-specific fields.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NormalizedEvent {
     /// Identifier of the originating [`WebhookReceipt`].
     pub receipt_id: ReceiptId,

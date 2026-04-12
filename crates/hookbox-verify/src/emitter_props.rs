@@ -29,12 +29,23 @@ mod tests {
             .with_type::<(String, String)>()
             .for_each(|(provider, hash)| {
                 let event = make_event(provider, hash);
-                let json = serde_json::to_string(&event).expect("serialize must succeed");
+                let json = serde_json::to_vec(&event).expect("serialize must succeed");
                 let round_tripped: NormalizedEvent =
-                    serde_json::from_str(&json).expect("deserialize must succeed");
-                assert_eq!(event.provider_name, round_tripped.provider_name);
-                assert_eq!(event.payload_hash, round_tripped.payload_hash);
-                assert_eq!(event.receipt_id, round_tripped.receipt_id);
+                    serde_json::from_slice(&json).expect("deserialize must succeed");
+                assert_eq!(event, round_tripped);
+            });
+    }
+
+    #[test]
+    fn normalized_event_round_trips_through_value() {
+        bolero::check!()
+            .with_type::<(String, String)>()
+            .for_each(|(provider, hash)| {
+                let event = make_event(provider, hash);
+                let value = serde_json::to_value(&event).expect("to_value must succeed");
+                let round_tripped: NormalizedEvent =
+                    serde_json::from_value(value).expect("from_value must succeed");
+                assert_eq!(event, round_tripped);
             });
     }
 

@@ -124,7 +124,7 @@ mod proofs {
         let (_new_count, new_state) = retry_next_state(emit_count, max_attempts);
         assert!(matches!(
             new_state,
-            ProcessingState::DeadLettered | ProcessingState::Emitted
+            ProcessingState::DeadLettered | ProcessingState::EmitFailed
         ));
     }
 

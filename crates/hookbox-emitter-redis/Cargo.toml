@@ -1,11 +1,11 @@
 [package]
-name = "hookbox-emitter-nats"
+name = "hookbox-emitter-redis"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "NATS emitter adapter for hookbox."
+description = "Redis Streams emitter adapter for hookbox."
 publish = false
 
 [lints]
@@ -13,18 +13,18 @@ workspace = true
 
 [dependencies]
 hookbox.workspace = true
-async-nats.workspace = true
+redis.workspace = true
+tokio.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
-bytes.workspace = true
 
 [dev-dependencies]
 testcontainers.workspace = true
-testcontainers-modules = { workspace = true, features = ["nats"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+testcontainers-modules = { workspace = true, features = ["redis"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 chrono = { workspace = true }
+uuid = { workspace = true }
 serde_json = { workspace = true }
+redis = { workspace = true }
 hookbox = { workspace = true }
-async-nats = { workspace = true }
-futures = { workspace = true }

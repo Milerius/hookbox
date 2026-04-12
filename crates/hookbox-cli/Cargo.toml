@@ -25,6 +25,7 @@ hookbox-postgres.workspace = true
 hookbox-providers.workspace = true
 hookbox-emitter-kafka.workspace = true
 hookbox-emitter-nats.workspace = true
+hookbox-emitter-redis.workspace = true
 hookbox-emitter-sqs.workspace = true
 clap.workspace = true
 tokio.workspace = true

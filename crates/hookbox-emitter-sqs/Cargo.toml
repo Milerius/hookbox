@@ -19,3 +19,9 @@ serde_json.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+testcontainers.workspace = true
+testcontainers-modules = { workspace = true, features = ["localstack"] }
+chrono = { workspace = true }
+aws-credential-types = { workspace = true }

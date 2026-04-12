@@ -118,7 +118,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
             let emitter = hookbox_emitter_nats::NatsEmitter::new(&cfg.url, cfg.subject.clone())
                 .await
                 .context("failed to create NATS emitter")?;
-            tracing::info!(url = %cfg.url, subject = %cfg.subject, "emitter: nats");
+            tracing::info!(subject = %cfg.subject, "emitter: nats");
             Arc::new(emitter)
         }
         "sqs" => {
@@ -136,6 +136,21 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
             tracing::info!(queue_url = %cfg.queue_url, fifo = %cfg.fifo, "emitter: sqs");
             Arc::new(emitter)
         }
+        "redis" => {
+            let cfg = config.emitter.redis.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("[emitter.redis] section required when type = \"redis\"")
+            })?;
+            let emitter = hookbox_emitter_redis::RedisEmitter::new(
+                &cfg.url,
+                cfg.stream.clone(),
+                cfg.maxlen,
+                cfg.timeout_ms,
+            )
+            .await
+            .context("failed to create Redis emitter")?;
+            tracing::info!(stream = %cfg.stream, "emitter: redis");
+            Arc::new(emitter)
+        }
         "channel" => {
             let (channel_emitter, rx) = ChannelEmitter::new(1024);
             tokio::spawn(drain_emitter(rx));
@@ -144,7 +159,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
         }
         other => {
             anyhow::bail!(
-                "unknown emitter type {other:?}; valid values: kafka, nats, sqs, channel"
+                "unknown emitter type {other:?}; valid values: kafka, nats, sqs, redis, channel"
             );
         }
     };

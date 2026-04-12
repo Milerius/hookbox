@@ -12,6 +12,7 @@ Tracking next steps after the MVP and MVP gaps milestones.
 - [x] **Graceful shutdown**: `shutdown.rs` — SIGTERM/SIGINT drain with tokio::signal
 - [x] **Coverage 85%+**: Line coverage at 85.26% (target was 80%)
 - [x] **Criterion benchmarks**: `benches/ingest.rs` for ingest throughput
+- [x] **PR #14 — Redis Streams emitter + emitter test coverage**: `hookbox-emitter-redis` (XADD, optional MAXLEN, configurable timeout), round-trip integration tests for all four emitters (Kafka, NATS, SQS, Redis) using `testcontainers-rs`, dedicated Linux-only `test-emitters` CI job, legacy `emitter_smoke_test.rs` deleted
 
 ---
 
@@ -19,8 +20,7 @@ Tracking next steps after the MVP and MVP gaps milestones.
 
 - **Stress testing under contention**: concurrent duplicate submissions, retry worker under high EmitFailed volume, connection pool sizing. Criterion benchmarks exist but no multi-client stress harness yet.
 - **Remaining provider adapters**: Checkout.com (HMAC-SHA256), PayPal (certificate-based)
-- **Redis Streams emitter** (V2 emitter — most requested next)
-- **Coverage gaps**: emitter adapter crates are at 0% (can't unit-test without mocks or embedded brokers). Consider testcontainers or mock traits.
+- **Coverage gaps**: emitter crates now have round-trip integration tests via testcontainers (PR #14). Next gap: the `hookbox-server` `serve` command's emitter-selection arms (Kafka/NATS/SQS/Redis) are still untested in isolation.
 
 ---
 
@@ -38,8 +38,8 @@ Completed: Kafka (rdkafka), NATS (async-nats), SQS (aws-sdk-sqs) — config-driv
 
 Remaining emitter work:
 
-**V2 (next batch):**
-- `hookbox-emitter-redis` — Redis Streams via XADD (most likely next)
+**V2 (done):**
+- ~~`hookbox-emitter-redis`~~ — Redis Streams via XADD ✅
 
 **Deferred:**
 - `hookbox-emitter-rabbitmq` — lapin, AMQP publish to exchange (legacy compatibility, sharp-edged exchange pre-existence)
