@@ -13,24 +13,24 @@ Tracking next steps after the MVP and MVP gaps milestones.
 - [x] **Coverage 85%+**: Line coverage at 85.26% (target was 80%)
 - [x] **Criterion benchmarks**: `benches/ingest.rs` for ingest throughput
 - [x] **PR #14 — Redis Streams emitter + emitter test coverage**: `hookbox-emitter-redis` (XADD, optional MAXLEN, configurable timeout), round-trip integration tests for all four emitters (Kafka, NATS, SQS, Redis) using `testcontainers-rs`, dedicated Linux-only `test-emitters` CI job, legacy `emitter_smoke_test.rs` deleted
+- [x] **PR #16 — `async-trait` policy clarified**: CLAUDE.md updated to explain why the four core extension traits keep `#[async_trait]` (native `async fn` in traits is not dyn-compatible in stable Rust, and the architecture relies on `Arc<dyn Emitter + Send + Sync>` for runtime emitter selection). Issue #15 closed `wontfix` with the full rationale.
+- [x] **PR #17 — Emitter factory + selection coverage**: extracted the kafka/nats/sqs/redis/channel selection match out of `serve` into `hookbox_server::emitter_factory::build_emitter`, returning a `BuiltEmitter` enum. Six new unit tests cover every validation arm without Docker. `serve.rs` shrinks from ~75 lines of match to 9 lines and the four emitter crates moved from `hookbox-cli` deps into `hookbox-server` deps.
 
 ---
 
 ## Next: Immediate candidates
 
 - **Stress testing under contention**: concurrent duplicate submissions, retry worker under high EmitFailed volume, connection pool sizing. Criterion benchmarks exist but no multi-client stress harness yet.
-- **Remaining provider adapters**: Checkout.com (HMAC-SHA256), PayPal (certificate-based)
-- **Coverage gaps**: emitter crates now have round-trip integration tests via testcontainers (PR #14). Next gap: the `hookbox-server` `serve` command's emitter-selection arms (Kafka/NATS/SQS/Redis) are still untested in isolation.
+- **PayPal provider adapter**: certificate-based verification (X.509 + RSA-SHA256), the last remaining V1 provider. Checkout.com is already supported via the `"checkout"` provider type (HMAC-SHA256 with `Cko-Signature` header) wired in PR #12.
 
 ---
 
 ## Phase 2: Features
 
 ### 1. ~~Provider adapter pack~~ (done)
-Completed: Adyen, BVNK new hook service, Triple-A fiat (RSA-SHA512), Triple-A crypto (HMAC-SHA256 timestamped), Walapay/Svix — all as feature flags in `hookbox-providers`.
+Completed: Adyen, BVNK new hook service, Triple-A fiat (RSA-SHA512), Triple-A crypto (HMAC-SHA256 timestamped), Walapay/Svix, Checkout.com (via `"checkout"` provider type, HMAC-SHA256 with `Cko-Signature` header) — all as feature flags in `hookbox-providers`.
 
 Remaining from original scope:
-- Checkout.com (HMAC-SHA256)
 - PayPal (certificate-based verification)
 
 ### 2. ~~Emitter adapters V1~~ (done)
