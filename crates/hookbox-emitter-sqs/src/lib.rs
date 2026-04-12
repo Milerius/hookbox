@@ -66,6 +66,22 @@ impl SqsEmitter {
             fifo,
         })
     }
+
+    /// Create a new [`SqsEmitter`] from a pre-built [`aws_sdk_sqs::Client`].
+    ///
+    /// This bypasses the env-based credentials provider chain that
+    /// [`SqsEmitter::new`] uses. Intended for tests that need to point at
+    /// `LocalStack` with static credentials, but also usable in production
+    /// when callers want to control SDK config (custom retries, custom HTTP
+    /// connector, alternate credentials provider) directly.
+    #[must_use]
+    pub fn with_client(client: aws_sdk_sqs::Client, queue_url: String, fifo: bool) -> Self {
+        Self {
+            client,
+            queue_url,
+            fifo,
+        }
+    }
 }
 
 #[async_trait]

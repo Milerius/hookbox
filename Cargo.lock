@@ -2088,6 +2088,7 @@ dependencies = [
  "hookbox",
  "hookbox-emitter-kafka",
  "hookbox-emitter-nats",
+ "hookbox-emitter-redis",
  "hookbox-emitter-sqs",
  "hookbox-postgres",
  "hookbox-providers",
@@ -2108,11 +2109,15 @@ name = "hookbox-emitter-kafka"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "hookbox",
  "rdkafka",
  "serde_json",
+ "testcontainers",
+ "testcontainers-modules",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2122,8 +2127,13 @@ dependencies = [
  "async-nats",
  "async-trait",
  "bytes",
+ "chrono",
+ "futures",
  "hookbox",
  "serde_json",
+ "testcontainers",
+ "testcontainers-modules",
+ "tokio",
  "tracing",
 ]
 
@@ -2149,9 +2159,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "aws-config",
+ "aws-credential-types",
  "aws-sdk-sqs",
+ "chrono",
  "hookbox",
  "serde_json",
+ "testcontainers",
+ "testcontainers-modules",
  "tokio",
  "tracing",
 ]
