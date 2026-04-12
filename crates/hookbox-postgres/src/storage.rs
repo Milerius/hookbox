@@ -1,5 +1,7 @@
 //! `PostgreSQL`-backed implementation of the [`Storage`] trait.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Serialize, de::DeserializeOwned};
@@ -7,7 +9,9 @@ use sqlx::{PgPool, Row as _};
 use uuid::Uuid;
 
 use hookbox::error::StorageError;
-use hookbox::state::{ProcessingState, ReceiptId, StoreResult, VerificationStatus};
+use hookbox::state::{
+    DeliveryId, ProcessingState, ReceiptId, StoreResult, VerificationStatus, WebhookDelivery,
+};
 use hookbox::traits::Storage;
 use hookbox::types::{ReceiptFilter, WebhookReceipt};
 
@@ -496,4 +500,87 @@ impl PostgresStorage {
             .map(|r| pg_row_to_receipt_row(r).and_then(receipt_from_row))
             .collect()
     }
+}
+
+/// Storage operations for the per-emitter background dispatch workers.
+///
+/// All methods are scoped to a single `emitter_name` to keep each worker
+/// independent and to keep query plans tight on the partial indexes.
+#[async_trait]
+pub trait DeliveryStorage: Send + Sync {
+    /// Error type returned by all delivery storage operations.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Claim up to `batch_size` rows that are ready for dispatch:
+    /// state IN ('pending', 'failed') AND `next_attempt_at` <= `now()` AND immutable = FALSE.
+    /// Uses FOR UPDATE SKIP LOCKED so concurrent workers claim disjoint batches.
+    async fn claim_pending(
+        &self,
+        emitter_name: &str,
+        batch_size: i64,
+    ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error>;
+
+    /// Reclaim orphaned in-flight rows whose lease has expired.
+    /// Returns the number of rows reclaimed (for metrics).
+    async fn reclaim_expired(
+        &self,
+        emitter_name: &str,
+        lease_duration: Duration,
+    ) -> Result<u64, Self::Error>;
+
+    /// Mark a delivery as successfully emitted.
+    async fn mark_emitted(&self, delivery_id: DeliveryId) -> Result<(), Self::Error>;
+
+    /// Mark a delivery as failed with updated attempt count and backoff target.
+    async fn mark_failed(
+        &self,
+        delivery_id: DeliveryId,
+        attempt_count: i32,
+        next_attempt_at: DateTime<Utc>,
+        last_error: &str,
+    ) -> Result<(), Self::Error>;
+
+    /// Mark a delivery as dead-lettered (terminal failure).
+    async fn mark_dead_lettered(
+        &self,
+        delivery_id: DeliveryId,
+        last_error: &str,
+    ) -> Result<(), Self::Error>;
+
+    /// Count dead-lettered rows for a given emitter (DLQ depth gauge).
+    async fn count_dlq(&self, emitter_name: &str) -> Result<u64, Self::Error>;
+
+    /// Count pending + failed rows ready to dispatch (pending gauge).
+    async fn count_pending(&self, emitter_name: &str) -> Result<u64, Self::Error>;
+
+    /// Count in-flight rows (in-flight gauge).
+    async fn count_in_flight(&self, emitter_name: &str) -> Result<u64, Self::Error>;
+
+    /// Insert a new pending delivery row for replay.
+    /// Caller must verify `emitter_name` is currently configured before calling.
+    async fn insert_replay(
+        &self,
+        receipt_id: ReceiptId,
+        emitter_name: &str,
+    ) -> Result<DeliveryId, Self::Error>;
+
+    /// Fetch a single delivery row plus its parent receipt.
+    async fn get_delivery(
+        &self,
+        delivery_id: DeliveryId,
+    ) -> Result<Option<(WebhookDelivery, WebhookReceipt)>, Self::Error>;
+
+    /// Fetch all delivery rows for a receipt, ordered by `created_at` ASC.
+    async fn get_deliveries_for_receipt(
+        &self,
+        receipt_id: ReceiptId,
+    ) -> Result<Vec<WebhookDelivery>, Self::Error>;
+
+    /// List dead-lettered deliveries, optionally filtered by emitter.
+    async fn list_dlq(
+        &self,
+        emitter_name: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error>;
 }
