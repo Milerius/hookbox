@@ -5,6 +5,7 @@
 //! and asserts full struct equality.
 
 #![allow(clippy::unwrap_used, reason = "unwrap is acceptable in test code")]
+#![allow(clippy::expect_used, reason = "expect is acceptable in test code")]
 #![allow(missing_docs, reason = "test code does not require docs")]
 
 use chrono::{TimeZone, Utc};
