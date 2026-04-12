@@ -22,9 +22,5 @@ tokio.workspace = true
 [dev-dependencies]
 testcontainers.workspace = true
 testcontainers-modules = { workspace = true, features = ["kafka"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 chrono = { workspace = true }
 uuid = { workspace = true }
-serde_json = { workspace = true }
-hookbox = { workspace = true }
-rdkafka = { workspace = true }

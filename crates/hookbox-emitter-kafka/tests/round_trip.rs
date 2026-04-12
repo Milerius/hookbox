@@ -41,9 +41,10 @@ fn make_test_event() -> NormalizedEvent {
 #[tokio::test]
 async fn kafka_emitter_round_trip() {
     let container = Kafka::default().start().await.unwrap();
-    let host = container.get_host().await.unwrap();
     let port = container.get_host_port_ipv4(9092).await.unwrap();
-    let brokers = format!("{host}:{port}");
+    // Use 127.0.0.1 explicitly: rdkafka resolves "localhost" to ::1 on some
+    // systems, but testcontainers only maps the IPv4 port.
+    let brokers = format!("127.0.0.1:{port}");
 
     let emitter = KafkaEmitter::new(
         &brokers,
@@ -54,8 +55,12 @@ async fn kafka_emitter_round_trip() {
     )
     .unwrap();
 
-    // Build the consumer BEFORE publishing so the topic auto-creates and
-    // we have a stable view of partition 0 from offset 0.
+    // Emit first so the producer auto-creates the topic on the broker.
+    let event = make_test_event();
+    emitter.emit(&event).await.unwrap();
+
+    // Build the consumer AFTER publishing. auto.offset.reset=earliest means
+    // it will read from offset 0 regardless of when it subscribes.
     let group_id = format!("hookbox-test-{}", Uuid::new_v4());
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", &brokers)
@@ -66,9 +71,12 @@ async fn kafka_emitter_round_trip() {
         .create()
         .unwrap();
     consumer.subscribe(&[TOPIC]).unwrap();
-
-    let event = make_test_event();
-    emitter.emit(&event).await.unwrap();
+    // Force a synchronous metadata round-trip so librdkafka completes topic
+    // discovery and partition assignment before polling. Defense-in-depth on
+    // top of auto.offset.reset=earliest.
+    consumer
+        .fetch_metadata(Some(TOPIC), Duration::from_secs(10))
+        .expect("kafka metadata fetch should succeed");
 
     // Wait up to 30 seconds for the message — first poll on a new consumer
     // group can be slow on cold Kafka.
