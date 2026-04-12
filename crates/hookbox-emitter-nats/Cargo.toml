@@ -18,3 +18,13 @@ serde_json.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 bytes.workspace = true
+
+[dev-dependencies]
+testcontainers.workspace = true
+testcontainers-modules = { workspace = true, features = ["nats"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+hookbox = { workspace = true }
+async-nats = { workspace = true }
+futures = { workspace = true }
