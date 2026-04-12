@@ -11,7 +11,8 @@
 //! `CASE` expressions inside `PostgresStorage::retry_failed`. Any change to
 //! the SQL retry logic must be reflected here and vice-versa.
 
-use crate::state::{DedupeDecision, ProcessingState, RetryPolicy, VerificationStatus};
+use crate::state::{DedupeDecision, DeliveryState, ProcessingState, RetryPolicy, VerificationStatus, WebhookDelivery};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 // ── Ingest result label constants ─────────────────────────────────────────────
@@ -247,6 +248,230 @@ mod backoff_tests {
                 let _ = compute_backoff(1, &p);
             }
         }
+    }
+}
+
+// ── Fan-out aggregate helpers ─────────────────────────────────────────────────
+
+/// Derive the visible [`ProcessingState`] for a receipt from its delivery rows.
+///
+/// Operates only on the latest non-immutable row per `emitter_name`. If the
+/// resulting set is empty (all immutable or no rows), falls back to `fallback`
+/// (the receipt's stored `processing_state`).
+///
+/// Aggregation precedence (highest to lowest):
+/// 1. `DeadLettered` — at least one latest row is `dead_lettered`.
+/// 2. `EmitFailed`   — at least one latest row is `failed`, none `dead_lettered`.
+/// 3. `Emitted`      — every latest row is `emitted`.
+/// 4. `Stored`       — all latest rows are `pending` or `in_flight`.
+#[must_use]
+pub fn receipt_aggregate_state(
+    deliveries: &[WebhookDelivery],
+    fallback: ProcessingState,
+) -> ProcessingState {
+    let latest = latest_mutable_per_emitter(deliveries);
+    if latest.is_empty() {
+        return fallback;
+    }
+    if latest.values().any(|s| *s == DeliveryState::DeadLettered) {
+        return ProcessingState::DeadLettered;
+    }
+    if latest.values().any(|s| *s == DeliveryState::Failed) {
+        return ProcessingState::EmitFailed;
+    }
+    if latest.values().all(|s| *s == DeliveryState::Emitted) {
+        return ProcessingState::Emitted;
+    }
+    ProcessingState::Stored
+}
+
+/// Per-emitter delivery state from the latest non-immutable row for each emitter.
+///
+/// Returns an empty map when all rows are immutable.
+#[must_use]
+pub fn receipt_deliveries_summary(
+    deliveries: &[WebhookDelivery],
+) -> BTreeMap<String, DeliveryState> {
+    latest_mutable_per_emitter(deliveries)
+}
+
+// -- internal -----------------------------------------------------------------
+
+/// For each `emitter_name`, return the `state` of the non-immutable row
+/// with the greatest `created_at`. Mirrors the SQL:
+/// `SELECT DISTINCT ON (emitter_name) state ... ORDER BY emitter_name, created_at DESC`
+fn latest_mutable_per_emitter(
+    deliveries: &[WebhookDelivery],
+) -> BTreeMap<String, DeliveryState> {
+    let mut map: BTreeMap<String, (chrono::DateTime<chrono::Utc>, DeliveryState)> =
+        BTreeMap::new();
+    for d in deliveries {
+        if d.immutable {
+            continue;
+        }
+        map.entry(d.emitter_name.clone())
+            .and_modify(|(ts, st)| {
+                if d.created_at > *ts {
+                    *ts = d.created_at;
+                    *st = d.state;
+                }
+            })
+            .or_insert((d.created_at, d.state));
+    }
+    map.into_iter().map(|(k, (_, s))| (k, s)).collect()
+}
+
+#[cfg(test)]
+mod aggregate_tests {
+    use super::*;
+    use crate::state::{DeliveryId, DeliveryState, ProcessingState, ReceiptId, WebhookDelivery};
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    fn delivery(
+        emitter: &str,
+        state: DeliveryState,
+        immutable: bool,
+        created_offset_secs: i64,
+    ) -> WebhookDelivery {
+        WebhookDelivery {
+            delivery_id:     DeliveryId(Uuid::new_v4()),
+            receipt_id:      ReceiptId(Uuid::new_v4()),
+            emitter_name:    emitter.to_string(),
+            state,
+            attempt_count:   0,
+            last_error:      None,
+            last_attempt_at: None,
+            next_attempt_at: Utc::now(),
+            emitted_at:      None,
+            immutable,
+            created_at:      Utc::now()
+                + chrono::Duration::seconds(created_offset_secs),
+        }
+    }
+
+    #[test]
+    fn empty_slice_returns_stored() {
+        assert_eq!(
+            receipt_aggregate_state(&[], ProcessingState::Stored),
+            ProcessingState::Stored
+        );
+    }
+
+    #[test]
+    fn all_immutable_falls_back_to_stored_processing_state() {
+        let rows = vec![delivery("legacy", DeliveryState::Failed, true, 0)];
+        assert_eq!(
+            receipt_aggregate_state(&rows, ProcessingState::EmitFailed),
+            ProcessingState::EmitFailed,
+        );
+    }
+
+    #[test]
+    fn all_emitted_returns_emitted() {
+        let rows = vec![
+            delivery("a", DeliveryState::Emitted, false, 0),
+            delivery("b", DeliveryState::Emitted, false, 0),
+        ];
+        assert_eq!(
+            receipt_aggregate_state(&rows, ProcessingState::Stored),
+            ProcessingState::Emitted
+        );
+    }
+
+    #[test]
+    fn any_dead_lettered_returns_dead_lettered() {
+        let rows = vec![
+            delivery("a", DeliveryState::Emitted,      false, 0),
+            delivery("b", DeliveryState::DeadLettered, false, 0),
+        ];
+        assert_eq!(
+            receipt_aggregate_state(&rows, ProcessingState::Stored),
+            ProcessingState::DeadLettered
+        );
+    }
+
+    #[test]
+    fn dead_lettered_wins_over_failed() {
+        let rows = vec![
+            delivery("a", DeliveryState::Failed,       false, 0),
+            delivery("b", DeliveryState::DeadLettered, false, 0),
+        ];
+        assert_eq!(
+            receipt_aggregate_state(&rows, ProcessingState::Stored),
+            ProcessingState::DeadLettered
+        );
+    }
+
+    #[test]
+    fn any_failed_no_dead_lettered_returns_emit_failed() {
+        let rows = vec![
+            delivery("a", DeliveryState::Emitted, false, 0),
+            delivery("b", DeliveryState::Failed,  false, 0),
+        ];
+        assert_eq!(
+            receipt_aggregate_state(&rows, ProcessingState::Stored),
+            ProcessingState::EmitFailed
+        );
+    }
+
+    #[test]
+    fn pending_and_in_flight_collapse_to_stored() {
+        let rows = vec![
+            delivery("a", DeliveryState::Pending,  false, 0),
+            delivery("b", DeliveryState::InFlight, false, 0),
+        ];
+        assert_eq!(
+            receipt_aggregate_state(&rows, ProcessingState::Stored),
+            ProcessingState::Stored
+        );
+    }
+
+    #[test]
+    fn latest_mutable_row_wins_per_emitter() {
+        let rows = vec![
+            delivery("a", DeliveryState::DeadLettered, false, 0),
+            delivery("a", DeliveryState::Emitted,      false, 10),
+        ];
+        assert_eq!(
+            receipt_aggregate_state(&rows, ProcessingState::Stored),
+            ProcessingState::Emitted
+        );
+    }
+
+    #[test]
+    fn replay_history_does_not_poison_state() {
+        let rows = vec![
+            delivery("a", DeliveryState::DeadLettered, false, 0),
+            delivery("a", DeliveryState::Emitted,      false, 5),
+            delivery("b", DeliveryState::Emitted,      false, 0),
+        ];
+        assert_eq!(
+            receipt_aggregate_state(&rows, ProcessingState::Stored),
+            ProcessingState::Emitted
+        );
+    }
+
+    #[test]
+    fn deliveries_summary_one_entry_per_emitter_latest_row() {
+        let rows = vec![
+            delivery("a", DeliveryState::DeadLettered, false, 0),
+            delivery("a", DeliveryState::Emitted,      false, 5),
+            delivery("b", DeliveryState::Failed,       false, 0),
+        ];
+        let summary = receipt_deliveries_summary(&rows);
+        assert_eq!(summary.len(), 2);
+        assert_eq!(summary["a"], DeliveryState::Emitted);
+        assert_eq!(summary["b"], DeliveryState::Failed);
+    }
+
+    #[test]
+    fn deliveries_summary_ignores_immutable_rows() {
+        let rows = vec![
+            delivery("legacy", DeliveryState::Emitted, true, 0),
+        ];
+        let summary = receipt_deliveries_summary(&rows);
+        assert!(summary.is_empty());
     }
 }
 
