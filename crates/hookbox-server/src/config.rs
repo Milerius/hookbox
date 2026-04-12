@@ -342,6 +342,11 @@ impl RetryPolicyConfig {
 /// This is the canonical, non-deprecated way to configure one or more
 /// downstream emitters. Each entry is independently named, typed, and
 /// carries its own retry and concurrency policy.
+///
+/// `Serialize` is required so future config-validation tooling and the
+/// `hookbox config validate` CLI (Task 14+) can round-trip the normalized
+/// config back to TOML for diff/output. It is intentionally unused at
+/// present.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmitterEntry {
     /// Unique name identifying this emitter (must match `[a-zA-Z0-9_-]{1,64}`).
@@ -379,6 +384,9 @@ fn default_concurrency() -> usize {
     1
 }
 
+/// Produces an intentionally invalid entry (empty `name` and `emitter_type`)
+/// for use with `..Default::default()` in tests. Validation rejects it.
+/// Do not use in production code.
 impl Default for EmitterEntry {
     fn default() -> Self {
         Self {
@@ -473,8 +481,7 @@ pub fn normalize(mut config: HookboxConfig) -> Result<(HookboxConfig, Vec<String
             config.emitter = None;
         }
         (None, false) => {
-            // top-level [retry] is intentionally not warned about; it has defaults
-            // indistinguishable from unset.
+            // [[emitters]] present, no legacy [emitter] section — normal path; nothing to normalize.
         }
     }
     validate_emitter_entries(&config.emitters)?;
@@ -888,6 +895,12 @@ secret = "checkout_secret"
         "#;
         let result = parse_and_normalize(toml);
         assert!(result.is_err(), "both emitter and emitters must error");
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("both"),
+            "expected error mentioning 'both', got: {msg}"
+        );
     }
 
     #[test]
@@ -898,6 +911,12 @@ secret = "checkout_secret"
         "#;
         let result = parse_and_normalize(toml);
         assert!(result.is_err(), "no emitters must error");
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no emitters"),
+            "expected error mentioning 'no emitters', got: {msg}"
+        );
     }
 
     #[test]
@@ -948,7 +967,14 @@ secret = "checkout_secret"
                 ..Default::default()
             },
         ];
-        assert!(validate_emitter_entries(&entries).is_err());
+        let result = validate_emitter_entries(&entries);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate"),
+            "expected error mentioning 'duplicate', got: {msg}"
+        );
     }
 
     #[test]
@@ -970,7 +996,14 @@ secret = "checkout_secret"
             concurrency: 0,
             ..Default::default()
         }];
-        assert!(validate_emitter_entries(&entries).is_err());
+        let result = validate_emitter_entries(&entries);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("concurrency"),
+            "expected error mentioning 'concurrency', got: {msg}"
+        );
     }
 
     #[test]

@@ -97,7 +97,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     // Build the downstream emitter from config. The factory returns the
     // production emitters as `Ready`; the development `channel` variant
     // additionally yields a receiver that this binary drains for logging.
-    // TODO(fan-out): replace with build_workers once serve.rs is rewired.
+    // TODO(Task 14 / fan-out): replace with build_workers once serve.rs is rewired.
     let legacy_emitter_cfg = config.emitter.clone().unwrap_or_default();
     let emitter: Arc<dyn Emitter + Send + Sync> = match build_emitter(&legacy_emitter_cfg).await? {
         BuiltEmitter::Ready(emitter) => emitter,
