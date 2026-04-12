@@ -322,6 +322,21 @@ impl Default for RetryPolicyConfig {
     }
 }
 
+impl RetryPolicyConfig {
+    /// Convert this TOML-shaped config into the runtime [`hookbox::state::RetryPolicy`]
+    /// used by `EmitterWorker` for backoff and dead-letter decisions.
+    #[must_use]
+    pub fn into_policy(self) -> hookbox::state::RetryPolicy {
+        hookbox::state::RetryPolicy {
+            max_attempts: self.max_attempts,
+            initial_backoff: std::time::Duration::from_secs(self.initial_backoff_seconds),
+            max_backoff: std::time::Duration::from_secs(self.max_backoff_seconds),
+            backoff_multiplier: self.backoff_multiplier,
+            jitter: self.jitter,
+        }
+    }
+}
+
 /// A single named emitter entry in the `[[emitters]]` array.
 ///
 /// This is the canonical, non-deprecated way to configure one or more
