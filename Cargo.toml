@@ -110,7 +110,7 @@ aws-sdk-sqs = "1"
 aws-config = { version = "1", features = ["behavior-version-latest", "credentials-login"] }
 
 # Redis client (used by hookbox-emitter-redis)
-redis = { version = "0.27", features = ["tokio-comp", "streams"] }
+redis = { version = "0.27", features = ["tokio-comp", "streams", "connection-manager"] }
 
 # AWS credential types (used directly by the SQS round-trip integration test
 # to build a static credentials provider against LocalStack — re-exported by

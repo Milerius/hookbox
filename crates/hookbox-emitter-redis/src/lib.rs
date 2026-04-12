@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use redis::AsyncCommands;
-use redis::aio::MultiplexedConnection;
+use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 
 use hookbox::error::EmitError;
 use hookbox::traits::Emitter;
@@ -17,11 +17,12 @@ use hookbox::types::NormalizedEvent;
 
 /// A Redis-Streams-backed [`Emitter`] that publishes events to a configured stream.
 ///
-/// Holds a multiplexed async connection (cheap to clone) and reuses it for
-/// every `emit()` call. The connection is created in [`RedisEmitter::new`]
-/// so configuration errors surface at startup, not at the first webhook.
+/// Holds a [`ConnectionManager`] (cheap to clone) which wraps a multiplexed
+/// async connection and re-establishes it in the background on connection
+/// errors. The manager is created in [`RedisEmitter::new`] so configuration
+/// errors surface at startup, not at the first webhook.
 pub struct RedisEmitter {
-    conn: MultiplexedConnection,
+    conn: ConnectionManager,
     stream: String,
     maxlen: Option<u64>,
     timeout: Duration,
@@ -36,27 +37,40 @@ impl RedisEmitter {
     /// * `stream` — Redis stream key to publish events to.
     /// * `maxlen` — optional approximate trim length (`XADD ~ MAXLEN`).
     /// * `timeout_ms` — per-operation timeout for `XADD` in milliseconds.
+    ///   Also bounds the initial connect at startup so a blackholed Redis
+    ///   endpoint cannot hang `hookbox serve` on the OS-level TCP timeout.
     ///
     /// # Errors
     ///
     /// Returns [`EmitError::Downstream`] if the client cannot be created or
-    /// the initial connection cannot be established.
+    /// the initial connection cannot be established. Returns
+    /// [`EmitError::Timeout`] if the initial connect does not complete within
+    /// `timeout_ms`.
     pub async fn new(
         url: &str,
         stream: String,
         maxlen: Option<u64>,
         timeout_ms: u64,
     ) -> Result<Self, EmitError> {
+        let timeout = Duration::from_millis(timeout_ms);
         let client = redis::Client::open(url).map_err(|e| EmitError::Downstream(e.to_string()))?;
-        let conn = client
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(|e| EmitError::Downstream(e.to_string()))?;
+        let config = ConnectionManagerConfig::new().set_connection_timeout(timeout);
+        let connect = ConnectionManager::new_with_config(client, config);
+        let conn = match tokio::time::timeout(timeout, connect).await {
+            Ok(Ok(conn)) => conn,
+            Ok(Err(e)) => return Err(EmitError::Downstream(e.to_string())),
+            Err(_) => {
+                return Err(EmitError::Timeout(format!(
+                    "redis connect timed out after {}ms",
+                    timeout.as_millis()
+                )));
+            }
+        };
         Ok(Self {
             conn,
             stream,
             maxlen,
-            timeout: Duration::from_millis(timeout_ms),
+            timeout,
         })
     }
 }
