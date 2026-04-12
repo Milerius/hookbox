@@ -199,6 +199,11 @@ impl<S: DeliveryStorage + Send + Sync + 'static> EmitterWorker<S> {
                             reclaimed = n,
                             "reclaimed expired in-flight deliveries"
                         );
+                        metrics::counter!(
+                            "hookbox_emit_reclaimed_total",
+                            "emitter" => self.name.clone()
+                        )
+                        .increment(n);
                     }
                     Ok(_) => {}
                     Err(e) => {
@@ -257,16 +262,47 @@ impl<S: DeliveryStorage + Send + Sync + 'static> EmitterWorker<S> {
         receipt: hookbox::types::WebhookReceipt,
     ) {
         let event = NormalizedEvent::from_receipt(&receipt);
-        match self.emitter.emit(&event).await {
+        let start = std::time::Instant::now();
+        let result = self.emitter.emit(&event).await;
+        let elapsed = start.elapsed().as_secs_f64();
+        let next_attempt = delivery.attempt_count + 1;
+
+        metrics::histogram!("hookbox_emit_duration_seconds", "emitter" => self.name.clone())
+            .record(elapsed);
+
+        match result {
             Ok(()) => {
+                metrics::counter!(
+                    "hookbox_emit_results_total",
+                    "provider" => receipt.provider_name.clone(),
+                    "emitter"  => self.name.clone(),
+                    "result"   => "success",
+                )
+                .increment(1);
+                metrics::histogram!(
+                    "hookbox_emit_attempt_count",
+                    "emitter" => self.name.clone()
+                )
+                .record(f64::from(next_attempt));
                 if let Err(e) = self.storage.mark_emitted(delivery.delivery_id).await {
                     tracing::error!(emitter = %self.name, err = %e, "mark_emitted failed");
                 }
                 self.update_health(true);
             }
             Err(err) => {
-                let next_attempt = delivery.attempt_count + 1;
+                metrics::counter!(
+                    "hookbox_emit_results_total",
+                    "provider" => receipt.provider_name.clone(),
+                    "emitter"  => self.name.clone(),
+                    "result"   => "failure",
+                )
+                .increment(1);
                 if next_attempt >= self.policy.max_attempts {
+                    metrics::histogram!(
+                        "hookbox_emit_attempt_count",
+                        "emitter" => self.name.clone()
+                    )
+                    .record(f64::from(next_attempt));
                     if let Err(e) = self
                         .storage
                         .mark_dead_lettered(delivery.delivery_id, &err.to_string())
@@ -350,10 +386,29 @@ impl<S: DeliveryStorage + Send + Sync + 'static> EmitterWorker<S> {
         self.health.store(Arc::new(next));
     }
 
-    /// Refresh DLQ depth and pending count gauges in the health snapshot.
+    /// Refresh DLQ depth, pending count, and in-flight count gauges.
+    ///
+    /// Writes Prometheus gauges for operator dashboards and updates the
+    /// in-process health snapshot consumed by `/readyz`.
     async fn refresh_gauges(&self) {
         let dlq = self.storage.count_dlq(&self.name).await.unwrap_or(0);
         let pending = self.storage.count_pending(&self.name).await.unwrap_or(0);
+        let in_flight = self.storage.count_in_flight(&self.name).await.unwrap_or(0);
+
+        // Update Prometheus gauges (operator-visible).
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "u64 → f64 for gauge values; counts are bounded in practice"
+        )]
+        {
+            metrics::gauge!("hookbox_dlq_depth", "emitter" => self.name.clone()).set(dlq as f64);
+            metrics::gauge!("hookbox_emit_pending", "emitter" => self.name.clone())
+                .set(pending as f64);
+            metrics::gauge!("hookbox_emit_in_flight", "emitter" => self.name.clone())
+                .set(in_flight as f64);
+        }
+
+        // Update in-process health snapshot (consumed by /readyz).
         let current = self.health.load();
         let mut next = (**current).clone();
         next.dlq_depth = dlq;
