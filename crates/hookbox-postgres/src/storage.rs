@@ -317,13 +317,12 @@ impl Storage for PostgresStorage {
                 .await
                 .map_err(|e| StorageError::Internal(e.to_string()))?;
 
-            let existing: Uuid = sqlx::query_scalar(
-                "SELECT receipt_id FROM webhook_receipts WHERE dedupe_key = $1",
-            )
-            .bind(&receipt.dedupe_key)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
+            let existing: Uuid =
+                sqlx::query_scalar("SELECT receipt_id FROM webhook_receipts WHERE dedupe_key = $1")
+                    .bind(&receipt.dedupe_key)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(|e| StorageError::Internal(e.to_string()))?;
 
             return Ok(StoreResult::Duplicate {
                 existing_id: ReceiptId(existing),
@@ -1046,5 +1045,93 @@ impl DeliveryStorage for PostgresStorage {
             result.push((delivery, receipt));
         }
         Ok(result)
+    }
+}
+
+/// Blanket `DeliveryStorage` impl for `Arc<T>` so workers can hold a
+/// reference-counted storage handle without losing the trait bound.
+#[async_trait]
+impl<T: DeliveryStorage + ?Sized> DeliveryStorage for std::sync::Arc<T> {
+    type Error = T::Error;
+
+    async fn claim_pending(
+        &self,
+        emitter_name: &str,
+        batch_size: i64,
+    ) -> Result<Vec<(WebhookDelivery, hookbox::types::WebhookReceipt)>, Self::Error> {
+        (**self).claim_pending(emitter_name, batch_size).await
+    }
+
+    async fn reclaim_expired(
+        &self,
+        emitter_name: &str,
+        lease_duration: Duration,
+    ) -> Result<u64, Self::Error> {
+        (**self).reclaim_expired(emitter_name, lease_duration).await
+    }
+
+    async fn mark_emitted(&self, delivery_id: DeliveryId) -> Result<(), Self::Error> {
+        (**self).mark_emitted(delivery_id).await
+    }
+
+    async fn mark_failed(
+        &self,
+        delivery_id: DeliveryId,
+        attempt_count: i32,
+        next_attempt_at: DateTime<Utc>,
+        last_error: &str,
+    ) -> Result<(), Self::Error> {
+        (**self).mark_failed(delivery_id, attempt_count, next_attempt_at, last_error).await
+    }
+
+    async fn mark_dead_lettered(
+        &self,
+        delivery_id: DeliveryId,
+        last_error: &str,
+    ) -> Result<(), Self::Error> {
+        (**self).mark_dead_lettered(delivery_id, last_error).await
+    }
+
+    async fn count_dlq(&self, emitter_name: &str) -> Result<u64, Self::Error> {
+        (**self).count_dlq(emitter_name).await
+    }
+
+    async fn count_pending(&self, emitter_name: &str) -> Result<u64, Self::Error> {
+        (**self).count_pending(emitter_name).await
+    }
+
+    async fn count_in_flight(&self, emitter_name: &str) -> Result<u64, Self::Error> {
+        (**self).count_in_flight(emitter_name).await
+    }
+
+    async fn insert_replay(
+        &self,
+        receipt_id: ReceiptId,
+        emitter_name: &str,
+    ) -> Result<DeliveryId, Self::Error> {
+        (**self).insert_replay(receipt_id, emitter_name).await
+    }
+
+    async fn get_delivery(
+        &self,
+        delivery_id: DeliveryId,
+    ) -> Result<Option<(WebhookDelivery, hookbox::types::WebhookReceipt)>, Self::Error> {
+        (**self).get_delivery(delivery_id).await
+    }
+
+    async fn get_deliveries_for_receipt(
+        &self,
+        receipt_id: ReceiptId,
+    ) -> Result<Vec<WebhookDelivery>, Self::Error> {
+        (**self).get_deliveries_for_receipt(receipt_id).await
+    }
+
+    async fn list_dlq(
+        &self,
+        emitter_name: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<(WebhookDelivery, hookbox::types::WebhookReceipt)>, Self::Error> {
+        (**self).list_dlq(emitter_name, limit, offset).await
     }
 }
