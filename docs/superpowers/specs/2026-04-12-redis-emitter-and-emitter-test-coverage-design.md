@@ -80,8 +80,9 @@ The four round-trip integration tests run on every PR push, but they cannot run 
 Layout:
 
 1. **Modify the existing `test` job** to exclude the four emitter crates from the workspace test pass, e.g. `cargo nextest run ... --workspace --exclude hookbox-integration-tests --exclude hookbox-emitter-kafka --exclude hookbox-emitter-nats --exclude hookbox-emitter-sqs --exclude hookbox-emitter-redis`. The matrix continues to run on both Linux and macOS for the rest of the workspace.
-2. **Add a new `test-emitters` job** in `ci.yml`, Linux-only (`runs-on: ubuntu-latest`), runs `cargo test -p hookbox-emitter-kafka -p hookbox-emitter-nats -p hookbox-emitter-sqs -p hookbox-emitter-redis --all-features`. Includes `Swatinem/rust-cache@v2` and the rdkafka system deps the existing jobs already install.
-3. **Delete** the `emitter-smoke` job from `.github/workflows/nightly.yml` — superseded.
+2. **Modify the existing `careful` job** with the same four `--exclude` flags. `cargo +nightly careful test --workspace --all-features --exclude hookbox-integration-tests` would otherwise also pull in the new Docker-backed tests on its Linux runner, creating a second CI surface for Docker flake. The dedicated `test-emitters` job is the single Docker-backed surface.
+3. **Add a new `test-emitters` job** in `ci.yml`, Linux-only (`runs-on: ubuntu-latest`), runs `cargo test -p hookbox-emitter-kafka -p hookbox-emitter-nats -p hookbox-emitter-sqs -p hookbox-emitter-redis --all-features`. Includes `Swatinem/rust-cache@v2` and the rdkafka system deps the existing jobs already install.
+4. **Delete** the `emitter-smoke` job from `.github/workflows/nightly.yml` — superseded.
 
 Reasoning:
 - The whole point of moving off `#[ignore]` is so `cargo llvm-cov` and PR CI see these tests on at least one OS. Gating them back behind a feature flag undoes the move.
@@ -186,7 +187,7 @@ async fn redis_emitter_round_trip() {
 ```
 
 Two non-obvious points enforced by every test file:
-- `container.get_host()` is used instead of hardcoding `127.0.0.1`, so tests work under rootless Docker, podman, and remote Docker socket setups.
+- `container.get_host()` is used instead of hardcoding `127.0.0.1` where the broker honours it. Note: `testcontainers_modules::kafka::apache::Kafka` rewrites `KAFKA_ADVERTISED_LISTENERS=127.0.0.1` internally, so for Kafka the test is scoped to local Docker (developer machines and the GHA Linux `test-emitters` job, both of which talk to a Docker daemon on `localhost`). Remote Docker sockets / rootless setups are out of scope for the Kafka test only.
 - Assertion is `assert_eq!(received, event)` (full `NormalizedEvent` equality), not field-by-field. This catches every serialization regression, not just `receipt_id`/`provider_name` ones.
 
 Each emitter's test file uses the matching `testcontainers-modules` image:
@@ -212,13 +213,14 @@ Each round-trip test must do more than spawn a container — the broker has to b
 **NATS (`hookbox-emitter-nats`)**
 - Spawn container, read port via `get_host_port_ipv4(4222)`.
 - Subscribe to `"hookbox.test"` *before* the emitter publishes to avoid the race where a NATS subject has no subscribers and the message is dropped.
+- Call `subscriber_client.flush().await` after `subscribe()` so the server has actually registered the subscription before the publish happens — `subscribe()` returns before the SUB protocol message round-trips.
 - Read one message off the subscription, parse, full `assert_eq!`.
 
 **SQS (`hookbox-emitter-sqs`) — most involved**
 - Spawn LocalStack container, read port via `get_host_port_ipv4(4566)`.
-- Inject dummy AWS credentials for the SDK: set `AWS_ACCESS_KEY_ID=test`, `AWS_SECRET_ACCESS_KEY=test`, `AWS_REGION=us-east-1` for the test process (LocalStack accepts any non-empty creds; the SDK fails with `NoCredentialsProviderError` if these are absent).
-- Use the `aws-sdk-sqs::Client` directly to call `CreateQueue { queue_name: "hookbox-test.fifo", attributes: { FifoQueue: "true", ContentBasedDeduplication: "false" } }` and capture the returned `queue_url`.
-- Construct `SqsEmitter::new(queue_url, Some("us-east-1"), true /* fifo */, Some(<localstack-endpoint>))` and `emit()`.
+- Build a static AWS credentials provider in the test (`Credentials::new("test", "test", None, None, "test")`) and pass it through a new `SqsEmitter::with_client(client, queue_url, fifo)` constructor that accepts a pre-built `aws_sdk_sqs::Client`. **Do not mutate process env**: workspace lints set `unsafe_code = "deny"`, and even with an `#[allow]` the two SQS tests live in the same integration-test binary and would race on `set_var`. The new `with_client` constructor is a small additive change to the production crate's public surface — no behaviour change to `SqsEmitter::new`, which still uses the env-based provider chain in production.
+- Use the same `aws-sdk-sqs::Client` (built from the static credentials + the LocalStack endpoint) to call `CreateQueue { queue_name: "hookbox-test.fifo", attributes: { FifoQueue: "true", ContentBasedDeduplication: "false" } }` and capture the returned `queue_url`.
+- Construct `SqsEmitter::with_client(client, queue_url, true /* fifo */)` and `emit()`.
 - Call `ReceiveMessage` with `MessageSystemAttributeNames=[MessageGroupId, MessageDeduplicationId]` and `MaxNumberOfMessages=1`.
 - Assert: full `NormalizedEvent` round-trip via `Message::body`, `MessageGroupId == event.provider_name`, `MessageDeduplicationId == event.receipt_id.to_string()`.
 - Run a parallel non-FIFO test against a standard queue to cover the `fifo = false` code path.
@@ -316,3 +318,27 @@ The original spec recommended sharing one broker per test file via `OnceCell`. W
 - **Effort:** +1 day total (3.5 → 4.5), driven by the SQS bootstrap (~+0.5d) and the CI split (~+0.5d). All other fixes are minor edits.
 - **Architecture:** unchanged. None of the findings invalidated a core decision — the Redis emitter shape, the testcontainers choice, the redis-rs client choice, and the test depth all stand.
 - **Risk profile:** lower. The original spec would have shipped a CI green-light that broke on macOS or an SQS test that flaked on missing credentials. Both are now closed.
+
+---
+
+## Revisions after Codex (gpt-5.4) plan review
+
+After the implementation plan was drafted, Codex was asked to review the plan against this spec. It found 6 issues (1 high, 5 medium), all applied inline to both the spec and the plan:
+
+**1. (High) SQS test mutated process env via `unsafe { std::env::set_var }`.**
+Workspace lints set `unsafe_code = "deny"`, and even with an `#[allow]` the two SQS tests share an integration-test binary and would race on the env var. **Fix:** added a new `SqsEmitter::with_client(client, queue_url, fifo)` constructor on the production crate that accepts a pre-built `aws_sdk_sqs::Client`. The test builds a client with a static `Credentials::new("test", "test", None, None, "test")` provider against the LocalStack endpoint, uses it to call `CreateQueue` directly, and then injects it into `SqsEmitter::with_client`. No env mutation, no `unsafe`. Production `SqsEmitter::new` is unchanged.
+
+**2. (Medium) NATS subscribe race was incomplete.**
+`subscribe()` returns before the SUB protocol message round-trips to the server, so the race window stays open. **Fix:** added `subscriber_client.flush().await` immediately after `subscribe()` in both the spec bootstrap details and the plan's NATS round-trip test code.
+
+**3. (Medium) Kafka portability claim was wrong.**
+The spec claimed the test is portable to remote Docker / rootless setups because it uses `container.get_host()`. But `testcontainers_modules::kafka::apache::Kafka` rewrites `KAFKA_ADVERTISED_LISTENERS=127.0.0.1` internally, so even with `get_host()` the broker only advertises the loopback. **Fix:** scoped the Kafka portability claim to local Docker (developer machines + GHA Linux `test-emitters` job, both of which talk to the Docker daemon on `localhost`). The other three brokers (NATS, LocalStack, Redis) keep their portability properties.
+
+**4. (Medium) `careful` job created a second Docker-backed CI surface.**
+The dedicated `test-emitters` job exists so emitter Docker tests run on exactly one CI surface. But the existing `careful` job uses `--workspace --all-features --exclude hookbox-integration-tests`, which on its Linux runner would also pull in the four emitter crates. **Fix:** the plan also adds `--exclude hookbox-emitter-{kafka,nats,sqs,redis}` to the `careful` job invocation. Single Docker-backed CI surface preserved.
+
+**5. (Medium) Plan Task 6 config tests used the wrong TOML schema.**
+The drafted config tests in the plan referenced `[ingest]` / `[storage]` / `default_config`, but the real `crates/hookbox-server/src/config.rs` uses `[database]` and the existing tests are `parse_minimal_config` and `parse_emitter_default`. **Fix (plan-only):** rewrote all Task 6 TOML snippets to use `[database]`, and the test-update steps now point at the real `parse_minimal_config` + `parse_emitter_default` tests.
+
+**6. (Medium) Plan Task 3 stub failed clippy under pedantic.**
+The Task 3 stub declared `pub async fn new()` but the body did no `.await` calls (`redis::Client::open()` is sync). With `pedantic = warn` and `-D warnings`, `clippy::unused_async` becomes a hard error. **Fix (plan-only):** Task 3 stub now establishes the real `MultiplexedConnection` via `client.get_multiplexed_async_connection().await` in `new()` (which Task 5 needs anyway), so `new()` actually awaits and clippy passes. Task 5 just adds the `xadd` calls.

@@ -62,13 +62,18 @@ Centralize versions so each crate's `Cargo.toml` can `redis.workspace = true` in
 **Files:**
 - Modify: `Cargo.toml` (workspace root)
 
-- [ ] **Step 1: Add the three new workspace dependencies**
+- [ ] **Step 1: Add the new workspace dependencies**
 
 In the root `Cargo.toml`, in the `[workspace.dependencies]` table, append after the existing emitter backends block (after `aws-config = ...`):
 
 ```toml
 # Redis client (used by hookbox-emitter-redis)
 redis = { version = "0.27", features = ["tokio-comp", "streams"] }
+
+# AWS credential types (used directly by the SQS round-trip integration test
+# to build a static credentials provider against LocalStack — re-exported by
+# aws-config but pulled in directly so the test imports are explicit).
+aws-credential-types = "1"
 
 # Test containers (used by emitter round-trip integration tests)
 testcontainers = "0.23"
@@ -139,9 +144,9 @@ async-trait.workspace = true
 tracing.workspace = true
 ```
 
-- [ ] **Step 2: Create `src/lib.rs` with a stub `RedisEmitter`**
+- [ ] **Step 2: Create `src/lib.rs` with the `RedisEmitter` skeleton**
 
-Create `crates/hookbox-emitter-redis/src/lib.rs`:
+Create `crates/hookbox-emitter-redis/src/lib.rs`. The skeleton already establishes a real async `MultiplexedConnection` in `new()` (so `pub async fn new()` actually awaits — without this, `clippy::unused_async` fires under workspace pedantic+`-D warnings`) and stores it on the struct; `emit()` returns an "unimplemented" error stub. Task 5 will replace `emit()` with the real `XADD` body without changing the struct shape:
 
 ```rust
 //! Redis Streams emitter adapter for hookbox.
@@ -154,6 +159,7 @@ Create `crates/hookbox-emitter-redis/src/lib.rs`:
 use std::time::Duration;
 
 use async_trait::async_trait;
+use redis::aio::MultiplexedConnection;
 
 use hookbox::error::EmitError;
 use hookbox::traits::Emitter;
@@ -161,14 +167,17 @@ use hookbox::types::NormalizedEvent;
 
 /// A Redis-Streams-backed [`Emitter`] that publishes events to a configured stream.
 pub struct RedisEmitter {
-    _client: redis::Client,
-    _stream: String,
-    _maxlen: Option<u64>,
-    _timeout: Duration,
+    conn: MultiplexedConnection,
+    stream: String,
+    maxlen: Option<u64>,
+    timeout: Duration,
 }
 
 impl RedisEmitter {
     /// Create a new [`RedisEmitter`].
+    ///
+    /// Opens the Redis client and establishes a multiplexed async connection
+    /// up-front so the first `emit()` call doesn't pay connection latency.
     ///
     /// # Arguments
     ///
@@ -179,7 +188,8 @@ impl RedisEmitter {
     ///
     /// # Errors
     ///
-    /// Returns [`EmitError::Downstream`] if the client cannot be created.
+    /// Returns [`EmitError::Downstream`] if the client cannot be created or
+    /// the initial connection cannot be established.
     pub async fn new(
         url: &str,
         stream: String,
@@ -187,11 +197,15 @@ impl RedisEmitter {
         timeout_ms: u64,
     ) -> Result<Self, EmitError> {
         let client = redis::Client::open(url).map_err(|e| EmitError::Downstream(e.to_string()))?;
+        let conn = client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|e| EmitError::Downstream(e.to_string()))?;
         Ok(Self {
-            _client: client,
-            _stream: stream,
-            _maxlen: maxlen,
-            _timeout: Duration::from_millis(timeout_ms),
+            conn,
+            stream,
+            maxlen,
+            timeout: Duration::from_millis(timeout_ms),
         })
     }
 }
@@ -199,13 +213,15 @@ impl RedisEmitter {
 #[async_trait]
 impl Emitter for RedisEmitter {
     async fn emit(&self, _event: &NormalizedEvent) -> Result<(), EmitError> {
-        // Implementation lands in Task 5.
+        // Real XADD implementation lands in Task 5 — this stub exists so the
+        // round-trip test in Task 4 has something to fail against.
+        let _ = (&self.conn, &self.stream, self.maxlen, self.timeout);
         Err(EmitError::Downstream("not yet implemented".to_owned()))
     }
 }
 ```
 
-The leading underscores on the fields suppress `unused` warnings until Task 5 fills in `emit()`.
+The `let _ = (...)` at the top of `emit()` suppresses `dead_code` warnings on the fields until Task 5 wires them into the real `XADD` call. The connection is established in `new()` so `pub async fn new()` actually awaits something — if it didn't, `clippy::unused_async` would fire under workspace pedantic+`-D warnings`. `MultiplexedConnection` is `Clone` and cheap to clone per-call, so no `Mutex` is needed. Task 5's full implementation reuses this exact struct shape.
 
 - [ ] **Step 3: Create the README**
 
@@ -431,7 +447,7 @@ returning 'not yet implemented'; the next commit fills in XADD."
 
 ## Task 5: Implement `RedisEmitter::emit()` and make the round-trip test pass
 
-Replace the stub `emit()` with a real `XADD` call wrapped in `tokio::time::timeout`. Drop the leading underscores from the field names.
+Replace the stub `emit()` body with a real `XADD` call wrapped in `tokio::time::timeout`. The struct shape stays exactly as Task 3 left it (`MultiplexedConnection` cloned per call) — only the `emit()` body changes.
 
 **Files:**
 - Modify: `crates/hookbox-emitter-redis/src/lib.rs`
@@ -654,18 +670,45 @@ const fn default_redis_timeout_ms() -> u64 {
 }
 ```
 
-- [ ] **Step 3: Update the existing `parse_emitter_default` test to assert `redis.is_none()`**
+- [ ] **Step 3: Update the existing `parse_minimal_config` and `parse_emitter_default` tests to assert `redis.is_none()`**
 
-Find the existing `parse_emitter_default` test (around line 288–299) and add the `redis` assertion alongside the existing ones:
+Find the existing `parse_minimal_config` test (around line 263 in `crates/hookbox-server/src/config.rs`) and add the `redis` assertion at the end of its assertion block:
+
+```rust
+#[test]
+fn parse_minimal_config() {
+    let toml_str = r#"
+[database]
+url = "postgres://localhost/hookbox"
+"#;
+    let config: HookboxConfig = toml::from_str(toml_str).expect("minimal config should parse");
+
+    assert_eq!(config.server.host, "0.0.0.0");
+    assert_eq!(config.server.port, 8080);
+    assert_eq!(config.server.body_limit, 1_048_576);
+    assert_eq!(config.database.url, "postgres://localhost/hookbox");
+    assert_eq!(config.database.max_connections, 10);
+    assert!(config.providers.is_empty());
+    assert_eq!(config.dedupe.lru_capacity, 10_000);
+    assert!(config.admin.bearer_token.is_none());
+    assert_eq!(config.retry.interval_seconds, 30);
+    assert_eq!(config.retry.max_attempts, 5);
+    assert_eq!(config.emitter.emitter_type, "channel");
+    assert!(config.emitter.kafka.is_none());
+    assert!(config.emitter.nats.is_none());
+    assert!(config.emitter.sqs.is_none());
+    assert!(config.emitter.redis.is_none());
+}
+```
+
+Then find `parse_emitter_default` (around line 288) and add the same `redis` assertion:
 
 ```rust
 #[test]
 fn parse_emitter_default() {
     let toml_str = r#"
-[ingest]
-
-[storage]
-url = "postgres://x"
+[database]
+url = "postgres://localhost/hookbox"
 "#;
     let config: HookboxConfig =
         toml::from_str(toml_str).expect("default emitter config should parse");
@@ -677,20 +720,18 @@ url = "postgres://x"
 }
 ```
 
-Apply the same `assert!(config.emitter.redis.is_none());` line to the `default_config` test (around line 281) — there are two places to update, both inside the `#[cfg(test)]` block.
+Both tests use the real `[database]` section from `HookboxConfig` — there is no `[ingest]` / `[storage]` shape in this codebase.
 
 - [ ] **Step 4: Add a new `parse_emitter_redis` test**
 
-Inside the `#[cfg(test)]` block, after the existing `parse_emitter_sqs_full` test (around line 420), append:
+Inside the `#[cfg(test)]` block, after the existing `parse_emitter_sqs_full` test (the last `parse_emitter_*` test in the file), append:
 
 ```rust
 #[test]
 fn parse_emitter_redis() {
     let toml_str = r#"
-[ingest]
-
-[storage]
-url = "postgres://x"
+[database]
+url = "postgres://localhost/hookbox"
 
 [emitter]
 type = "redis"
@@ -715,10 +756,8 @@ stream = "hookbox.events"
 #[test]
 fn parse_emitter_redis_full() {
     let toml_str = r#"
-[ingest]
-
-[storage]
-url = "postgres://x"
+[database]
+url = "postgres://localhost/hookbox"
 
 [emitter]
 type = "redis"
@@ -932,6 +971,10 @@ async fn nats_emitter_round_trip() {
     // Subscribe BEFORE publishing — NATS drops messages with no subscribers.
     let subscriber_client = async_nats::connect(&url).await.unwrap();
     let mut subscription = subscriber_client.subscribe(SUBJECT).await.unwrap();
+    // `subscribe()` returns before the SUB protocol message round-trips to the
+    // server. `flush()` blocks until the server has actually registered our
+    // subscription, closing the publish-before-subscribe race window.
+    subscriber_client.flush().await.unwrap();
 
     let emitter = NatsEmitter::new(&url, SUBJECT.to_owned()).await.unwrap();
     let event = make_test_event();
@@ -1132,13 +1175,40 @@ auto-creates with a stable view from offset 0."
 
 ## Task 10: Round-trip integration test for `hookbox-emitter-sqs`
 
-Most involved test in this plan. Spawns LocalStack, injects dummy AWS credentials, creates both a FIFO and a standard queue via the AWS SDK directly, publishes through `SqsEmitter` for both, and asserts on `MessageGroupId` / `MessageDeduplicationId` for the FIFO case.
+Most involved test in this plan. Adds a new `SqsEmitter::with_client` constructor on the production crate so tests can inject a pre-built `aws_sdk_sqs::Client` (with static credentials against LocalStack), then spawns LocalStack, creates both a FIFO and a standard queue via the AWS SDK directly, publishes through `SqsEmitter` for both, and asserts on `MessageGroupId` / `MessageDeduplicationId` for the FIFO case.
+
+**Why a new constructor?** Workspace lints set `unsafe_code = "deny"`, so the test cannot mutate process env via `unsafe { std::env::set_var }` to inject dummy AWS credentials. And both SQS tests share an integration-test binary, so even with an `#[allow]` they would race on the env var. The clean fix is to accept a pre-built client through `with_client`. Production `SqsEmitter::new` is unchanged and still uses `aws_config::from_env()`.
 
 **Files:**
+- Modify: `crates/hookbox-emitter-sqs/src/lib.rs` (add `with_client` constructor)
 - Modify: `crates/hookbox-emitter-sqs/Cargo.toml`
 - Create: `crates/hookbox-emitter-sqs/tests/round_trip.rs`
 
-- [ ] **Step 1: Add dev-dependencies to the sqs crate Cargo.toml**
+- [ ] **Step 1: Add the `with_client` constructor to `SqsEmitter`**
+
+In `crates/hookbox-emitter-sqs/src/lib.rs`, find the existing `impl SqsEmitter { pub async fn new(...) }` block and add a new constructor right after `new()`:
+
+```rust
+    /// Create a new [`SqsEmitter`] from a pre-built [`aws_sdk_sqs::Client`].
+    ///
+    /// This bypasses the env-based credentials provider chain that
+    /// [`SqsEmitter::new`] uses. Intended for tests that need to point at
+    /// `LocalStack` with static credentials, but also usable in production
+    /// when callers want to control SDK config (custom retries, custom HTTP
+    /// connector, alternate credentials provider) directly.
+    #[must_use]
+    pub fn with_client(client: aws_sdk_sqs::Client, queue_url: String, fifo: bool) -> Self {
+        Self {
+            client,
+            queue_url,
+            fifo,
+        }
+    }
+```
+
+The struct fields stay private; this is the only addition. No behaviour change to `new()`.
+
+- [ ] **Step 2: Add dev-dependencies to the sqs crate Cargo.toml**
 
 In `crates/hookbox-emitter-sqs/Cargo.toml`, append:
 
@@ -1152,9 +1222,12 @@ serde_json = { workspace = true }
 hookbox = { workspace = true }
 aws-sdk-sqs = { workspace = true }
 aws-config = { workspace = true }
+aws-credential-types = { workspace = true }
 ```
 
-- [ ] **Step 2: Create the round-trip test**
+You will also need to add `aws-credential-types = "1"` to the workspace `[workspace.dependencies]` table in the root `Cargo.toml` if it isn't already present. The credential types are re-exported by `aws-config`, but we use the type directly so the explicit dep is clearer.
+
+- [ ] **Step 3: Create the round-trip test**
 
 Create `crates/hookbox-emitter-sqs/tests/round_trip.rs`:
 
@@ -1163,16 +1236,19 @@ Create `crates/hookbox-emitter-sqs/tests/round_trip.rs`:
 //!
 //! Spawns an ephemeral LocalStack container with SQS enabled, creates a
 //! FIFO queue and a standard queue, publishes a `NormalizedEvent` through
-//! `SqsEmitter` for each, then receives the messages back and asserts on
-//! full struct equality plus FIFO routing attributes (`MessageGroupId`,
-//! `MessageDeduplicationId`).
+//! `SqsEmitter::with_client` for each (no env mutation — static credentials
+//! are passed directly through the SDK config), then receives the messages
+//! back and asserts on full struct equality plus FIFO routing attributes
+//! (`MessageGroupId`, `MessageDeduplicationId`).
 
 #![allow(clippy::unwrap_used, reason = "unwrap is acceptable in test code")]
 #![allow(missing_docs, reason = "test code does not require docs")]
 
 use std::collections::HashMap;
 
+use aws_credential_types::Credentials;
 use aws_sdk_sqs::Client as SqsClient;
+use aws_sdk_sqs::config::{BehaviorVersion, Region};
 use aws_sdk_sqs::types::{MessageSystemAttributeName, QueueAttributeName};
 use chrono::{TimeZone, Utc};
 use hookbox::state::ReceiptId;
@@ -1195,40 +1271,38 @@ fn make_test_event() -> NormalizedEvent {
     }
 }
 
-/// LocalStack accepts any non-empty creds, but the AWS SDK will refuse to
-/// build a request without them. Inject dummies into the test process env.
-fn set_dummy_aws_credentials() {
-    // Safety: each test process is single-threaded for these env vars.
-    // SAFETY: tests run on a single tokio runtime; setenv races aren't
-    // a concern within one process.
-    // SAFETY block kept short — these are integration tests, not lib code.
-    unsafe {
-        std::env::set_var("AWS_ACCESS_KEY_ID", "test");
-        std::env::set_var("AWS_SECRET_ACCESS_KEY", "test");
-        std::env::set_var("AWS_REGION", "us-east-1");
-    }
-}
-
-async fn sdk_client_for(endpoint_url: &str) -> SqsClient {
-    let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+/// Build an `aws_sdk_sqs::Client` pointed at the LocalStack endpoint with
+/// static credentials. No process-env mutation — `Credentials::new` constructs
+/// the credential pair in-process and the SDK config builder accepts it
+/// directly via `.credentials_provider(...)`.
+fn build_sdk_client(endpoint_url: &str) -> SqsClient {
+    let creds = Credentials::new(
+        "test",          // access key id
+        "test",          // secret access key
+        None,            // session token
+        None,            // expiry
+        "hookbox-tests", // provider name
+    );
+    let config = aws_sdk_sqs::Config::builder()
+        .behavior_version(BehaviorVersion::latest())
+        .region(Region::new("us-east-1"))
         .endpoint_url(endpoint_url)
-        .region(aws_config::Region::new("us-east-1"))
-        .load()
-        .await;
-    SqsClient::new(&config)
+        .credentials_provider(creds)
+        .build();
+    SqsClient::from_conf(config)
 }
 
 #[tokio::test]
 async fn sqs_emitter_fifo_round_trip() {
-    set_dummy_aws_credentials();
-
     let container = LocalStack::default().start().await.unwrap();
     let host = container.get_host().await.unwrap();
     let port = container.get_host_port_ipv4(4566).await.unwrap();
     let endpoint_url = format!("http://{host}:{port}");
 
-    // Use the SDK directly to create a FIFO queue.
-    let sdk = sdk_client_for(&endpoint_url).await;
+    // Build the SDK client once with static creds and reuse it for both queue
+    // creation and the SqsEmitter under test.
+    let sdk = build_sdk_client(&endpoint_url);
+
     let mut attrs: HashMap<QueueAttributeName, String> = HashMap::new();
     attrs.insert(QueueAttributeName::FifoQueue, "true".to_owned());
     attrs.insert(
@@ -1244,14 +1318,7 @@ async fn sqs_emitter_fifo_round_trip() {
         .unwrap();
     let queue_url = create_resp.queue_url.unwrap();
 
-    let emitter = SqsEmitter::new(
-        queue_url.clone(),
-        Some("us-east-1"),
-        true, // FIFO
-        Some(&endpoint_url),
-    )
-    .await
-    .unwrap();
+    let emitter = SqsEmitter::with_client(sdk.clone(), queue_url.clone(), true /* fifo */);
 
     let event = make_test_event();
     emitter.emit(&event).await.unwrap();
@@ -1286,14 +1353,12 @@ async fn sqs_emitter_fifo_round_trip() {
 
 #[tokio::test]
 async fn sqs_emitter_standard_round_trip() {
-    set_dummy_aws_credentials();
-
     let container = LocalStack::default().start().await.unwrap();
     let host = container.get_host().await.unwrap();
     let port = container.get_host_port_ipv4(4566).await.unwrap();
     let endpoint_url = format!("http://{host}:{port}");
 
-    let sdk = sdk_client_for(&endpoint_url).await;
+    let sdk = build_sdk_client(&endpoint_url);
     let create_resp = sdk
         .create_queue()
         .queue_name("hookbox-test")
@@ -1302,14 +1367,7 @@ async fn sqs_emitter_standard_round_trip() {
         .unwrap();
     let queue_url = create_resp.queue_url.unwrap();
 
-    let emitter = SqsEmitter::new(
-        queue_url.clone(),
-        Some("us-east-1"),
-        false, // standard
-        Some(&endpoint_url),
-    )
-    .await
-    .unwrap();
+    let emitter = SqsEmitter::with_client(sdk.clone(), queue_url.clone(), false /* standard */);
 
     let event = make_test_event();
     emitter.emit(&event).await.unwrap();
@@ -1331,46 +1389,51 @@ async fn sqs_emitter_standard_round_trip() {
 }
 ```
 
-Note on the `unsafe` env var block: Rust 1.85+ marks `std::env::set_var` as `unsafe`. Each test runs in its own process when using `cargo test` default test harness, so the env-var race the unsafe-marker warns about doesn't apply here. The block stays small and is justified by a `SAFETY:` comment.
+No `unsafe`, no env mutation, no race between the two tests. Both share the same `build_sdk_client` helper but each test owns its own LocalStack container and its own SDK client instance.
 
-- [ ] **Step 3: Run the tests**
+- [ ] **Step 4: Run the tests**
 
 Run: `cargo test -p hookbox-emitter-sqs --test round_trip -- --nocapture`
 Expected: both `sqs_emitter_fifo_round_trip` and `sqs_emitter_standard_round_trip` pass in 30-60 seconds (LocalStack is slow to boot but each test owns its own container).
 
 If LocalStack hangs on startup, check `docker logs <container-id>` for the LocalStack init banner; the container is healthy when you see `Ready.` in the logs. testcontainers waits for that automatically.
 
-- [ ] **Step 4: Run clippy on the crate**
+- [ ] **Step 5: Run clippy on the crate**
 
 Run: `cargo clippy -p hookbox-emitter-sqs --all-targets --all-features -- -D warnings`
-Expected: no warnings.
+Expected: no warnings. The new `with_client` constructor is `#[must_use]` to satisfy `clippy::must_use_candidate` under pedantic.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add crates/hookbox-emitter-sqs/Cargo.toml crates/hookbox-emitter-sqs/tests/round_trip.rs
+git add crates/hookbox-emitter-sqs/src/lib.rs crates/hookbox-emitter-sqs/Cargo.toml crates/hookbox-emitter-sqs/tests/round_trip.rs Cargo.toml
 git commit -m "test(hookbox-emitter-sqs): add round-trip integration tests
+
+Adds SqsEmitter::with_client constructor that accepts a pre-built
+aws_sdk_sqs::Client, so tests can inject static credentials for
+LocalStack without mutating process env (workspace lints set
+unsafe_code = deny, and the two SQS tests share an integration-test
+binary which would race on set_var).
 
 Two tests, both spawning their own LocalStack container:
 
 - sqs_emitter_fifo_round_trip creates a FIFO queue via the AWS SDK,
-  publishes through SqsEmitter with fifo=true, then receives the
-  message with MessageSystemAttributeNames requested and asserts
+  publishes through SqsEmitter::with_client(fifo=true), then receives
+  the message with MessageSystemAttributeNames requested and asserts
   MessageGroupId == provider_name and MessageDeduplicationId ==
   receipt_id. This proves the FIFO routing contract end-to-end.
 - sqs_emitter_standard_round_trip covers the fifo=false code path
   against a standard queue.
 
-Dummy AWS credentials are injected into the test process env because
-LocalStack accepts any non-empty creds but the SDK refuses to build a
-request without them."
+Production SqsEmitter::new is unchanged and still uses the env-based
+credentials provider chain via aws_config::from_env()."
 ```
 
 ---
 
-## Task 11: CI changes — exclude emitters from matrix `test` job, add `test-emitters` Linux-only job
+## Task 11: CI changes — exclude emitters from matrix `test` and `careful`, add `test-emitters` Linux-only job
 
-The existing `test` matrix job in `.github/workflows/ci.yml` runs on `[ubuntu-latest, macos-latest]`. The macOS leg has no Docker, so testcontainers tests must not run there. Solution: exclude the four emitter crates from the matrix job and run them in a new Linux-only job.
+The existing `test` matrix job in `.github/workflows/ci.yml` runs on `[ubuntu-latest, macos-latest]`. The macOS leg has no Docker, so testcontainers tests must not run there. The existing `careful` job runs on Linux but pulls in the whole workspace too, which would create a *second* CI surface for Docker-backed tests and double the Docker flake risk. Solution: exclude the four emitter crates from BOTH the matrix `test` job and the `careful` job, and run them on exactly one new Linux-only job.
 
 **Files:**
 - Modify: `.github/workflows/ci.yml`
@@ -1391,7 +1454,23 @@ Replace with:
         run: cargo nextest run --all-features --profile ci --no-tests=warn --workspace --exclude hookbox-integration-tests --exclude hookbox-emitter-kafka --exclude hookbox-emitter-nats --exclude hookbox-emitter-sqs --exclude hookbox-emitter-redis
 ```
 
-- [ ] **Step 2: Add the new `test-emitters` job after the existing `test-integration` job**
+- [ ] **Step 2: Modify the `careful` job to also exclude the four emitter crates**
+
+In `.github/workflows/ci.yml`, find the `careful` job (around line 111). Its current `cargo careful` invocation is:
+
+```yaml
+      - run: cargo +nightly careful test --workspace --all-features --exclude hookbox-integration-tests
+```
+
+Replace with:
+
+```yaml
+      - run: cargo +nightly careful test --workspace --all-features --exclude hookbox-integration-tests --exclude hookbox-emitter-kafka --exclude hookbox-emitter-nats --exclude hookbox-emitter-sqs --exclude hookbox-emitter-redis
+```
+
+This keeps `careful` covering the rest of the workspace under nightly's stricter sanitiser checks while routing all Docker-backed emitter tests through the dedicated `test-emitters` job (added in Step 3 below). Without this exclusion, every PR would spin up Docker containers in two parallel jobs and double the chance of a flaky CI run.
+
+- [ ] **Step 3: Add the new `test-emitters` job after the existing `test-integration` job**
 
 In `.github/workflows/ci.yml`, locate the end of the `test-integration` job (around line 89). After its final step, add a new top-level job:
 
@@ -1411,17 +1490,17 @@ In `.github/workflows/ci.yml`, locate the end of the `test-integration` job (aro
 
 The job runs `cargo test` (not nextest) for the four emitter crates. Each crate has exactly one test file (`tests/round_trip.rs`), and Docker is available on `ubuntu-latest` GitHub Actions runners by default (no setup-docker step needed).
 
-- [ ] **Step 3: Validate the YAML locally**
+- [ ] **Step 4: Validate the YAML locally**
 
 Run: `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"`
 Expected: no error output. (Catches indentation typos before pushing.)
 
-- [ ] **Step 4: Verify the existing matrix test still passes locally with the new exclude flags**
+- [ ] **Step 5: Verify the existing matrix test still passes locally with the new exclude flags**
 
 Run: `cargo nextest run --all-features --profile ci --no-tests=warn --workspace --exclude hookbox-integration-tests --exclude hookbox-emitter-kafka --exclude hookbox-emitter-nats --exclude hookbox-emitter-sqs --exclude hookbox-emitter-redis`
 Expected: all non-emitter tests pass. (If `--profile ci` errors with "profile not found", check `.config/nextest.toml` — if there's no `ci` profile defined, drop the `--profile ci` flag; the workflow should still work.)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add .github/workflows/ci.yml
@@ -1429,11 +1508,14 @@ git commit -m "ci: split emitter tests into a Linux-only test-emitters job
 
 GitHub Actions macOS runners do not have Docker, so testcontainers
 tests cannot run on the macOS leg of the existing matrix test job.
-Excludes the four emitter crates from the matrix job and adds a new
-Linux-only test-emitters job that runs the round-trip integration
-tests for hookbox-emitter-{kafka,nats,sqs,redis}. The new job runs
-in parallel with the existing matrix test job, so wall-clock PR CI
-time grows by ~0; worker minutes grow by ~3-5."
+Excludes the four emitter crates from the matrix job AND from the
+careful (nightly sanitiser) job — both would otherwise create a
+second Docker-backed CI surface and double Docker flake risk.
+Adds a new Linux-only test-emitters job that runs the round-trip
+integration tests for hookbox-emitter-{kafka,nats,sqs,redis} on
+exactly one CI surface. The new job runs in parallel with the
+existing matrix test job, so wall-clock PR CI time grows by ~0;
+worker minutes grow by ~3-5."
 ```
 
 ---
