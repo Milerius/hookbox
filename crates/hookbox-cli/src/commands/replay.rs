@@ -59,7 +59,8 @@ pub enum ReplayCommand {
 ///
 /// # Errors
 ///
-/// Returns an error if the database connection, migration, or query fails.
+/// Returns an error if the database connection or query fails; the `Failed`
+/// subcommand additionally errors if migration fails.
 pub async fn run(command: ReplayCommand) -> anyhow::Result<()> {
     match command {
         ReplayCommand::Id {
@@ -119,7 +120,7 @@ pub async fn run(command: ReplayCommand) -> anyhow::Result<()> {
                 tracing::info!(
                     receipt_id = %receipt_id,
                     replayed = count,
-                    "replayed receipt across N emitters"
+                    "receipt replayed across all emitters"
                 );
             }
         }
