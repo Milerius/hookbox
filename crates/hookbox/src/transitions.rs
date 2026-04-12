@@ -134,6 +134,11 @@ pub fn is_findable_by_worker(emit_count: i32, state: ProcessingState, max_attemp
 #[must_use]
 pub fn compute_backoff(attempt: i32, policy: &RetryPolicy) -> Duration {
     debug_assert!(attempt > 0, "attempt must be >= 1; got {attempt}");
+    debug_assert!(
+        policy.jitter >= 0.0 && policy.jitter <= 1.0,
+        "jitter must be in [0.0, 1.0]; got {}",
+        policy.jitter
+    );
     if attempt <= 0 {
         return policy.initial_backoff;
     }
@@ -148,6 +153,10 @@ pub fn compute_backoff(attempt: i32, policy: &RetryPolicy) -> Duration {
     } else {
         1.0
     };
+    // Release-mode safety net: clamp to non-negative so Duration::from_secs_f64
+    // cannot panic if the policy was misconfigured (the debug_assert above
+    // catches this in dev/test).
+    let jitter_factor = jitter_factor.max(0.0);
     let jittered = base_secs * jitter_factor;
 
     Duration::from_secs_f64(jittered)
@@ -217,6 +226,26 @@ mod backoff_tests {
             let lo = Duration::from_secs_f64(base_secs * 0.8);
             let hi = Duration::from_secs_f64(base_secs * 1.2);
             assert!(d >= lo && d <= hi, "jitter out of bounds: {d:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_jitter_does_not_panic_in_release() {
+        // jitter > 1.0 is a programmer error caught by debug_assert in dev,
+        // but must not panic in release. The release fallback clamps the
+        // jitter_factor to non-negative.
+        if !cfg!(debug_assertions) {
+            let p = RetryPolicy {
+                max_attempts: 5,
+                initial_backoff: Duration::from_secs(30),
+                max_backoff: Duration::from_secs(3600),
+                backoff_multiplier: 2.0,
+                jitter: 2.0, // out of contract
+            };
+            // 1000 iterations: with the clamp, no panic regardless of fastrand
+            for _ in 0..1000 {
+                let _ = compute_backoff(1, &p);
+            }
         }
     }
 }
