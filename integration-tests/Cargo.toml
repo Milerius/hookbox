@@ -27,5 +27,6 @@ tower.workspace = true
 uuid.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
+futures.workspace = true
 hookbox-cli.workspace = true
 tracing-subscriber.workspace = true
