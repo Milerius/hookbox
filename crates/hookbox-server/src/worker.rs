@@ -123,7 +123,7 @@ impl RetryWorker {
 /// One `EmitterWorker` runs per configured emitter. It polls for pending
 /// deliveries, attempts dispatch, and updates delivery state on success or
 /// failure. Expired in-flight leases are reclaimed before each poll.
-pub struct EmitterWorker<S: DeliveryStorage> {
+pub struct EmitterWorker<S: DeliveryStorage + Send + Sync + 'static> {
     /// Logical name of the emitter (matches the TOML config key).
     pub name: String,
     /// The downstream emitter to call for each delivery.
@@ -172,7 +172,7 @@ pub enum HealthStatus {
     Unhealthy,
 }
 
-impl<S: DeliveryStorage + 'static> EmitterWorker<S> {
+impl<S: DeliveryStorage + Send + Sync + 'static> EmitterWorker<S> {
     /// Spawn the worker loop and return a handle.
     ///
     /// The worker watches `shutdown_rx` and exits after finishing its
@@ -188,7 +188,11 @@ impl<S: DeliveryStorage + 'static> EmitterWorker<S> {
                 }
 
                 // Reclaim orphaned in-flight rows before claiming new work.
-                match self.storage.reclaim_expired(&self.name, self.lease_duration).await {
+                match self
+                    .storage
+                    .reclaim_expired(&self.name, self.lease_duration)
+                    .await
+                {
                     Ok(n) if n > 0 => {
                         tracing::warn!(
                             emitter = %self.name,
@@ -202,9 +206,16 @@ impl<S: DeliveryStorage + 'static> EmitterWorker<S> {
                     }
                 }
 
-                #[expect(clippy::cast_possible_wrap, reason = "concurrency is always small in practice")]
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "concurrency is always small in practice"
+                )]
                 let concurrency_i64 = self.concurrency as i64;
-                let rows = match self.storage.claim_pending(&self.name, concurrency_i64).await {
+                let rows = match self
+                    .storage
+                    .claim_pending(&self.name, concurrency_i64)
+                    .await
+                {
                     Ok(r) => r,
                     Err(e) => {
                         tracing::error!(emitter = %self.name, err = %e, "claim_pending failed");
@@ -218,11 +229,23 @@ impl<S: DeliveryStorage + 'static> EmitterWorker<S> {
                 }
 
                 futures::future::join_all(
-                    rows.into_iter().map(|(delivery, receipt)| self.dispatch_one(delivery, receipt)),
+                    rows.into_iter()
+                        .map(|(delivery, receipt)| self.dispatch_one(delivery, receipt)),
                 )
                 .await;
 
                 self.refresh_gauges().await;
+
+                // Check shutdown synchronously after completing the batch.
+                // `changed()` only fires on *transitions*, so if the signal
+                // arrived while the batch was running it may already be
+                // "seen" by the time the loop returns to `select!`.
+                // `borrow_and_update` marks the value seen AND reads it,
+                // so the next `changed()` call correctly waits for the next
+                // transition rather than immediately resolving.
+                if *shutdown_rx.borrow_and_update() {
+                    break;
+                }
             }
         })
     }
@@ -257,9 +280,17 @@ impl<S: DeliveryStorage + 'static> EmitterWorker<S> {
                     }
                 } else {
                     let backoff = compute_backoff(next_attempt, &self.policy);
-                    let next_at = Utc::now()
-                        + chrono::Duration::from_std(backoff)
-                            .unwrap_or(chrono::Duration::seconds(30));
+                    let next_delta = chrono::Duration::from_std(backoff).unwrap_or_else(|_| {
+                        tracing::warn!(
+                            emitter = %self.name,
+                            attempt = next_attempt,
+                            ?backoff,
+                            "compute_backoff returned a duration that exceeds \
+                             chrono::Duration range; saturating to 1 day"
+                        );
+                        chrono::Duration::days(1)
+                    });
+                    let next_at = Utc::now() + next_delta;
                     if let Err(e) = self
                         .storage
                         .mark_failed(
@@ -285,6 +316,17 @@ impl<S: DeliveryStorage + 'static> EmitterWorker<S> {
     /// - `≥ 10` consecutive failures → `Unhealthy`
     /// - `last_failure_at` within 60 s → `Degraded`
     /// - otherwise → `Healthy`
+    ///
+    /// # Concurrency note
+    ///
+    /// This is intentionally a non-atomic load-clone-store on the [`ArcSwap`].
+    /// Under `concurrency > 1`, two concurrent calls from [`Self::dispatch_one`]
+    /// futures (driven by `join_all`) can race: both read the same snapshot,
+    /// both compute `consecutive_failures + 1`, and one write is silently
+    /// dropped. The counter is therefore **approximate** — it drives
+    /// operator-facing health status, not correctness invariants. Introducing
+    /// a `Mutex` or CAS loop would add coordination cost that is not worth the
+    /// precision for monitoring data.
     pub fn update_health(&self, success: bool) {
         let current = self.health.load();
         let mut next = (**current).clone();
@@ -479,11 +521,7 @@ mod tests {
             Ok(())
         }
 
-        async fn mark_dead_lettered(
-            &self,
-            id: DeliveryId,
-            error: &str,
-        ) -> Result<(), Self::Error> {
+        async fn mark_dead_lettered(&self, id: DeliveryId, error: &str) -> Result<(), Self::Error> {
             let mut d = self.deliveries.lock().unwrap();
             if let Some(row) = d.get_mut(&id.0) {
                 row.state = DeliveryState::DeadLettered;
@@ -614,7 +652,10 @@ mod tests {
             DeliveryState::Failed,
             "failure below max must set state=failed"
         );
-        assert_eq!(row.attempt_count, 1, "attempt_count must be incremented to 1");
+        assert_eq!(
+            row.attempt_count, 1,
+            "attempt_count must be incremented to 1"
+        );
 
         let earliest_next = Utc::now() + chrono::Duration::seconds(25);
         let latest_next = Utc::now() + chrono::Duration::seconds(35);
