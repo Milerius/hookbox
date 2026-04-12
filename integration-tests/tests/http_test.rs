@@ -94,6 +94,7 @@ async fn full_http_flow() {
         pool: Some(pool),
         admin_token: None,
         prometheus,
+        emitter_health: std::collections::BTreeMap::new(),
     });
 
     let app = build_router(state, 1_048_576);
@@ -211,6 +212,7 @@ async fn admin_auth_token_enforcement() {
         pool: Some(pool),
         admin_token: Some("secret-token".to_owned()),
         prometheus,
+        emitter_health: std::collections::BTreeMap::new(),
     });
 
     let app = build_router(state, 1_048_576);
@@ -277,6 +279,7 @@ async fn admin_auth_non_ascii_header_rejected() {
         pool: Some(pool),
         admin_token: Some("secret".to_owned()),
         prometheus,
+        emitter_health: std::collections::BTreeMap::new(),
     });
 
     let app = build_router(state, 1_048_576);
@@ -330,6 +333,7 @@ async fn ingest_verification_failed_returns_401() {
         pool: Some(pool),
         admin_token: None,
         prometheus,
+        emitter_health: std::collections::BTreeMap::new(),
     });
 
     let app = build_router(state, 1_048_576);
@@ -378,6 +382,7 @@ async fn metrics_no_recorder_returns_fallback_message() {
         pool: Some(pool),
         admin_token: None,
         prometheus: None,
+        emitter_health: std::collections::BTreeMap::new(),
     });
 
     let app = build_router(state, 1_048_576);
@@ -423,6 +428,7 @@ async fn readyz_no_pool_returns_503() {
         pool: None,
         admin_token: None,
         prometheus: None,
+        emitter_health: std::collections::BTreeMap::new(),
     });
 
     let app = build_router(state, 1_048_576);

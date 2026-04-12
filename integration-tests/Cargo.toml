@@ -9,6 +9,7 @@ publish = false
 workspace = true
 
 [dependencies]
+arc-swap.workspace = true
 async-trait.workspace = true
 hookbox.workspace = true
 hookbox-postgres.workspace = true

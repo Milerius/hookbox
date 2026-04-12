@@ -618,9 +618,14 @@ async fn replay_receipt_returns_200() {
         .await
         .unwrap();
 
-    assert_eq!(replay_resp.status(), StatusCode::OK);
+    // New contract: returns 202 with delivery_ids array (empty because no
+    // emitters are configured in the test pipeline).
+    assert_eq!(replay_resp.status(), StatusCode::ACCEPTED);
     let replay_json = body_json(replay_resp).await;
-    assert_eq!(replay_json["status"], "replayed");
+    assert!(
+        replay_json["delivery_ids"].is_array(),
+        "replay_receipt must return delivery_ids array"
+    );
 }
 
 #[tokio::test]
@@ -939,8 +944,8 @@ async fn ingest_verification_failed_returns_401() {
 
 // ── Replay emit failure (receiver dropped) ──────────────────────────
 
-/// Inline emit was removed in the Phase 6 fan-out refactor; replay now only
-/// transitions state, so it always succeeds when the receipt exists.
+/// Replay now creates new delivery rows via `insert_replay` and returns 202
+/// with `delivery_ids`; no inline emit and no `update_state` call.
 #[tokio::test]
 async fn replay_succeeds_without_inline_emit() {
     let app = build_test_app(None);
@@ -976,9 +981,13 @@ async fn replay_succeeds_without_inline_emit() {
         .await
         .unwrap();
 
-    assert_eq!(replay_resp.status(), StatusCode::OK);
+    // Replay returns 202 Accepted with a delivery_ids array.
+    assert_eq!(replay_resp.status(), StatusCode::ACCEPTED);
     let json = body_json(replay_resp).await;
-    assert_eq!(json["status"], "replayed");
+    assert!(
+        json["delivery_ids"].is_array(),
+        "replay must return delivery_ids array"
+    );
 }
 
 // ── Admin auth: non-UTF-8 authorization header ──────────────────────
@@ -1115,8 +1124,11 @@ async fn replay_receipt_storage_error_returns_500() {
     assert!(json["error"].as_str().unwrap().contains("simulated"));
 }
 
+/// `list_dlq` now calls `DeliveryStorage::list_dlq` (noop in FailingStorage),
+/// not `Storage::query`.  The FailingStorage noop returns Ok([]), so the
+/// endpoint returns 200 with an empty array rather than 500.
 #[tokio::test]
-async fn list_dlq_storage_error_returns_500() {
+async fn list_dlq_with_failing_storage_returns_200_empty() {
     let app = build_failing_app();
 
     let response = app
@@ -1129,9 +1141,10 @@ async fn list_dlq_storage_error_returns_500() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert!(json["error"].as_str().unwrap().contains("simulated"));
+    assert!(json.is_array());
+    assert_eq!(json.as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -1254,8 +1267,10 @@ impl Storage for UpdateFailStorage {
 
 impl_noop_delivery_storage!(UpdateFailStorage);
 
+/// `replay_receipt` no longer calls `update_state`; `UpdateFailStorage`
+/// succeeds for `get` and `insert_replay` (noop), so replay returns 202.
 #[tokio::test]
-async fn replay_update_state_failure_returns_500() {
+async fn replay_with_update_fail_storage_returns_202() {
     let pipeline = HookboxPipeline::<UpdateFailStorage, InMemoryRecentDedupe>::builder()
         .storage(UpdateFailStorage::new())
         .dedupe(InMemoryRecentDedupe::new(1000))
@@ -1288,13 +1303,12 @@ async fn replay_update_state_failure_returns_500() {
         .await
         .unwrap();
 
-    // Ingest should succeed (store works, but update_state fails for the
-    // Stored→Emitted transition — the emit still happens).
+    // Ingest succeeds despite update_state failing (not called in ingest path).
     assert_eq!(ingest_resp.status(), StatusCode::OK);
     let ingest_json = body_json(ingest_resp).await;
     let receipt_id = ingest_json["receipt_id"].as_str().unwrap().to_owned();
 
-    // Replay should fail because update_state is broken.
+    // Replay now uses insert_replay (noop), not update_state — returns 202.
     let replay_resp = app
         .oneshot(
             Request::builder()
@@ -1306,12 +1320,7 @@ async fn replay_update_state_failure_returns_500() {
         .await
         .unwrap();
 
-    assert_eq!(replay_resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(replay_resp.status(), StatusCode::ACCEPTED);
     let json = body_json(replay_resp).await;
-    assert!(
-        json["error"]
-            .as_str()
-            .unwrap()
-            .contains("state update failed")
-    );
+    assert!(json["delivery_ids"].is_array());
 }

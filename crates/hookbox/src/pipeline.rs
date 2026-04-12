@@ -66,6 +66,12 @@ where
         &self.storage
     }
 
+    /// Returns the configured emitter names for this pipeline.
+    #[must_use]
+    pub fn emitter_names(&self) -> &[String] {
+        &self.emitter_names
+    }
+
     /// Ingest a single webhook event through the four-stage pipeline.
     ///
     /// Returns [`IngestResult::Accepted`] only after durable storage succeeds

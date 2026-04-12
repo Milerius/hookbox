@@ -76,6 +76,15 @@ where
             post(routes::admin::replay_receipt::<S, D>),
         )
         .route("/api/dlq", get(routes::admin::list_dlq::<S, D>))
+        .route(
+            "/api/deliveries/{id}",
+            get(routes::admin::get_delivery::<S, D>),
+        )
+        .route(
+            "/api/deliveries/{id}/replay",
+            post(routes::admin::replay_delivery::<S, D>),
+        )
+        .route("/api/emitters", get(routes::admin::list_emitters::<S, D>))
         .route("/metrics", get(routes::health::metrics::<S, D>))
         .with_state(state)
         .layer(DefaultBodyLimit::max(body_limit))
