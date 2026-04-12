@@ -1587,7 +1587,242 @@ so the legacy infrastructure is no longer needed:
 
 ---
 
-## Task 13: Final verification — full workspace test pass + plan checkpoint
+## Task 13: Strengthen Bolero `NormalizedEvent` JSON round-trip property test
+
+Now that `NormalizedEvent` derives `PartialEq` (Task 1), the existing property test in `hookbox-verify` can be tightened from per-field assertions to full struct equality. Also adds a `serde_json::Value` envelope round-trip to catch any custom serializer drift.
+
+**Files:**
+- Modify: `crates/hookbox-verify/src/emitter_props.rs:27-39` (existing `normalized_event_always_serializes_to_json` test)
+
+- [ ] **Step 1: Replace per-field assertions with full equality**
+
+In `crates/hookbox-verify/src/emitter_props.rs`, replace the body of `normalized_event_always_serializes_to_json` with:
+
+```rust
+#[test]
+fn normalized_event_always_serializes_to_json() {
+    bolero::check!()
+        .with_type::<(String, String)>()
+        .for_each(|(provider, hash)| {
+            let event = make_event(provider, hash);
+            let json = serde_json::to_vec(&event).expect("serialize must succeed");
+            let round_tripped: NormalizedEvent =
+                serde_json::from_slice(&json).expect("deserialize must succeed");
+            assert_eq!(event, round_tripped);
+        });
+}
+```
+
+- [ ] **Step 2: Add a `serde_json::Value` envelope round-trip test**
+
+Append to the same `mod tests` block:
+
+```rust
+#[test]
+fn normalized_event_round_trips_through_value() {
+    bolero::check!()
+        .with_type::<(String, String)>()
+        .for_each(|(provider, hash)| {
+            let event = make_event(provider, hash);
+            let value = serde_json::to_value(&event).expect("to_value must succeed");
+            let round_tripped: NormalizedEvent =
+                serde_json::from_value(value).expect("from_value must succeed");
+            assert_eq!(event, round_tripped);
+        });
+}
+```
+
+- [ ] **Step 3: Run the property tests**
+
+Run: `cargo test -p hookbox-verify --all-features`
+Expected: both `normalized_event_*` tests pass. Bolero will run them in the standard `cargo test` harness with the default iteration count.
+
+- [ ] **Step 4: Run with extended bolero engine to exercise the property**
+
+Run: `BOLERO_RANDOM_ITERATIONS=10000 cargo test -p hookbox-verify --all-features normalized_event`
+Expected: 10k iterations pass for each test. If any fail, the failure case should reproduce deterministically — fix the deserializer or revert the assertion change.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/hookbox-verify/src/emitter_props.rs
+git commit -m "test(verify): tighten NormalizedEvent round-trip property tests
+
+Now that NormalizedEvent derives PartialEq (this PR), the existing
+serde_json::String round-trip test can assert full struct equality
+instead of three hand-picked fields, and a new serde_json::Value
+envelope round-trip catches any drift in the Value-shaped path."
+```
+
+---
+
+## Task 14: Verify Kani proofs still pass; document N/A for new state
+
+The Redis emitter introduces no new `ProcessingState` variants and no new state-machine transitions — the existing `kani_proofs.rs` covers the `Received → … → Emitted/EmitFailed/DeadLettered` transitions exhaustively, and the Redis backend reuses `EmitError::{Downstream, Timeout}` without changing the control flow. This task confirms the existing proofs still pass and documents why no new proof was added.
+
+**Files:**
+- Verify: `crates/hookbox-verify/src/kani_proofs.rs` (no edits expected)
+
+- [ ] **Step 1: Run the Kani proofs**
+
+Run: `cargo kani -p hookbox-verify`
+Expected: all existing proofs pass. If Kani is not installed locally, skip this step and rely on the nightly Kani CI job — but verify that job is green on the branch before merging.
+
+- [ ] **Step 2: Document the rationale in the spec's "Verification" section**
+
+In `docs/superpowers/specs/2026-04-12-redis-emitter-and-emitter-test-coverage-design.md`, append a short "Kani scope" note under the existing testing strategy section:
+
+```markdown
+**Kani scope for this PR:** No new proofs added. The Redis emitter reuses the
+existing `ProcessingState` machine and `EmitError::{Downstream, Timeout}` enum
+without introducing new variants or transitions. The existing
+`processing_state_variants_are_distinct` proof in `kani_proofs.rs` continues
+to cover the full state surface.
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add docs/superpowers/specs/2026-04-12-redis-emitter-and-emitter-test-coverage-design.md
+git commit -m "docs(spec): note Kani scope for Redis emitter PR (no new proofs)"
+```
+
+---
+
+## Task 15: Add BDD scenario asserting full `NormalizedEvent` equality through the pipeline
+
+The existing `emitters.feature` scenarios assert provider name only, because before this PR `NormalizedEvent` did not derive `PartialEq`. With the Task 1 derive in place, the pipeline can be exercised end-to-end with a byte-exact equality assertion on the emitted event.
+
+**Files:**
+- Modify: `crates/hookbox/tests/features/emitters.feature` (add one new scenario)
+- Modify: `crates/hookbox/tests/bdd.rs` (add the new step + capture-emitted-event helper if not present)
+
+- [ ] **Step 1: Add the new scenario to `emitters.feature`**
+
+Append to `crates/hookbox/tests/features/emitters.feature`:
+
+```gherkin
+  Scenario: Emitted event preserves the full normalized payload
+    Given a pipeline with a passing verifier for "test"
+    When I ingest a webhook from "test" with body '{"event":"equality_test","amount":42}'
+    Then the result should be "accepted"
+    And the emitted event payload_hash should be deterministic for body '{"event":"equality_test","amount":42}'
+```
+
+- [ ] **Step 2: Add the corresponding `then` step to `bdd.rs`**
+
+In `crates/hookbox/tests/bdd.rs`, add a new step handler. Locate the existing `then` block that captures emitted events (search for `an event should be emitted with provider`) and add this sibling:
+
+```rust
+#[then(regex = r#"^the emitted event payload_hash should be deterministic for body '(.+)'$"#)]
+async fn emitted_event_payload_hash_deterministic(world: &mut HookboxWorld, body: String) {
+    let emitted = world
+        .emitted_events
+        .lock()
+        .unwrap()
+        .last()
+        .cloned()
+        .expect("at least one event should have been emitted");
+
+    let expected_hash = hookbox::hash::sha256_hex(body.as_bytes());
+    assert_eq!(emitted.payload_hash, expected_hash);
+
+    // With NormalizedEvent: PartialEq, we can also clone-and-compare to confirm
+    // the struct is internally consistent (no field has been mutated post-emit).
+    let copy = emitted.clone();
+    assert_eq!(emitted, copy);
+}
+```
+
+If the world type does not yet expose `emitted_events` as a `Mutex<Vec<NormalizedEvent>>`, check the existing `an event should be emitted with provider` step — it almost certainly already wires this up. Reuse that capture; do not add a parallel one.
+
+- [ ] **Step 3: Run the BDD suite**
+
+Run: `cargo test -p hookbox --test bdd`
+Expected: the new scenario passes alongside the existing four. If the `sha256_hex` helper does not exist under that exact path, search the `hookbox` crate for the existing payload-hashing function and use it instead — the production hash function is the source of truth.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add crates/hookbox/tests/features/emitters.feature crates/hookbox/tests/bdd.rs
+git commit -m "test(bdd): assert payload_hash determinism on emitted event
+
+Adds a scenario that exercises the new NormalizedEvent: PartialEq derive
+end-to-end through the pipeline by hashing the ingest body and comparing
+against the emitted event's payload_hash field."
+```
+
+---
+
+## Task 16: Documentation updates — move Redis to Completed, mention round-trip coverage
+
+**Files:**
+- Modify: `docs/ROADMAP.md`
+- Modify: `README.md` (only if it has an emitter list — verify first)
+
+- [ ] **Step 1: Update `docs/ROADMAP.md`**
+
+In `docs/ROADMAP.md`:
+
+1. Under `## Completed`, append:
+
+```markdown
+- [x] **PR #14 — Redis Streams emitter + emitter test coverage**: `hookbox-emitter-redis` (XADD, optional MAXLEN, configurable timeout), round-trip integration tests for all four emitters (Kafka, NATS, SQS, Redis) using `testcontainers-rs`, dedicated Linux-only `test-emitters` CI job, legacy `emitter_smoke_test.rs` deleted
+```
+
+2. Under `## Next: Immediate candidates`, delete the line:
+
+```markdown
+- **Redis Streams emitter** (V2 emitter — most requested next)
+```
+
+3. Under `## Next: Immediate candidates`, replace the line:
+
+```markdown
+- **Coverage gaps**: emitter adapter crates are at 0% (can't unit-test without mocks or embedded brokers). Consider testcontainers or mock traits.
+```
+
+with:
+
+```markdown
+- **Coverage gaps**: emitter crates now have round-trip integration tests via testcontainers (PR #14). Next gap: the `hookbox-server` `serve` command's emitter-selection arms (Kafka/NATS/SQS/Redis) are still untested in isolation.
+```
+
+4. Under `### 2. ~~Emitter adapters V1~~ (done)`, change:
+
+```markdown
+**V2 (next batch):**
+- `hookbox-emitter-redis` — Redis Streams via XADD (most likely next)
+```
+
+to:
+
+```markdown
+**V2 (done):**
+- ~~`hookbox-emitter-redis`~~ — Redis Streams via XADD ✅
+```
+
+- [ ] **Step 2: Check `README.md` for an emitter list**
+
+Run: `grep -n -i 'kafka\|nats\|emitter' README.md`
+
+If a backend list exists (e.g. "Supported emitters: Kafka, NATS, SQS"), add Redis. If no such list exists, skip — README does not need to be updated.
+
+- [ ] **Step 3: Run a sanity check on the docs**
+
+Run: `cargo doc --no-deps --all-features --workspace 2>&1 | tail -20`
+Expected: clean (no broken intra-doc links from the new Redis crate). If there are warnings, fix the doc comments before committing.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add docs/ROADMAP.md README.md
+git commit -m "docs: mark Redis emitter + round-trip coverage as completed in roadmap"
+```
+
+---
+
+## Task 17: Final verification — full workspace test pass + plan checkpoint
 
 A final guarded run to confirm the whole repo is healthy after all the changes, before opening the PR.
 
@@ -1626,7 +1861,7 @@ Expected: clean. The new `redis`, `testcontainers`, and `testcontainers-modules`
 - [ ] **Step 7: Check the branch state**
 
 Run: `git log --oneline main..HEAD`
-Expected: 12 commits (Task 1 through Task 12) plus the two earlier spec commits.
+Expected: 16 commits (Task 1 through Task 16) plus the two earlier spec commits.
 
 - [ ] **Step 8: Open the PR**
 
@@ -1675,5 +1910,5 @@ Mark all plan tasks complete in the implementation tracker. The branch is now re
 - **Docker is required to run the emitter tests locally.** If you don't have Docker, exclude the four emitter crates from your local `cargo test` invocation and rely on CI: `cargo test --workspace --exclude hookbox-emitter-kafka --exclude hookbox-emitter-nats --exclude hookbox-emitter-sqs --exclude hookbox-emitter-redis`.
 - **Container startup is the dominant cost** in test runtime. Kafka is the slowest (~30s cold), LocalStack is ~15s, NATS and Redis are ~2-5s each. If a test flakes on a slow CI runner, the fix is almost always to bump the per-test timeout, not to retry the test.
 - **All test files duplicate the `make_test_event()` helper** instead of pulling it from a shared dev-dep crate. This was a deliberate choice to keep the workspace lean — the helper is 10 lines and any drift would surface immediately as a test failure.
-- **The `unsafe` env-var block in the SQS test** is required because `std::env::set_var` is `unsafe` in Rust 1.85+. Each test runs in its own process via the default test harness, so the env-var race the unsafe-marker warns about doesn't apply here. Don't lift this pattern into library code without thinking carefully.
+- **The SQS test injects credentials via `SqsEmitter::with_client`**, not via `std::env::set_var`. This avoids the `unsafe_code = "deny"` workspace lint and the cross-test env-var race that would otherwise hit when both FIFO and standard tests share an integration-test binary. The static `Credentials::new("test", "test", None, None, "hookbox-tests")` is safe because it only ever talks to LocalStack.
 - **Production code unchanged for Kafka, NATS, SQS.** The only production-code change in this whole plan is `NormalizedEvent` deriving `PartialEq` (required by the round-trip assertions) and the new `RedisEmitter` itself.
