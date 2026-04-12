@@ -97,7 +97,9 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     // Build the downstream emitter from config. The factory returns the
     // production emitters as `Ready`; the development `channel` variant
     // additionally yields a receiver that this binary drains for logging.
-    let emitter: Arc<dyn Emitter + Send + Sync> = match build_emitter(&config.emitter).await? {
+    // TODO(fan-out): replace with build_workers once serve.rs is rewired.
+    let legacy_emitter_cfg = config.emitter.clone().unwrap_or_default();
+    let emitter: Arc<dyn Emitter + Send + Sync> = match build_emitter(&legacy_emitter_cfg).await? {
         BuiltEmitter::Ready(emitter) => emitter,
         BuiltEmitter::Channel { emitter, rx } => {
             tokio::spawn(drain_emitter(rx));
@@ -111,9 +113,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     // Build pipeline and register provider verifiers from config.
     // Emitter names are not yet wired here — Phase 7 (EmitterWorker) will
     // plumb them from config.  For now the pipeline creates no delivery rows.
-    let mut builder = HookboxPipeline::builder()
-        .storage(storage)
-        .dedupe(dedupe);
+    let mut builder = HookboxPipeline::builder().storage(storage).dedupe(dedupe);
 
     for (name, provider) in &config.providers {
         match provider.verifier_type.as_str() {

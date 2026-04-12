@@ -2,7 +2,19 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+/// Errors that can occur during configuration parsing or normalization.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// The configuration is structurally valid TOML but semantically invalid
+    /// (e.g. conflicting emitter sections, duplicate names, out-of-range values).
+    #[error("invalid configuration: {0}")]
+    Validation(String),
+    /// The TOML source could not be deserialized into [`HookboxConfig`].
+    #[error("failed to parse TOML: {0}")]
+    Parse(#[from] toml::de::Error),
+}
 
 /// Top-level configuration for the hookbox server.
 #[derive(Debug, Deserialize)]
@@ -24,9 +36,12 @@ pub struct HookboxConfig {
     /// Retry worker settings.
     #[serde(default)]
     pub retry: RetryConfig,
-    /// Emitter backend settings.
+    /// Legacy single emitter backend settings. Deprecated: use `[[emitters]]` instead.
     #[serde(default)]
-    pub emitter: EmitterConfig,
+    pub emitter: Option<EmitterConfig>,
+    /// Canonical multi-emitter list. Preferred over the legacy `[emitter]` section.
+    #[serde(default)]
+    pub emitters: Vec<EmitterEntry>,
 }
 
 /// HTTP server bind and limit settings.
@@ -170,7 +185,7 @@ const fn default_max_attempts() -> i32 {
 }
 
 /// Emitter backend configuration.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmitterConfig {
     /// Which emitter backend to use: `"channel"` (default), `"kafka"`, `"nats"`, `"sqs"`, or `"redis"`.
@@ -203,7 +218,7 @@ fn default_emitter_type() -> String {
 }
 
 /// Kafka emitter configuration.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KafkaEmitterConfig {
     /// Comma-separated list of Kafka broker addresses (e.g. `"localhost:9092"`).
@@ -234,7 +249,7 @@ const fn default_kafka_timeout() -> u64 {
 }
 
 /// NATS emitter configuration.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NatsEmitterConfig {
     /// NATS server URL (e.g. `"nats://localhost:4222"`).
@@ -244,7 +259,7 @@ pub struct NatsEmitterConfig {
 }
 
 /// SQS emitter configuration.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SqsEmitterConfig {
     /// Full SQS queue URL.
@@ -259,7 +274,7 @@ pub struct SqsEmitterConfig {
 }
 
 /// Redis Streams emitter configuration.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RedisEmitterConfig {
     /// Redis connection URL (e.g. `"redis://127.0.0.1:6379"`).
@@ -275,6 +290,230 @@ pub struct RedisEmitterConfig {
 
 const fn default_redis_timeout_ms() -> u64 {
     5000
+}
+
+/// Per-emitter retry policy configuration.
+///
+/// Each `[[emitters]]` entry can override these defaults to tune backoff
+/// behaviour independently of the global `[retry]` worker settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryPolicyConfig {
+    /// Maximum number of delivery attempts before promoting to the dead-letter queue.
+    pub max_attempts: i32,
+    /// Initial backoff delay in seconds before the first retry.
+    pub initial_backoff_seconds: u64,
+    /// Maximum backoff cap in seconds (exponential growth is clamped here).
+    pub max_backoff_seconds: u64,
+    /// Exponential backoff multiplier applied after each failure.
+    pub backoff_multiplier: f64,
+    /// Random jitter fraction in `[0.0, 1.0]` added to each backoff interval.
+    pub jitter: f64,
+}
+
+impl Default for RetryPolicyConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 5,
+            initial_backoff_seconds: 30,
+            max_backoff_seconds: 3600,
+            backoff_multiplier: 2.0,
+            jitter: 0.2,
+        }
+    }
+}
+
+/// A single named emitter entry in the `[[emitters]]` array.
+///
+/// This is the canonical, non-deprecated way to configure one or more
+/// downstream emitters. Each entry is independently named, typed, and
+/// carries its own retry and concurrency policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmitterEntry {
+    /// Unique name identifying this emitter (must match `[a-zA-Z0-9_-]{1,64}`).
+    pub name: String,
+    /// Backend type: `"channel"`, `"kafka"`, `"nats"`, `"sqs"`, or `"redis"`.
+    #[serde(rename = "type")]
+    pub emitter_type: String,
+    /// How often to poll for pending receipts, in seconds (default: 5).
+    #[serde(default = "default_poll_interval")]
+    pub poll_interval_seconds: u64,
+    /// Number of concurrent delivery tasks for this emitter (default: 1, must be >= 1).
+    #[serde(default = "default_concurrency")]
+    pub concurrency: usize,
+    /// Optional exclusive lease duration in seconds (must be > 0 if set).
+    #[serde(default)]
+    pub lease_duration_seconds: Option<u64>,
+    /// Kafka backend config (required when `type = "kafka"`).
+    pub kafka: Option<KafkaEmitterConfig>,
+    /// NATS backend config (required when `type = "nats"`).
+    pub nats: Option<NatsEmitterConfig>,
+    /// SQS backend config (required when `type = "sqs"`).
+    pub sqs: Option<SqsEmitterConfig>,
+    /// Redis backend config (required when `type = "redis"`).
+    pub redis: Option<RedisEmitterConfig>,
+    /// Per-emitter retry policy (defaults match the global retry worker settings).
+    #[serde(default)]
+    pub retry: RetryPolicyConfig,
+}
+
+fn default_poll_interval() -> u64 {
+    5
+}
+
+fn default_concurrency() -> usize {
+    1
+}
+
+impl Default for EmitterEntry {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            emitter_type: String::new(),
+            poll_interval_seconds: default_poll_interval(),
+            concurrency: default_concurrency(),
+            lease_duration_seconds: None,
+            kafka: None,
+            nats: None,
+            sqs: None,
+            redis: None,
+            retry: RetryPolicyConfig::default(),
+        }
+    }
+}
+
+impl EmitterEntry {
+    /// Convert the legacy `[emitter]` section into a named `EmitterEntry`.
+    ///
+    /// The synthesised entry is named `"default"` so that downstream code has
+    /// a stable name to reference even when the user has not migrated yet.
+    #[must_use]
+    pub fn from_legacy(legacy: EmitterConfig) -> Self {
+        Self {
+            name: "default".to_owned(),
+            emitter_type: legacy.emitter_type,
+            kafka: legacy.kafka,
+            nats: legacy.nats,
+            sqs: legacy.sqs,
+            redis: legacy.redis,
+            ..Default::default()
+        }
+    }
+}
+
+/// Returns `true` if `name` is a valid emitter identifier (`[a-zA-Z0-9_-]{1,64}`).
+fn is_valid_emitter_name(name: &str) -> bool {
+    let len = name.chars().count();
+    if !(1..=64).contains(&len) {
+        return false;
+    }
+    name.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Parse a TOML string and normalize the resulting config.
+///
+/// This is the preferred entry point for production config loading — it
+/// combines deserialization with the normalization pass that enforces
+/// `[[emitters]]` semantics and converts the legacy `[emitter]` section.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Parse`] if the TOML is malformed, or
+/// [`ConfigError::Validation`] if the normalized config is semantically
+/// invalid (e.g. conflicting emitter sections, duplicate names).
+pub fn parse_and_normalize(toml_str: &str) -> Result<(HookboxConfig, Vec<String>), ConfigError> {
+    let config: HookboxConfig = toml::from_str(toml_str)?;
+    normalize(config)
+}
+
+/// Normalize a parsed [`HookboxConfig`], returning the adjusted config plus
+/// any deprecation warnings.
+///
+/// The normalization rules are:
+/// - Both `[emitter]` and `[[emitters]]` present → error.
+/// - Neither present → error.
+/// - Only `[emitter]` present → convert to a single `[[emitters]]` entry named
+///   `"default"` and emit a deprecation warning.
+/// - Only `[[emitters]]` present → validate and pass through.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Validation`] if the config violates the above rules
+/// or if [`validate_emitter_entries`] finds invalid entries.
+pub fn normalize(mut config: HookboxConfig) -> Result<(HookboxConfig, Vec<String>), ConfigError> {
+    let mut warnings = Vec::new();
+    match (&config.emitter, config.emitters.is_empty()) {
+        (Some(_), false) => {
+            return Err(ConfigError::Validation(
+                "use either `[emitter]` (legacy) or `[[emitters]]` (preferred), not both".into(),
+            ));
+        }
+        (None, true) => {
+            return Err(ConfigError::Validation("no emitters configured".into()));
+        }
+        (Some(legacy), true) => {
+            warnings.push("`[emitter]` is deprecated; migrate to `[[emitters]]`".into());
+            let entry = EmitterEntry::from_legacy(legacy.clone());
+            config.emitters = vec![entry];
+            config.emitter = None;
+        }
+        (None, false) => {
+            // top-level [retry] is intentionally not warned about; it has defaults
+            // indistinguishable from unset.
+        }
+    }
+    validate_emitter_entries(&config.emitters)?;
+    Ok((config, warnings))
+}
+
+/// Validate that a slice of [`EmitterEntry`] values satisfies all structural
+/// constraints (unique names, valid name format, concurrency >= 1, jitter in
+/// range, positive lease duration).
+///
+/// # Errors
+///
+/// Returns [`ConfigError::Validation`] describing the first violation found.
+pub fn validate_emitter_entries(entries: &[EmitterEntry]) -> Result<(), ConfigError> {
+    let mut seen = std::collections::HashSet::new();
+    for e in entries {
+        if !is_valid_emitter_name(&e.name) {
+            return Err(ConfigError::Validation(format!(
+                "emitter name {:?} does not match [a-zA-Z0-9_-]{{1,64}}",
+                e.name
+            )));
+        }
+        if !seen.insert(e.name.as_str()) {
+            return Err(ConfigError::Validation(format!(
+                "duplicate emitter name {:?}",
+                e.name
+            )));
+        }
+        if e.concurrency == 0 {
+            return Err(ConfigError::Validation(format!(
+                "emitter {:?}: concurrency must be >= 1",
+                e.name
+            )));
+        }
+        if e.retry.jitter < 0.0 || e.retry.jitter > 1.0 {
+            return Err(ConfigError::Validation(format!(
+                "emitter {:?}: retry.jitter must be in [0.0, 1.0]",
+                e.name
+            )));
+        }
+        if e.retry.max_attempts < 1 {
+            return Err(ConfigError::Validation(format!(
+                "emitter {:?}: retry.max_attempts must be >= 1",
+                e.name
+            )));
+        }
+        if e.lease_duration_seconds == Some(0) {
+            return Err(ConfigError::Validation(format!(
+                "emitter {:?}: lease_duration_seconds must be > 0",
+                e.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -300,11 +539,8 @@ url = "postgres://localhost/hookbox"
         assert!(config.admin.bearer_token.is_none());
         assert_eq!(config.retry.interval_seconds, 30);
         assert_eq!(config.retry.max_attempts, 5);
-        assert_eq!(config.emitter.emitter_type, "channel");
-        assert!(config.emitter.kafka.is_none());
-        assert!(config.emitter.nats.is_none());
-        assert!(config.emitter.sqs.is_none());
-        assert!(config.emitter.redis.is_none());
+        assert!(config.emitter.is_none());
+        assert!(config.emitters.is_empty());
     }
 
     #[test]
@@ -315,11 +551,7 @@ url = "postgres://localhost/hookbox"
 "#;
         let config: HookboxConfig =
             toml::from_str(toml_str).expect("default emitter config should parse");
-        assert_eq!(config.emitter.emitter_type, "channel");
-        assert!(config.emitter.kafka.is_none());
-        assert!(config.emitter.nats.is_none());
-        assert!(config.emitter.sqs.is_none());
-        assert!(config.emitter.redis.is_none());
+        assert!(config.emitter.is_none());
     }
 
     #[test]
@@ -337,11 +569,9 @@ topic = "hookbox-events"
 "#;
         let config: HookboxConfig =
             toml::from_str(toml_str).expect("kafka emitter config should parse");
-        assert_eq!(config.emitter.emitter_type, "kafka");
-        let kafka = config
-            .emitter
-            .kafka
-            .expect("kafka config should be present");
+        let emitter = config.emitter.expect("emitter config should be present");
+        assert_eq!(emitter.emitter_type, "kafka");
+        let kafka = emitter.kafka.expect("kafka config should be present");
         assert_eq!(kafka.brokers, "localhost:9092");
         assert_eq!(kafka.topic, "hookbox-events");
         assert_eq!(kafka.client_id, "hookbox");
@@ -367,10 +597,8 @@ timeout_ms = 3000
 "#;
         let config: HookboxConfig =
             toml::from_str(toml_str).expect("full kafka emitter config should parse");
-        let kafka = config
-            .emitter
-            .kafka
-            .expect("kafka config should be present");
+        let emitter = config.emitter.expect("emitter config should be present");
+        let kafka = emitter.kafka.expect("kafka config should be present");
         assert_eq!(kafka.brokers, "broker1:9092,broker2:9092");
         assert_eq!(kafka.topic, "my-topic");
         assert_eq!(kafka.client_id, "my-client");
@@ -393,8 +621,9 @@ subject = "hookbox.events"
 "#;
         let config: HookboxConfig =
             toml::from_str(toml_str).expect("nats emitter config should parse");
-        assert_eq!(config.emitter.emitter_type, "nats");
-        let nats = config.emitter.nats.expect("nats config should be present");
+        let emitter = config.emitter.expect("emitter config should be present");
+        assert_eq!(emitter.emitter_type, "nats");
+        let nats = emitter.nats.expect("nats config should be present");
         assert_eq!(nats.url, "nats://localhost:4222");
         assert_eq!(nats.subject, "hookbox.events");
     }
@@ -413,8 +642,9 @@ queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/hookbox-events"
 "#;
         let config: HookboxConfig =
             toml::from_str(toml_str).expect("sqs emitter config should parse");
-        assert_eq!(config.emitter.emitter_type, "sqs");
-        let sqs = config.emitter.sqs.expect("sqs config should be present");
+        let emitter = config.emitter.expect("emitter config should be present");
+        assert_eq!(emitter.emitter_type, "sqs");
+        let sqs = emitter.sqs.expect("sqs config should be present");
         assert_eq!(
             sqs.queue_url,
             "https://sqs.us-east-1.amazonaws.com/123456789012/hookbox-events"
@@ -439,7 +669,8 @@ fifo = true
 "#;
         let config: HookboxConfig =
             toml::from_str(toml_str).expect("full sqs emitter config should parse");
-        let sqs = config.emitter.sqs.expect("sqs config should be present");
+        let emitter = config.emitter.expect("emitter config should be present");
+        let sqs = emitter.sqs.expect("sqs config should be present");
         assert_eq!(sqs.region.as_deref(), Some("us-east-1"));
         assert!(sqs.fifo);
     }
@@ -459,11 +690,9 @@ stream = "hookbox.events"
 "#;
         let config: HookboxConfig =
             toml::from_str(toml_str).expect("redis emitter config should parse");
-        assert_eq!(config.emitter.emitter_type, "redis");
-        let redis = config
-            .emitter
-            .redis
-            .expect("redis config should be present");
+        let emitter = config.emitter.expect("emitter config should be present");
+        assert_eq!(emitter.emitter_type, "redis");
+        let redis = emitter.redis.expect("redis config should be present");
         assert_eq!(redis.url, "redis://127.0.0.1:6379");
         assert_eq!(redis.stream, "hookbox.events");
         assert_eq!(redis.maxlen, None);
@@ -487,10 +716,8 @@ timeout_ms = 10000
 "#;
         let config: HookboxConfig =
             toml::from_str(toml_str).expect("full redis emitter config should parse");
-        let redis = config
-            .emitter
-            .redis
-            .expect("redis config should be present");
+        let emitter = config.emitter.expect("emitter config should be present");
+        let redis = emitter.redis.expect("redis config should be present");
         assert_eq!(redis.url, "redis://10.0.0.5:6379");
         assert_eq!(redis.stream, "hookbox.events");
         assert_eq!(redis.maxlen, Some(100_000));
@@ -629,5 +856,119 @@ secret = "checkout_secret"
             .expect("checkout provider");
         assert_eq!(checkout.verifier_type, "checkout");
         assert_eq!(checkout.secret.as_deref(), Some("checkout_secret"));
+    }
+
+    // --- Task 13: normalize() and validate_emitter_entries() tests ---
+
+    #[test]
+    fn normalize_both_emitter_and_emitters_is_error() {
+        let toml = r#"
+            [database]
+            url = "postgres://localhost/test"
+            [emitter]
+            type = "channel"
+            [[emitters]]
+            name = "foo"
+            type = "channel"
+        "#;
+        let result = parse_and_normalize(toml);
+        assert!(result.is_err(), "both emitter and emitters must error");
+    }
+
+    #[test]
+    fn normalize_neither_emitter_nor_emitters_is_error() {
+        let toml = r#"
+            [database]
+            url = "postgres://localhost/test"
+        "#;
+        let result = parse_and_normalize(toml);
+        assert!(result.is_err(), "no emitters must error");
+    }
+
+    #[test]
+    fn normalize_legacy_emitter_becomes_default_entry() {
+        let toml = r#"
+            [database]
+            url = "postgres://localhost/test"
+            [emitter]
+            type = "channel"
+        "#;
+        let (config, warnings) = parse_and_normalize(toml).expect("should normalize ok");
+        assert_eq!(config.emitters.len(), 1);
+        assert_eq!(config.emitters[0].name, "default");
+        assert!(warnings.iter().any(|w| w.contains("deprecated")));
+    }
+
+    #[test]
+    fn normalize_emitters_array_passes_through() {
+        let toml = r#"
+            [database]
+            url = "postgres://localhost/test"
+            [[emitters]]
+            name = "kafka-billing"
+            type = "kafka"
+            [emitters.kafka]
+            brokers = "localhost:9092"
+            topic = "events"
+            client_id = "hookbox"
+            acks = "all"
+            timeout_ms = 5000
+        "#;
+        let (config, _) = parse_and_normalize(toml).expect("should normalize ok");
+        assert_eq!(config.emitters.len(), 1);
+        assert_eq!(config.emitters[0].name, "kafka-billing");
+    }
+
+    #[test]
+    fn validate_duplicate_emitter_names_is_error() {
+        let entries = vec![
+            EmitterEntry {
+                name: "a".into(),
+                emitter_type: "channel".into(),
+                ..Default::default()
+            },
+            EmitterEntry {
+                name: "a".into(),
+                emitter_type: "channel".into(),
+                ..Default::default()
+            },
+        ];
+        assert!(validate_emitter_entries(&entries).is_err());
+    }
+
+    #[test]
+    fn validate_name_must_match_regex() {
+        let bad_name = "has spaces!";
+        let entries = vec![EmitterEntry {
+            name: bad_name.into(),
+            emitter_type: "channel".into(),
+            ..Default::default()
+        }];
+        assert!(validate_emitter_entries(&entries).is_err());
+    }
+
+    #[test]
+    fn validate_concurrency_zero_is_error() {
+        let entries = vec![EmitterEntry {
+            name: "a".into(),
+            emitter_type: "channel".into(),
+            concurrency: 0,
+            ..Default::default()
+        }];
+        assert!(validate_emitter_entries(&entries).is_err());
+    }
+
+    #[test]
+    fn validate_jitter_outside_range_is_error() {
+        let entries = vec![EmitterEntry {
+            name: "a".into(),
+            emitter_type: "channel".into(),
+            retry: RetryPolicyConfig {
+                jitter: 1.5,
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        assert!(validate_emitter_entries(&entries).is_err());
     }
 }
