@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -119,6 +120,29 @@ mod tests {
         // Default should produce a non-nil UUID.
         assert_ne!(id.0, uuid::Uuid::nil());
     }
+
+    #[test]
+    fn delivery_state_serde_round_trip() {
+        let cases = [
+            (DeliveryState::Pending, "\"pending\""),
+            (DeliveryState::InFlight, "\"in_flight\""),
+            (DeliveryState::Emitted, "\"emitted\""),
+            (DeliveryState::Failed, "\"failed\""),
+            (DeliveryState::DeadLettered, "\"dead_lettered\""),
+        ];
+        for (state, expected_json) in &cases {
+            let json = serde_json::to_string(state).unwrap();
+            assert_eq!(json, *expected_json, "serialize {state}");
+            let decoded: DeliveryState = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, *state, "deserialize {state}");
+        }
+    }
+
+    #[test]
+    fn delivery_id_display_is_uuid_string() {
+        let id = DeliveryId(uuid::Uuid::nil());
+        assert_eq!(id.to_string(), "00000000-0000-0000-0000-000000000000");
+    }
 }
 
 /// High-level result of attempting to ingest a single webhook event.
@@ -139,4 +163,86 @@ pub enum IngestResult {
         /// Human-readable explanation of why verification failed.
         reason: String,
     },
+}
+
+/// Opaque identifier for a single delivery attempt row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DeliveryId(pub Uuid);
+
+impl DeliveryId {
+    /// Create a new, randomly-generated [`DeliveryId`].
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for DeliveryId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for DeliveryId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// State machine for a single `(receipt_id, emitter_name)` delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryState {
+    /// The delivery has been queued but not yet attempted.
+    Pending,
+    /// The delivery is currently being attempted.
+    InFlight,
+    /// The delivery was successfully forwarded to the downstream emitter.
+    Emitted,
+    /// The delivery attempt failed; may be retried.
+    Failed,
+    /// All retry attempts have been exhausted; the delivery is in the dead-letter queue.
+    DeadLettered,
+}
+
+impl fmt::Display for DeliveryState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DeliveryState::Pending => write!(f, "pending"),
+            DeliveryState::InFlight => write!(f, "in_flight"),
+            DeliveryState::Emitted => write!(f, "emitted"),
+            DeliveryState::Failed => write!(f, "failed"),
+            DeliveryState::DeadLettered => write!(f, "dead_lettered"),
+        }
+    }
+}
+
+/// A single delivery row: one attempt of one receipt against one emitter.
+///
+/// Multiple rows may share the same `(receipt_id, emitter_name)` pair —
+/// each replay inserts a fresh row for audit history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookDelivery {
+    /// Unique identifier for this delivery row.
+    pub delivery_id: DeliveryId,
+    /// The receipt this delivery belongs to.
+    pub receipt_id: ReceiptId,
+    /// Name of the emitter this delivery targets (matches the TOML config key).
+    pub emitter_name: String,
+    /// Current lifecycle state of this delivery.
+    pub state: DeliveryState,
+    /// Number of delivery attempts made so far.
+    pub attempt_count: i32,
+    /// Human-readable error from the most recent failed attempt, if any.
+    pub last_error: Option<String>,
+    /// Timestamp of the most recent delivery attempt, if any.
+    pub last_attempt_at: Option<DateTime<Utc>>,
+    /// Earliest time at which the next attempt may be made.
+    pub next_attempt_at: DateTime<Utc>,
+    /// Timestamp at which the delivery was successfully emitted, if any.
+    pub emitted_at: Option<DateTime<Utc>>,
+    /// When `true`, no further retries will be scheduled for this row.
+    pub immutable: bool,
+    /// Timestamp at which this delivery row was created.
+    pub created_at: DateTime<Utc>,
 }
