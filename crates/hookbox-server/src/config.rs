@@ -173,7 +173,7 @@ const fn default_max_attempts() -> i32 {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmitterConfig {
-    /// Which emitter backend to use: `"channel"` (default), `"kafka"`, `"nats"`, or `"sqs"`.
+    /// Which emitter backend to use: `"channel"` (default), `"kafka"`, `"nats"`, `"sqs"`, or `"redis"`.
     #[serde(rename = "type", default = "default_emitter_type")]
     pub emitter_type: String,
     /// Kafka emitter settings (required when `type = "kafka"`).
@@ -182,6 +182,8 @@ pub struct EmitterConfig {
     pub nats: Option<NatsEmitterConfig>,
     /// SQS emitter settings (required when `type = "sqs"`).
     pub sqs: Option<SqsEmitterConfig>,
+    /// Redis Streams emitter settings (required when `type = "redis"`).
+    pub redis: Option<RedisEmitterConfig>,
 }
 
 impl Default for EmitterConfig {
@@ -191,6 +193,7 @@ impl Default for EmitterConfig {
             kafka: None,
             nats: None,
             sqs: None,
+            redis: None,
         }
     }
 }
@@ -255,6 +258,25 @@ pub struct SqsEmitterConfig {
     pub endpoint_url: Option<String>,
 }
 
+/// Redis Streams emitter configuration.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RedisEmitterConfig {
+    /// Redis connection URL (e.g. `"redis://127.0.0.1:6379"`).
+    pub url: String,
+    /// Redis stream key to publish events to.
+    pub stream: String,
+    /// Optional approximate stream trim length (`XADD ~ MAXLEN`).
+    pub maxlen: Option<u64>,
+    /// Per-operation timeout for `XADD` in milliseconds (default: 5000).
+    #[serde(default = "default_redis_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+const fn default_redis_timeout_ms() -> u64 {
+    5000
+}
+
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "expect is acceptable in test code")]
 mod tests {
@@ -282,6 +304,7 @@ url = "postgres://localhost/hookbox"
         assert!(config.emitter.kafka.is_none());
         assert!(config.emitter.nats.is_none());
         assert!(config.emitter.sqs.is_none());
+        assert!(config.emitter.redis.is_none());
     }
 
     #[test]
@@ -296,6 +319,7 @@ url = "postgres://localhost/hookbox"
         assert!(config.emitter.kafka.is_none());
         assert!(config.emitter.nats.is_none());
         assert!(config.emitter.sqs.is_none());
+        assert!(config.emitter.redis.is_none());
     }
 
     #[test]
@@ -418,6 +442,59 @@ fifo = true
         let sqs = config.emitter.sqs.expect("sqs config should be present");
         assert_eq!(sqs.region.as_deref(), Some("us-east-1"));
         assert!(sqs.fifo);
+    }
+
+    #[test]
+    fn parse_emitter_redis() {
+        let toml_str = r#"
+[database]
+url = "postgres://localhost/hookbox"
+
+[emitter]
+type = "redis"
+
+[emitter.redis]
+url = "redis://127.0.0.1:6379"
+stream = "hookbox.events"
+"#;
+        let config: HookboxConfig =
+            toml::from_str(toml_str).expect("redis emitter config should parse");
+        assert_eq!(config.emitter.emitter_type, "redis");
+        let redis = config
+            .emitter
+            .redis
+            .expect("redis config should be present");
+        assert_eq!(redis.url, "redis://127.0.0.1:6379");
+        assert_eq!(redis.stream, "hookbox.events");
+        assert_eq!(redis.maxlen, None);
+        assert_eq!(redis.timeout_ms, 5000); // default
+    }
+
+    #[test]
+    fn parse_emitter_redis_full() {
+        let toml_str = r#"
+[database]
+url = "postgres://localhost/hookbox"
+
+[emitter]
+type = "redis"
+
+[emitter.redis]
+url = "redis://10.0.0.5:6379"
+stream = "hookbox.events"
+maxlen = 100000
+timeout_ms = 10000
+"#;
+        let config: HookboxConfig =
+            toml::from_str(toml_str).expect("full redis emitter config should parse");
+        let redis = config
+            .emitter
+            .redis
+            .expect("redis config should be present");
+        assert_eq!(redis.url, "redis://10.0.0.5:6379");
+        assert_eq!(redis.stream, "hookbox.events");
+        assert_eq!(redis.maxlen, Some(100_000));
+        assert_eq!(redis.timeout_ms, 10_000);
     }
 
     #[test]
