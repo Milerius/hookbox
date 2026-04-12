@@ -56,7 +56,7 @@ pub type ServerAppState =
 /// [`DefaultBodyLimit::max`].
 pub fn build_router<S, D>(state: Arc<AppState<S, D>>, body_limit: usize) -> Router
 where
-    S: Storage + 'static,
+    S: Storage + hookbox_postgres::DeliveryStorage + 'static,
     D: DedupeStrategy + 'static,
 {
     Router::new()

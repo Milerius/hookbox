@@ -10,11 +10,67 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use hookbox::ProcessingState;
+use hookbox::state::WebhookDelivery;
 use hookbox::traits::{DedupeStrategy, Storage};
-use hookbox::types::ReceiptFilter;
+use hookbox::types::{ReceiptFilter, WebhookReceipt};
+use hookbox::{ProcessingState, receipt_aggregate_state, receipt_deliveries_summary};
+use hookbox_postgres::DeliveryStorage;
 
 use crate::AppState;
+
+/// Build a `serde_json::Value` for a receipt list item by serialising the base
+/// receipt, then overriding `processing_state` with the derived value and
+/// inserting a `deliveries_summary` map.
+fn receipt_list_item_json(
+    receipt: &WebhookReceipt,
+    deliveries: &[WebhookDelivery],
+) -> serde_json::Value {
+    let derived_state = receipt_aggregate_state(deliveries, receipt.processing_state);
+    let summary = receipt_deliveries_summary(deliveries);
+    let mut val = serde_json::to_value(receipt).unwrap_or(serde_json::Value::Null);
+    if let serde_json::Value::Object(ref mut map) = val {
+        map.insert(
+            "processing_state".to_owned(),
+            serde_json::to_value(derived_state).unwrap_or(serde_json::Value::Null),
+        );
+        map.insert(
+            "deliveries_summary".to_owned(),
+            serde_json::to_value(&summary).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    val
+}
+
+/// Build a `serde_json::Value` for a receipt detail by serialising the base
+/// receipt, then overriding `processing_state`, inserting `deliveries_summary`,
+/// and embedding the `deliveries` array.
+fn receipt_detail_json(
+    receipt: &WebhookReceipt,
+    deliveries: &[WebhookDelivery],
+) -> serde_json::Value {
+    let derived_state = receipt_aggregate_state(deliveries, receipt.processing_state);
+    let summary = receipt_deliveries_summary(deliveries);
+    let mut val = serde_json::to_value(receipt).unwrap_or(serde_json::Value::Null);
+    if let serde_json::Value::Object(ref mut map) = val {
+        map.insert(
+            "processing_state".to_owned(),
+            serde_json::to_value(derived_state).unwrap_or(serde_json::Value::Null),
+        );
+        map.insert(
+            "deliveries_summary".to_owned(),
+            serde_json::to_value(&summary).unwrap_or(serde_json::Value::Null),
+        );
+        map.insert(
+            "deliveries".to_owned(),
+            serde_json::to_value(deliveries).unwrap_or(serde_json::Value::Array(Vec::new())),
+        );
+    }
+    val
+}
+
+// Note: the helper functions above use `serde_json::to_value(...).unwrap_or(...)` which
+// cannot actually fail for well-formed domain types — the unwrap_or branches are defensive
+// fallbacks and are not reachable in practice.  This is acceptable in handler code.
 
 /// Check the `Authorization` header against the configured admin bearer token.
 ///
@@ -62,11 +118,18 @@ pub struct ListReceiptsQuery {
 }
 
 /// List webhook receipts with optional filters.
-pub async fn list_receipts<S: Storage, D: DedupeStrategy>(
+///
+/// Returns each receipt with a derived `processing_state` (aggregated from
+/// delivery rows) and a per-emitter `deliveries_summary` map.
+pub async fn list_receipts<S, D>(
     State(state): State<Arc<AppState<S, D>>>,
     headers: HeaderMap,
     Query(params): Query<ListReceiptsQuery>,
-) -> impl IntoResponse {
+) -> impl IntoResponse
+where
+    S: Storage + DeliveryStorage + 'static,
+    D: DedupeStrategy + 'static,
+{
     if let Err(resp) = check_auth(&state, &headers) {
         return resp.into_response();
     }
@@ -78,44 +141,102 @@ pub async fn list_receipts<S: Storage, D: DedupeStrategy>(
         ..ReceiptFilter::default()
     };
 
-    match state.pipeline.storage().query(filter).await {
-        Ok(receipts) => (StatusCode::OK, Json(json!(receipts))).into_response(),
+    let receipts = match state.pipeline.storage().query(filter).await {
+        Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "failed to list receipts");
-            (
+            return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": e.to_string()})),
             )
-                .into_response()
+                .into_response();
         }
+    };
+
+    let mut items: Vec<serde_json::Value> = Vec::with_capacity(receipts.len());
+    for receipt in receipts {
+        // TODO(perf): batch-load deliveries for all receipts in a single query.
+        let deliveries = match state
+            .pipeline
+            .storage()
+            .get_deliveries_for_receipt(receipt.receipt_id)
+            .await
+        {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::error!(error = %e, receipt_id = %receipt.receipt_id, "failed to load deliveries");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": e.to_string()})),
+                )
+                    .into_response();
+            }
+        };
+        items.push(receipt_list_item_json(&receipt, &deliveries));
     }
+
+    (StatusCode::OK, Json(json!(items))).into_response()
 }
 
 /// Get a single webhook receipt by ID.
-pub async fn get_receipt<S: Storage, D: DedupeStrategy>(
+///
+/// Returns the receipt with a derived `processing_state`, a per-emitter
+/// `deliveries_summary` map, and an embedded `deliveries` array sorted by
+/// `created_at` ASC.
+pub async fn get_receipt<S, D>(
     State(state): State<Arc<AppState<S, D>>>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
-) -> impl IntoResponse {
+) -> impl IntoResponse
+where
+    S: Storage + DeliveryStorage + 'static,
+    D: DedupeStrategy + 'static,
+{
     if let Err(resp) = check_auth(&state, &headers) {
         return resp.into_response();
     }
-    match state.pipeline.storage().get(id).await {
-        Ok(Some(receipt)) => (StatusCode::OK, Json(json!(receipt))).into_response(),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "receipt not found"})),
-        )
-            .into_response(),
+    let receipt = match state.pipeline.storage().get(id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "receipt not found"})),
+            )
+                .into_response();
+        }
         Err(e) => {
             tracing::error!(error = %e, %id, "failed to get receipt");
-            (
+            return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": e.to_string()})),
             )
-                .into_response()
+                .into_response();
         }
-    }
+    };
+
+    let mut deliveries = match state
+        .pipeline
+        .storage()
+        .get_deliveries_for_receipt(receipt.receipt_id)
+        .await
+    {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!(error = %e, %id, "failed to load deliveries for receipt");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    // Sort deliveries by created_at ASC for stable, chronological output.
+    deliveries.sort_by_key(|d| d.created_at);
+
+    let detail = receipt_detail_json(&receipt, &deliveries);
+
+    (StatusCode::OK, Json(json!(detail))).into_response()
 }
 
 /// Replay a previously stored receipt by transitioning it to the `Replayed`
