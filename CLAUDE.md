@@ -79,7 +79,7 @@ crates/hookbox-cli/       hookbox-cli        CLI binary (inspect, replay, serve)
 - **`let...else` for early returns**: keep happy path unindented.
 - **No wildcard matches**: explicit destructuring on all enums.
 - **`#[inline]`**: only on measured hot functions, never speculatively.
-- **Async traits**: use `async fn` in traits directly (Rust 2024 edition).
+- **Async traits**: use `#[async_trait]` on the four core extension traits (`SignatureVerifier`, `Storage`, `DedupeStrategy`, `Emitter`) and all their implementers. Native `async fn` in traits is not dyn-compatible in stable Rust, and the architecture relies on `Arc<dyn Emitter + Send + Sync>` for runtime emitter selection from TOML config (`crates/hookbox-cli/src/commands/serve.rs:98`). Do not propose migrating these traits to native `async fn` — it would break the dyn dispatch.
 - **Builder pattern**: for complex construction (`HookboxPipeline::builder()`).
 - **Imports**: group by std → external crates → workspace crates → local modules.
 
