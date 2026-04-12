@@ -59,7 +59,7 @@ impl RedisEmitter {
         let conn = match tokio::time::timeout(timeout, connect).await {
             Ok(Ok(conn)) => conn,
             Ok(Err(e)) => return Err(EmitError::Downstream(e.to_string())),
-            Err(_) => {
+            Err(_elapsed) => {
                 return Err(EmitError::Timeout(format!(
                     "redis connect timed out after {}ms",
                     timeout.as_millis()
@@ -113,10 +113,52 @@ impl Emitter for RedisEmitter {
                 Ok(())
             }
             Ok(Err(e)) => Err(EmitError::Downstream(format!("redis xadd failed: {e}"))),
-            Err(_) => Err(EmitError::Timeout(format!(
+            Err(_elapsed) => Err(EmitError::Timeout(format!(
                 "redis xadd timed out after {}ms",
                 self.timeout.as_millis()
             ))),
+        }
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::panic, reason = "panic is acceptable in test assertions")]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn new_returns_downstream_error_for_unparseable_url() {
+        // `redis::Client::open` rejects strings that are not valid URLs.
+        match RedisEmitter::new("not a url at all", "stream".to_owned(), None, 100).await {
+            Err(EmitError::Downstream(_)) => {}
+            Err(other) => panic!("expected Downstream, got {other:?}"),
+            Ok(_emitter) => panic!("expected Err, got Ok"),
+        }
+    }
+
+    #[tokio::test]
+    async fn new_returns_downstream_error_for_unsupported_scheme() {
+        // Non-redis schemes are rejected at client construction.
+        match RedisEmitter::new("http://127.0.0.1:6379", "stream".to_owned(), None, 100).await {
+            Err(EmitError::Downstream(_)) => {}
+            Err(other) => panic!("expected Downstream, got {other:?}"),
+            Ok(_emitter) => panic!("expected Err, got Ok"),
+        }
+    }
+
+    #[tokio::test]
+    async fn new_returns_timeout_error_when_endpoint_is_blackholed() {
+        // 192.0.2.1 is in TEST-NET-1 (RFC 5737); packets are silently dropped,
+        // so the connect attempt always exceeds the (very short) timeout.
+        match RedisEmitter::new("redis://192.0.2.1:6379", "stream".to_owned(), None, 50).await {
+            Err(EmitError::Timeout(msg)) => {
+                assert!(
+                    msg.contains("redis connect timed out"),
+                    "unexpected message: {msg}"
+                );
+            }
+            Err(other) => panic!("expected Timeout, got {other:?}"),
+            Ok(_emitter) => panic!("expected Err, got Ok"),
         }
     }
 }

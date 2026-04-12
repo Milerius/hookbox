@@ -302,11 +302,6 @@ async fn then_emitted_event_payload_hash_deterministic(world: &mut IngestWorld, 
 
     let expected_hash = hookbox::hash::compute_payload_hash(body.as_bytes());
     assert_eq!(event.payload_hash, expected_hash);
-
-    // With NormalizedEvent: PartialEq, confirm the struct is internally
-    // consistent (no field has been mutated post-emit).
-    let copy = event.clone();
-    assert_eq!(event, copy);
 }
 
 #[then(expr = "the first result should be {string}")]
