@@ -445,10 +445,7 @@ mod tests {
             Ok(())
         }
 
-        async fn query(
-            &self,
-            _filter: ReceiptFilter,
-        ) -> Result<Vec<WebhookReceipt>, StorageError> {
+        async fn query(&self, _filter: ReceiptFilter) -> Result<Vec<WebhookReceipt>, StorageError> {
             let receipts = self
                 .receipts
                 .lock()
@@ -490,7 +487,9 @@ mod tests {
     #[async_trait]
     impl Storage for MockStorage {
         async fn store(&self, _receipt: &WebhookReceipt) -> Result<StoreResult, StorageError> {
-            panic!("store() must not be called after the fan-out refactor — pipeline must use store_with_deliveries()");
+            panic!(
+                "store() must not be called after the fan-out refactor — pipeline must use store_with_deliveries()"
+            );
         }
 
         async fn get(&self, _id: Uuid) -> Result<Option<WebhookReceipt>, StorageError> {
@@ -506,10 +505,7 @@ mod tests {
             Ok(())
         }
 
-        async fn query(
-            &self,
-            _filter: ReceiptFilter,
-        ) -> Result<Vec<WebhookReceipt>, StorageError> {
+        async fn query(&self, _filter: ReceiptFilter) -> Result<Vec<WebhookReceipt>, StorageError> {
             Ok(vec![])
         }
 
@@ -834,7 +830,11 @@ mod tests {
         );
 
         let calls = pipeline.storage().recorded_calls();
-        assert_eq!(calls.len(), 1, "expected exactly one store_with_deliveries call");
+        assert_eq!(
+            calls.len(),
+            1,
+            "expected exactly one store_with_deliveries call"
+        );
         assert_eq!(calls[0].1, names, "emitter names should be passed through");
     }
 
@@ -843,7 +843,7 @@ mod tests {
     /// implementation, which we verify separately; here we just check the
     /// pipeline returns `Duplicate`).
     #[tokio::test]
-    async fn pipeline_builder_rejects_store_result_duplicate_without_deliveries() {
+    async fn pipeline_returns_duplicate_when_storage_reports_conflict() {
         let storage = MockStorage::new_returning_duplicate();
 
         let pipeline = HookboxPipeline::builder()
@@ -864,6 +864,10 @@ mod tests {
 
         // store_with_deliveries was still called once (the mock decides to return Duplicate).
         let calls = pipeline.storage().recorded_calls();
-        assert_eq!(calls.len(), 1, "store_with_deliveries should have been called once");
+        assert_eq!(
+            calls.len(),
+            1,
+            "store_with_deliveries should have been called once"
+        );
     }
 }
