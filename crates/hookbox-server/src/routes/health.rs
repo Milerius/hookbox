@@ -16,37 +16,37 @@ use crate::worker::{EmitterHealth, HealthStatus};
 
 /// Per-database health snapshot returned in [`ReadyzResponse`].
 #[derive(Debug, Serialize)]
-pub struct DatabaseHealth {
+pub(crate) struct DatabaseHealth {
     /// Coarse health classification for the database connection.
-    pub status: HealthStatus,
+    pub(crate) status: HealthStatus,
 }
 
 /// Snapshot of a single emitter worker's health, embedded in [`ReadyzResponse`].
 #[derive(Debug, Serialize)]
-pub struct EmitterHealthSnapshot {
+pub(crate) struct EmitterHealthSnapshot {
     /// Coarse health classification.
-    pub status: HealthStatus,
+    pub(crate) status: HealthStatus,
     /// Timestamp of the most recent successful emit.
-    pub last_success_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub(crate) last_success_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Timestamp of the most recent failed emit.
-    pub last_failure_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub(crate) last_failure_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Number of consecutive failures since the last success.
-    pub consecutive_failures: u32,
+    pub(crate) consecutive_failures: u32,
     /// Current depth of the dead-letter queue for this emitter.
-    pub dlq_depth: u64,
+    pub(crate) dlq_depth: u64,
     /// Number of pending deliveries awaiting dispatch for this emitter.
-    pub pending_count: u64,
+    pub(crate) pending_count: u64,
 }
 
 /// Response body returned by `GET /readyz`.
 #[derive(Debug, Serialize)]
-pub struct ReadyzResponse {
+pub(crate) struct ReadyzResponse {
     /// Aggregate health status across database and all emitters.
-    pub status: HealthStatus,
+    pub(crate) status: HealthStatus,
     /// Database connectivity health.
-    pub database: DatabaseHealth,
+    pub(crate) database: DatabaseHealth,
     /// Per-emitter health snapshots, keyed by emitter name.
-    pub emitters: BTreeMap<String, EmitterHealthSnapshot>,
+    pub(crate) emitters: BTreeMap<String, EmitterHealthSnapshot>,
 }
 
 /// Compute the aggregate [`HealthStatus`] from the database status and
@@ -57,7 +57,7 @@ pub struct ReadyzResponse {
 /// 2. `Degraded` if any emitter is degraded.
 /// 3. `Healthy` otherwise.
 #[must_use]
-pub fn compute_overall_status(
+pub(crate) fn compute_overall_status(
     db: HealthStatus,
     emitters: &BTreeMap<String, EmitterHealthSnapshot>,
 ) -> HealthStatus {
@@ -229,6 +229,16 @@ mod tests {
         emitters.insert("a".to_owned(), healthy_snapshot());
 
         let result = compute_overall_status(HealthStatus::Unhealthy, &emitters);
+        assert_eq!(result, HealthStatus::Unhealthy);
+    }
+
+    #[test]
+    fn degraded_and_unhealthy_yields_unhealthy() {
+        let mut emitters = BTreeMap::new();
+        emitters.insert("a".to_owned(), degraded_snapshot());
+        emitters.insert("b".to_owned(), unhealthy_snapshot());
+
+        let result = compute_overall_status(HealthStatus::Healthy, &emitters);
         assert_eq!(result, HealthStatus::Unhealthy);
     }
 }

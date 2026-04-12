@@ -1,5 +1,6 @@
 //! `serve` subcommand — start the hookbox webhook ingestion server.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -285,7 +286,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
         admin_token: config.admin.bearer_token.clone(),
         prometheus: Some(prometheus),
         // TODO(fan-out): populate from spawned EmitterWorker handles in a future task.
-        emitter_health: std::collections::BTreeMap::new(),
+        emitter_health: BTreeMap::new(),
     });
 
     let router = build_router(state, config.server.body_limit);
