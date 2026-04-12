@@ -8,6 +8,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use redis::AsyncCommands;
 use redis::aio::MultiplexedConnection;
 
 use hookbox::error::EmitError;
@@ -15,6 +16,10 @@ use hookbox::traits::Emitter;
 use hookbox::types::NormalizedEvent;
 
 /// A Redis-Streams-backed [`Emitter`] that publishes events to a configured stream.
+///
+/// Holds a multiplexed async connection (cheap to clone) and reuses it for
+/// every `emit()` call. The connection is created in [`RedisEmitter::new`]
+/// so configuration errors surface at startup, not at the first webhook.
 pub struct RedisEmitter {
     conn: MultiplexedConnection,
     stream: String,
@@ -24,9 +29,6 @@ pub struct RedisEmitter {
 
 impl RedisEmitter {
     /// Create a new [`RedisEmitter`].
-    ///
-    /// Opens the Redis client and establishes a multiplexed async connection
-    /// up-front so the first `emit()` call doesn't pay connection latency.
     ///
     /// # Arguments
     ///
@@ -61,10 +63,46 @@ impl RedisEmitter {
 
 #[async_trait]
 impl Emitter for RedisEmitter {
-    async fn emit(&self, _event: &NormalizedEvent) -> Result<(), EmitError> {
-        // Real XADD implementation lands in Task 5 — this stub exists so the
-        // round-trip test in Task 4 has something to fail against.
-        let _ = (&self.conn, &self.stream, self.maxlen, self.timeout);
-        Err(EmitError::Downstream("not yet implemented".to_owned()))
+    async fn emit(&self, event: &NormalizedEvent) -> Result<(), EmitError> {
+        let payload =
+            serde_json::to_string(event).map_err(|e| EmitError::Downstream(e.to_string()))?;
+
+        let mut conn = self.conn.clone();
+        let stream = self.stream.clone();
+        let maxlen = self.maxlen;
+
+        let xadd = async move {
+            // `*` lets Redis assign the entry ID.
+            if let Some(cap) = maxlen {
+                conn.xadd_maxlen::<_, _, _, _, ()>(
+                    &stream,
+                    redis::streams::StreamMaxlen::Approx(
+                        usize::try_from(cap).unwrap_or(usize::MAX),
+                    ),
+                    "*",
+                    &[("data", payload.as_str())],
+                )
+                .await
+            } else {
+                conn.xadd::<_, _, _, _, ()>(&stream, "*", &[("data", payload.as_str())])
+                    .await
+            }
+        };
+
+        match tokio::time::timeout(self.timeout, xadd).await {
+            Ok(Ok(())) => {
+                tracing::debug!(
+                    receipt_id = %event.receipt_id,
+                    stream = %self.stream,
+                    "event emitted to redis"
+                );
+                Ok(())
+            }
+            Ok(Err(e)) => Err(EmitError::Downstream(format!("redis xadd failed: {e}"))),
+            Err(_) => Err(EmitError::Timeout(format!(
+                "redis xadd timed out after {}ms",
+                self.timeout.as_millis()
+            ))),
+        }
     }
 }
