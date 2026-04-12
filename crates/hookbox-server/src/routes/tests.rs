@@ -2,6 +2,7 @@
 
 #![expect(clippy::unwrap_used, reason = "unwrap is acceptable in test code")]
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -118,6 +119,7 @@ fn build_test_app(admin_token: Option<String>) -> Router {
         pool: None,
         admin_token,
         prometheus: None,
+        emitter_health: BTreeMap::new(),
     });
 
     crate::build_router(state, 1024 * 1024)
@@ -460,6 +462,7 @@ async fn metrics_endpoint_with_prometheus_handle_renders_metrics() {
         pool: None,
         admin_token: None,
         prometheus: Some(prometheus),
+        emitter_health: BTreeMap::new(),
     });
 
     let app = crate::build_router(state, 1024 * 1024);
@@ -810,6 +813,7 @@ fn build_test_app_with_reject_verifier() -> Router {
         pool: None,
         admin_token: None,
         prometheus: None,
+        emitter_health: BTreeMap::new(),
     });
 
     crate::build_router(state, 1024 * 1024)
@@ -947,6 +951,7 @@ fn build_failing_app() -> Router {
         pool: None,
         admin_token: None,
         prometheus: None,
+        emitter_health: BTreeMap::new(),
     });
 
     crate::build_router(state, 1024 * 1024)
@@ -1162,6 +1167,7 @@ async fn replay_update_state_failure_returns_500() {
         pool: None,
         admin_token: None,
         prometheus: None,
+        emitter_health: BTreeMap::new(),
     });
 
     let app = crate::build_router(state, 1024 * 1024);

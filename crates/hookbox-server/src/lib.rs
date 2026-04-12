@@ -9,8 +9,10 @@ pub mod routes;
 pub mod shutdown;
 pub mod worker;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
@@ -21,6 +23,8 @@ use hookbox::dedupe::{InMemoryRecentDedupe, LayeredDedupe};
 use hookbox::pipeline::HookboxPipeline;
 use hookbox::traits::{DedupeStrategy, Storage};
 use hookbox_postgres::{PostgresStorage, StorageDedupe};
+
+use crate::worker::EmitterHealth;
 
 /// Shared application state, threaded through all Axum handlers via
 /// `State<Arc<AppState<S, D>>>`.
@@ -34,13 +38,17 @@ pub struct AppState<S: Storage, D: DedupeStrategy> {
     pub admin_token: Option<String>,
     /// Optional Prometheus metrics handle for the `/metrics` scrape endpoint.
     pub prometheus: Option<PrometheusHandle>,
+    /// Per-emitter health handles, keyed by emitter name.
+    ///
+    /// Each value is an [`ArcSwap`] that the corresponding [`crate::worker::EmitterWorker`]
+    /// updates after every dispatch outcome. The `/readyz` handler reads these
+    /// without any additional database roundtrips.
+    pub emitter_health: BTreeMap<String, Arc<ArcSwap<EmitterHealth>>>,
 }
 
 /// Concrete [`AppState`] used by the production server binary.
-pub type ServerAppState = AppState<
-    PostgresStorage,
-    LayeredDedupe<InMemoryRecentDedupe, StorageDedupe>,
->;
+pub type ServerAppState =
+    AppState<PostgresStorage, LayeredDedupe<InMemoryRecentDedupe, StorageDedupe>>;
 
 /// Build the Axum [`Router`] with all hookbox routes wired to the given state.
 ///
@@ -58,10 +66,7 @@ where
         )
         .route("/healthz", get(routes::health::healthz))
         .route("/readyz", get(routes::health::readyz::<S, D>))
-        .route(
-            "/api/receipts",
-            get(routes::admin::list_receipts::<S, D>),
-        )
+        .route("/api/receipts", get(routes::admin::list_receipts::<S, D>))
         .route(
             "/api/receipts/{id}",
             get(routes::admin::get_receipt::<S, D>),
