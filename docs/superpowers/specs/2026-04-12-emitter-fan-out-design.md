@@ -165,22 +165,49 @@ pub struct WebhookDelivery {
 
 ### Receipt's `processing_state` after this change
 
-It is no longer the source of truth for emit state — it tops out at `Stored`. The four post-emit variants (`Emitted`, `EmitFailed`, `DeadLettered`, `Replayed`) become **derived** labels computed from the deliveries:
+It is no longer the source of truth for emit state — it tops out at `Stored`. The four post-emit variants (`Emitted`, `EmitFailed`, `DeadLettered`, `Replayed`) become **derived** labels computed from the deliveries.
+
+#### Latest-mutable-per-emitter rule
+
+Aggregation does **not** look at all rows. For each `(receipt_id, emitter_name)` pair, only the row with the greatest `created_at` among non-immutable rows is considered. This is the only sane semantic once replay exists: a replay inserts a fresh row, and the old `dead_lettered` (or `failed`, or `emitted`) row must not keep poisoning the receipt's derived state forever. Older rows remain in the table for audit history, exposed via the embedded `deliveries: [WebhookDelivery]` array on `GET /api/receipts/:id`, but never participate in aggregation.
+
+Equivalent SQL projection:
+
+```sql
+SELECT DISTINCT ON (emitter_name) *
+FROM webhook_deliveries
+WHERE receipt_id = $1 AND immutable = FALSE
+ORDER BY emitter_name, created_at DESC;
+```
+
+#### Aggregation rules
+
+Apply over the *latest-mutable-per-emitter* set:
 
 | Derived state | Rule |
 |---|---|
-| `Stored` | The receipt has zero non-immutable deliveries. |
-| `Emitted` | Every non-immutable delivery is in `emitted`. |
-| `EmitFailed` | At least one non-immutable delivery is in `failed` and none is in `dead_lettered`. |
-| `DeadLettered` | At least one non-immutable delivery is in `dead_lettered`. |
+| `Stored` | The latest set is empty (all deliveries are immutable, or none exist). |
+| `DeadLettered` | At least one row in the latest set is in `dead_lettered`. |
+| `EmitFailed` | At least one row is in `failed`, none is in `dead_lettered`. |
+| `Stored` (in-progress) | Every row is `pending` or `in_flight`, none has reached a failure or success state yet. |
+| `Emitted` | Every row is `emitted`. |
 
-The computation lives in one helper:
+`Stored` covers two cases (no progress yet, or in-flight progress); they collapse to the same admin label because operators care about "is it done?" not "which dispatch micro-stage?". The `deliveries_summary` field (see Admin API) preserves the per-emitter detail when callers need it.
+
+`DeadLettered` is checked before `EmitFailed` because a single dead-lettered emitter is a louder signal than a transient failure on another.
+
+#### `deliveries_summary` per-emitter rule
+
+`deliveries_summary` shows one entry per `(receipt_id, emitter_name)` pair: the `state` of the **latest mutable row** for that pair. Same projection as above. Older rows for the same emitter never appear in the summary; they live in the deliveries array for audit history.
+
+#### Helper signature
 
 ```rust
 pub fn receipt_aggregate_state(deliveries: &[WebhookDelivery]) -> ProcessingState
+pub fn receipt_deliveries_summary(deliveries: &[WebhookDelivery]) -> BTreeMap<String, DeliveryState>
 ```
 
-in `hookbox::transitions`. No DB-side trigger, no denormalized cache, no double-write hazard. The admin API uses this helper when serializing receipts. Immutable rows are filtered out before computation; if all deliveries are immutable (i.e. a backfilled legacy receipt), the function falls back to reading the receipt's stored `processing_state`.
+Both helpers live in `hookbox::transitions` and operate on a slice that already excludes immutable rows. Callers (the admin API serializers) pass either a pre-filtered slice or the full set — the helpers are documented to ignore `immutable = true` rows for forward safety. If the resulting latest set is empty (all immutable, or no deliveries at all), `receipt_aggregate_state` falls back to reading the receipt's stored `processing_state`. No DB-side trigger, no denormalized cache, no double-write hazard.
 
 ### Why no separate DLQ table
 
@@ -293,14 +320,42 @@ loop {
    WHERE delivery_id = $1
    ```
 4. On `Err`:
-   - `attempt_count += 1`
-   - if `attempt_count >= policy.max_attempts`: state → `dead_lettered`, `last_error = $err`
-   - else: compute `next_attempt_at = now() + min(initial_backoff * multiplier^attempt, max_backoff) * (1 + rand(-jitter, +jitter))`, state → `failed`
+   - `next_attempt = attempt_count + 1` (the count *this dispatch* represents).
+   - Persist `attempt_count = next_attempt`.
+   - If `next_attempt >= policy.max_attempts`: state → `dead_lettered`, `last_error = $err`.
+   - Else: `next_attempt_at = now() + compute_backoff(next_attempt, &policy)`, state → `failed`, `last_error = $err`.
 5. Update `HealthState`: success / failure rate windowed over the last N dispatches.
+
+### Crash recovery (lease + reclaim)
+
+`SKIP LOCKED` solves concurrent dispatch but does **not** solve crash recovery: if a worker process dies between the claim UPDATE and the terminal UPDATE, its `in_flight` rows become permanently invisible to the dispatch query. The fix is a lease.
+
+**No new column.** The existing `last_attempt_at` is set to `now()` by the claim UPDATE. We treat `last_attempt_at + lease_duration` as the implicit lease expiry: an `in_flight` row whose `last_attempt_at` is older than `now() - lease_duration` is presumed orphaned by a dead worker and reclaimed.
+
+**Reclaim query**, run at the start of each poll iteration before `claim_pending`:
+
+```sql
+UPDATE webhook_deliveries
+SET state = 'failed',
+    last_error = COALESCE(last_error, '') || ' [reclaimed: lease expired]',
+    next_attempt_at = now()
+WHERE emitter_name = $1
+  AND state = 'in_flight'
+  AND last_attempt_at < now() - $2::interval
+  AND immutable = FALSE;
+```
+
+The next `claim_pending` call in the same loop iteration picks the row up via the existing pending/failed dispatch path. `attempt_count` is **not** incremented by reclaim — the original attempt may have actually succeeded downstream, so a reclaim is "we don't know if this happened; try again". Operators see the `[reclaimed: lease expired]` marker in `last_error` and on the deliveries detail view to distinguish a lease-expiry retry from a real downstream failure. If the same row is reclaimed twice in a row, the second reclaim's marker is concatenated and `attempt_count` still reflects only true failures.
+
+**Lease duration:** per-emitter, defaults to `max(60s, 2 × emitter timeout)`. Configurable as `lease_duration_seconds` on the `[[emitters]]` entry. The default is generous specifically to avoid reclaiming a still-running emit during a slow-but-healthy downstream.
+
+**Idempotency obligation moves to the operator's downstream.** Reclaim can cause a single delivery to be emitted twice (the original attempt succeeded but the worker died before recording it; reclaim re-dispatches). This is the standard at-least-once guarantee — the existing `Emitter` trait contract already says "Implementations must be idempotent where the downstream consumer supports it (e.g. publish with a message ID derived from `NormalizedEvent::receipt_id`)". The changelog reiterates this.
 
 ### Backoff math
 
 Encapsulated in a pure function `transitions::compute_backoff(attempt: i32, policy: &RetryPolicy) -> Duration` so it is bolero-testable without DB or network. Same pattern as the existing transition helpers.
+
+**Contract.** `attempt` is the post-increment stored `attempt_count` — the number of failed dispatches *including the one that just failed*. The first failure passes `attempt = 1` and gets `initial_backoff`. The Nth failure gets `initial_backoff × multiplier^(N-1)`, clamped to `max_backoff`, then jittered. Calling with `attempt = 0` is a programmer error (a dispatch that never happened) and panics in debug, returns `initial_backoff` in release. Property tests pin this contract.
 
 ### `HealthState`
 
@@ -331,6 +386,7 @@ The worker uses `tokio::time::sleep` and `tokio::time::Instant::now()` for *sche
 
 - `concurrency = 1` per worker (matches the current `RetryWorker`; conservative; per-emitter knob)
 - `poll_interval_seconds = 5` (down from the legacy 30s, since first attempts now go through the worker; per-emitter knob)
+- `lease_duration_seconds = max(60, 2 × emitter timeout)` (per-emitter knob; covers a healthy slow-emit window)
 - `max_attempts = 5`, `initial_backoff = 30s`, `max_backoff = 1h`, `backoff_multiplier = 2.0`, `jitter = 0.2`
 
 ## Config schema
@@ -387,6 +443,12 @@ pub struct EmitterEntry {
     pub poll_interval_seconds: u64,
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
+    /// Crash-recovery lease. If a row sits in `in_flight` for longer than
+    /// this without a terminal update, it is presumed orphaned and reclaimed
+    /// to `failed` so the dispatcher picks it up again. Defaults to
+    /// `max(60, 2 * <emitter timeout>)`.
+    #[serde(default)]
+    pub lease_duration_seconds: Option<u64>,
     pub kafka: Option<KafkaEmitterConfig>,
     pub nats:  Option<NatsEmitterConfig>,
     pub sqs:   Option<SqsEmitterConfig>,
@@ -417,6 +479,8 @@ Fail loudly, fail fast:
 - `retry.jitter` outside `[0.0, 1.0]` → error
 - `retry.max_attempts < 1` → error
 - `concurrency == 0` → error
+- `lease_duration_seconds == Some(0)` → error
+- `lease_duration_seconds < emitter timeout` (when both are set) → warning logged at startup; the worker reclaims slow-but-healthy emits, which is wasteful and at-least-once-noisy
 
 ### Hybrid backwards compatibility
 
@@ -482,6 +546,7 @@ pub struct EmitterHealthSnapshot {
 | `hookbox_emit_pending{emitter}` | did not exist | new gauge — deliveries in `pending` or `failed` ready to dispatch |
 | `hookbox_emit_in_flight{emitter}` | did not exist | new gauge — deliveries currently claimed |
 | `hookbox_emit_attempt_count` | did not exist | new histogram of `attempt_count` at terminal state |
+| `hookbox_emit_reclaimed_total{emitter}` | did not exist | new counter — incremented when the lease-reclaim query rescues a stranded `in_flight` row. A non-zero value indicates either worker crashes or a too-tight lease. |
 | `hookbox_webhooks_received_total{provider}` | unchanged | unchanged |
 | `hookbox_ingest_duration_seconds` | included emit time | drops emit time (free latency improvement on dashboards) |
 
@@ -505,7 +570,7 @@ pub struct EmitterHealthSnapshot {
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/deliveries/:id` | Fetch one delivery row plus its receipt. |
-| `POST /api/deliveries/:id/replay` | Insert a new pending delivery row for the same `(receipt_id, emitter_name)` as the target row; the original row is left untouched (audit history). Returns `202` with the new ID. |
+| `POST /api/deliveries/:id/replay` | Insert a new pending delivery row for the same `(receipt_id, emitter_name)` as the target row; the original row is left untouched (audit history). Returns `202` with the new ID. **Validation:** the target row's `emitter_name` must match a currently-configured `[[emitters]]` entry. If it does not (e.g. the row is a backfilled `legacy` historical record, or its emitter has since been removed from the config), the endpoint returns `400 Bad Request` with `{"error": "emitter '<name>' is not currently configured", "hint": "use POST /api/receipts/:id/replay?emitter=<configured-name>"}`. This guarantees no replay creates a mutable row that no worker owns. |
 | `GET /api/emitters` | List configured emitters with their current health snapshot — same shape as the `emitters` field in `/readyz` but a dedicated endpoint. |
 
 ### Auth
@@ -577,7 +642,7 @@ SELECT
         WHEN 'replayed'      THEN 'emitted'
         WHEN 'emit_failed'   THEN 'failed'
         WHEN 'dead_lettered' THEN 'dead_lettered'
-        WHEN 'stored'        THEN 'emitted'
+        WHEN 'stored'        THEN 'failed'
         ELSE 'emitted'
     END,
     COALESCE(emit_count, 0),
@@ -596,9 +661,9 @@ FROM webhook_receipts;
 | Legacy `processing_state` | Backfilled `state` | Why |
 |---|---|---|
 | `emitted` / `processed` / `replayed` | `emitted` | Successfully reached a downstream under the old single-emitter model. |
-| `emit_failed` | `failed` | Was scheduled for retry under the old worker. Marked immutable so the new worker leaves it alone; operators can manually replay via `/api/deliveries/:id/replay` if they want it pushed through the new emitters. |
+| `emit_failed` | `failed` | Was scheduled for retry under the old worker. Marked immutable so the new worker leaves it alone; the receipt's derived state surfaces it as `EmitFailed` (via the all-immutable fallback to `processing_state`), so operators can find it via `hookbox receipts list --state emit_failed` and push it through new emitters with `hookbox replay id <receipt-id> --emitter <configured-name>` (which uses the receipt-level replay endpoint and creates a fresh mutable row against a real worker). The `legacy` row stays in place as audit history. |
 | `dead_lettered` | `dead_lettered` | Terminal sad state, immutable. |
-| `stored` | `emitted` | **Crucial.** Pre-migration `Stored` receipts were never going to be retried under the old model (the old worker only picked up `EmitFailed`). Mapping them to `pending` would surprise-emit stale events post-migration. Mark them terminal-handled and move on. |
+| `stored` | `failed` | **Crucial.** Under the old single-emitter model a receipt could remain in `stored` for two reasons: (a) the process died after durable store but before stage-5 emit, or (b) the state update after a successful emit failed silently. We cannot tell these apart from the migration. Mapping to `pending` would surprise-emit case (b) as a stale duplicate; mapping to `emitted` would silently drop case (a). The chosen mapping — `failed` + `immutable = TRUE` — does neither: the worker leaves the row alone (immutable), but the all-immutable fallback in `receipt_aggregate_state` reads back `processing_state = 'stored'`, so these receipts surface in `hookbox receipts list --state stored` as needing operator attention. Operators decide per-receipt whether to replay them via `hookbox replay id <id> --emitter <name>`, which inserts a fresh mutable row against a real worker. |
 | `received` / `verified` / `verification_failed` / `duplicate` | `emitted` | These never reached the emit stage. Marked terminal-handled so the worker never picks them up. |
 
 ### Why immutable
@@ -621,12 +686,13 @@ The `webhook_receipts.processing_state` column is **not** dropped in this migrat
 The existing `PostgresStorage::query_for_retry` function and its trait method are **deleted** in this PR. Nothing calls it after the worker is reworked. The new dispatch query lives on a new `DeliveryStorage` trait:
 
 - `claim_pending(emitter_name, batch_size) -> Vec<(WebhookDelivery, WebhookReceipt)>`
+- `reclaim_expired(emitter_name, lease_duration) -> u64` — runs at the start of each poll iteration; returns the number of rows reclaimed for metric reporting.
 - `mark_emitted(delivery_id)`
 - `mark_failed(delivery_id, attempt_count, next_attempt_at, last_error)`
 - `mark_dead_lettered(delivery_id, last_error)`
 - `count_dlq(emitter_name) -> u64`
 - `count_pending(emitter_name) -> u64`
-- `insert_replay(receipt_id, emitter_name) -> DeliveryId`
+- `insert_replay(receipt_id, emitter_name) -> DeliveryId` — must verify `emitter_name` matches a currently-configured emitter; the caller (admin handler) is responsible for the lookup against the live config.
 - `get_delivery(delivery_id) -> Option<(WebhookDelivery, WebhookReceipt)>`
 
 ## Testing strategy
@@ -635,7 +701,7 @@ The existing `PostgresStorage::query_for_retry` function and its trait method ar
 
 | Crate | New unit tests |
 |---|---|
-| `hookbox` | `transitions::compute_backoff` (exponential growth, jitter bounds, max-cap clamping, zero-jitter determinism, `attempt = 0` returns `initial`); `transitions::receipt_aggregate_state` (table-driven over every state combination + the all-immutable fallback); `state::DeliveryState` round-trip serde; pipeline builder rejects `.emitter(...)` (compile-time); pipeline writes deliveries via the storage call (mock storage records the `emitter_names` arg). |
+| `hookbox` | `transitions::compute_backoff` (exponential growth, jitter bounds, max-cap clamping, zero-jitter determinism, `attempt = 1` returns `initial_backoff`, `attempt = 2` returns `initial_backoff × multiplier`, `attempt = 0` panics in debug); `transitions::receipt_aggregate_state` (table-driven over every state combination, including the latest-mutable-per-emitter projection, replay-history non-poisoning, and the all-immutable fallback); `transitions::receipt_deliveries_summary` (table-driven, latest-row-wins per emitter); `state::DeliveryState` round-trip serde; pipeline builder rejects `.emitter(...)` (compile-time); pipeline writes deliveries via the storage call (mock storage records the `emitter_names` arg). |
 | `hookbox-postgres` | Storage trait tests against a testcontainer Postgres: `claim_pending` honors `FOR UPDATE SKIP LOCKED` (two concurrent claims see disjoint row sets); `mark_*` atomicity; `insert_replay` creates a fresh row leaving the original; `count_dlq` and `count_pending` correctness; immutable rows are skipped by `claim_pending`. |
 | `hookbox-server` | `EmitterWorker::dispatch_one` with a fake `Emitter` and in-memory storage stub: success → `emitted`; failure → `failed` + correct backoff; failure at `attempt = max` → `dead_lettered`. Config normalization for every case enumerated above. `emitter_factory::build_workers` happy path + every validation arm without Docker (same pattern as PR #17). `routes::admin::list_dlq` with `?emitter=` filter against in-memory storage. `/readyz` aggregation: `degraded → 200`, `unhealthy → 503`, `healthy → 200`, all-emitters-healthy + db-down → 503. |
 | `hookbox-cli` | `hookbox emitters list` parse + render via fake API responses. |
@@ -650,15 +716,22 @@ The existing `PostgresStorage::query_for_retry` function and its trait method ar
 | `test_per_delivery_replay` | After dead-letter, `POST /api/deliveries/:id/replay` creates a new row for the same `(receipt, emitter)`; the original row is unchanged. |
 | `test_dlq_filter_by_emitter` | Three emitters, one webhook, two permanently fail; `GET /api/dlq` returns 2 rows; filtered queries return the right subsets. |
 | `test_legacy_emitter_block_normalizes` | Boot with legacy `[emitter] type = "channel"`; server starts; deprecation warning logged; `/api/emitters` returns one entry named `default`; ingest works. |
-| `test_migration_backfills_history` | Apply 0001 only; insert receipts in each pre-existing state; apply 0002; assert deliveries with `immutable = TRUE` and the right state mapping. |
+| `test_migration_backfills_history` | Apply 0001 only; insert receipts in each pre-existing state; apply 0002; assert deliveries with `immutable = TRUE` and the right state mapping (including `stored → failed`). Then assert via the admin API that an all-immutable receipt with original `processing_state = 'stored'` reports a derived state of `Stored` (not `EmitFailed`) — i.e. the all-immutable fallback to `processing_state` works. Same check for `emit_failed → EmitFailed` and `dead_lettered → DeadLettered`. |
 | `test_concurrent_dispatch_no_double_emit` | One emitter, `concurrency = 4`, 100 pending deliveries; worker drains; channel receiver sees exactly 100 events, no duplicates, no rows in `in_flight`. Validates `FOR UPDATE SKIP LOCKED` under contention within a single worker. |
+| `test_lease_reclaim_after_worker_crash` | Insert a row directly into `webhook_deliveries` with `state = 'in_flight'`, `last_attempt_at = now() - 10 minutes`; start a worker with `lease_duration_seconds = 60`; assert: within one poll cycle the row is reclaimed (`state = 'failed'`, `last_error` contains `[reclaimed: lease expired]`, `attempt_count` unchanged), then re-dispatched and ends `emitted`. |
+| `test_lease_does_not_reclaim_active_emit` | Slow fake emitter (5s/emit), `lease_duration_seconds = 60`; one webhook; assert the in-flight row is **not** reclaimed during the active emit; final state is `emitted` with `attempt_count = 0`. |
+| `test_replay_history_does_not_poison_state` | Two emitters; force one to dead-letter; assert receipt derived state = `DeadLettered`; replay the dead emitter; the new pending row succeeds; assert receipt derived state flips to `Emitted` even though the old `dead_lettered` row still exists in the table. Validates the latest-mutable-per-emitter rule end-to-end. |
+| `test_per_delivery_replay_rejects_legacy_emitter` | Backfill creates an immutable `legacy` row; `POST /api/deliveries/<that-id>/replay` returns `400` with the documented hint payload; no new rows created. |
+| `test_aggregate_state_pending_in_flight_collapse_to_stored` | One webhook, slow fake emitter; observe receipt derived state = `Stored` while the delivery is `pending`, still `Stored` while `in_flight`, flips to `Emitted` after success. |
 
 ### Tier 3 — Property tests (bolero, `hookbox-verify`)
 
-- `prop_backoff_monotonic_under_no_jitter` — for any `policy` with `jitter = 0`, `compute_backoff(n) <= compute_backoff(n+1)` until `max_backoff`, then clamped.
-- `prop_backoff_within_jitter_bounds` — for any `policy` with `jitter > 0`, the result is within `[base * (1 - jitter), base * (1 + jitter)]`.
-- `prop_aggregate_state_deterministic` — `receipt_aggregate_state` is total and pure on every `Vec<DeliveryState>` shape.
-- `prop_state_machine_no_resurrection` — terminal states (`emitted`, `dead_lettered`) are never left for non-terminal states except via the explicit replay endpoint, which inserts a new row rather than mutating.
+- `prop_backoff_monotonic_under_no_jitter` — for any `policy` with `jitter = 0`, `compute_backoff(n) <= compute_backoff(n+1)` for all `n >= 1` until `max_backoff`, then clamped.
+- `prop_backoff_first_failure_is_initial` — `compute_backoff(1, policy)` always equals `policy.initial_backoff` (zero-jitter case) and falls within `[initial * (1 - jitter), initial * (1 + jitter)]` (any-jitter case).
+- `prop_backoff_within_jitter_bounds` — for any `policy` with `jitter > 0` and any `attempt >= 1`, the result is within `[base * (1 - jitter), base * (1 + jitter)]`.
+- `prop_aggregate_state_deterministic` — `receipt_aggregate_state` is total and pure on every `Vec<WebhookDelivery>` shape (varying state, immutable, created_at, emitter_name).
+- `prop_aggregate_state_replay_history_non_poisoning` — for any base set of deliveries that aggregate to state `S`, inserting a new `(same emitter, later created_at, state = emitted)` row makes the result no worse than `S` for that emitter (a successful replay can only improve aggregate state, never degrade it).
+- `prop_state_machine_no_resurrection` — terminal states (`emitted`, `dead_lettered`) on a single row are never left for non-terminal states except via the explicit replay endpoint, which inserts a new row rather than mutating.
 
 ### Tier 4 — Kani proofs (nightly, `hookbox-verify`)
 
@@ -745,6 +818,9 @@ Server scenario coverage:
 | **Graceful shutdown drains in-flight deliveries** | Slow fake (200ms/emit), `concurrency = 4`, 50 webhooks; SIGTERM after 100ms; every claimed `in_flight` completes before exit; no rows left in `in_flight`; ingest stops accepting new requests during shutdown. |
 | **Background dispatch decouples ingest latency from emit** | Slow fake (50ms/emit), 600 webhooks at 20 RPS; ingest p99 latency stays under 50ms; eventual emit count is 600. The Question 2 promise. |
 | **CLI bulk DLQ replay loop** | After the dead-letter scenario, fix the broken emitter, run `hookbox dlq retry` for every dead delivery in a shell loop, advance time; DLQ empty; 50 new rows in `emitted`; the 50 original rows unchanged. |
+| **Worker crash mid-dispatch is recovered by lease reclaim** | Slow fake (10s/emit), `concurrency = 2`, `lease_duration_seconds = 30`; ingest 4 webhooks; during `in_flight`, abort the worker tokio tasks (simulate crash); restart the worker via the same `serve` bootstrap; advance simulated time past the lease; assert all 4 deliveries eventually reach `emitted`, no rows stuck in `in_flight`, `last_error` markers are present on the reclaimed rows. The crash-safety promise. |
+| **Replay history does not poison derived state** | Two emitters, force one to dead-letter, then replay; assert `GET /api/receipts/:id` reports `processing_state = "emitted"` after the replay succeeds even though the historical `dead_lettered` row is still in the table and visible in the embedded `deliveries` array. The latest-mutable-per-emitter rule end-to-end through the HTTP layer. |
+| **Per-delivery replay against backfilled `legacy` row is rejected** | Pre-populate one immutable `legacy = failed` row via raw SQL; `POST /api/deliveries/:id/replay` returns 400 with the documented JSON payload; no new rows created; receipt-level `POST /api/receipts/:id/replay?emitter=<configured>` then succeeds and creates a fresh mutable row. The migration story end-to-end. |
 
 #### Migration fixture seeding
 
@@ -821,7 +897,7 @@ Stays at 85%. The new code is mostly straight-line worker logic and pure functio
 - `docs/superpowers/specs/2026-04-10-hookbox-design.md` — append a "Revision history" entry pointing at this spec; do not rewrite the original.
 - `docs/ROADMAP.md` — mark the five "Future emitter architecture improvements" bullets as completed; add new deferred bullets for per-emitter routing filters, DLQ alerting hooks, distributed worker leader election, and bulk DLQ replay.
 - Examples shipped under `examples/` get updated to the new shape, with at least one example showing two emitters and per-emitter retry policies.
-- Changelog (or release notes draft) calls out the breaking changes: `hookbox_emit_results_total` semantics, `hookbox dlq inspect/retry` argument shape, `[emitter]` deprecation warning, the pipeline generic param change for anyone embedding `HookboxPipeline` directly.
+- Changelog (or release notes draft) calls out the breaking changes: `hookbox_emit_results_total` semantics, `hookbox dlq inspect/retry` argument shape, `[emitter]` deprecation warning, the pipeline generic param change for anyone embedding `HookboxPipeline` directly. The changelog also explicitly reiterates the at-least-once semantic that the lease-reclaim mechanism makes operationally relevant: a worker crash between emit and state update can cause one downstream re-delivery, and downstream consumers should idempotently de-duplicate on `NormalizedEvent::receipt_id`. Operators inspecting `last_error` will see `[reclaimed: lease expired]` markers on rows that were re-dispatched after a worker crash.
 
 ## Future work tracked in roadmap
 
