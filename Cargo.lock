@@ -2073,6 +2073,7 @@ dependencies = [
  "chrono",
  "criterion",
  "cucumber",
+ "fastrand",
  "futures",
  "hex",
  "http 1.4.0",
