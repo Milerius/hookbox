@@ -259,6 +259,12 @@ Per the locked-in decisions:
 3. **Coverage measurement** — `cargo llvm-cov --all-features` picks up the round-trip tests because they are not `#[ignore]`'d. Target: meaningfully above 0% on each emitter crate (specific number not committed in this spec; whatever round-trip naturally yields).
 4. **CI placement** — PR CI on every push via a new dedicated Linux-only `test-emitters` job in `.github/workflows/ci.yml`. The four emitter crates are excluded from the existing `test` matrix job to keep the macOS leg green (no Docker on macOS GHA runners). See the "CI placement — dedicated Linux-only emitter test job in `ci.yml`" decision section above for full reasoning.
 
+**Kani scope for this PR:** No new proofs added. The Redis emitter reuses the
+existing `ProcessingState` machine and `EmitError::{Downstream, Timeout}` enum
+without introducing new variants or transitions. The existing
+`processing_state_variants_are_distinct` proof in `kani_proofs.rs` continues
+to cover the full state surface.
+
 ---
 
 ## Effort estimate
