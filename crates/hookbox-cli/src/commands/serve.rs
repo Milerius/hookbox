@@ -118,7 +118,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
             let emitter = hookbox_emitter_nats::NatsEmitter::new(&cfg.url, cfg.subject.clone())
                 .await
                 .context("failed to create NATS emitter")?;
-            tracing::info!(url = %cfg.url, subject = %cfg.subject, "emitter: nats");
+            tracing::info!(subject = %cfg.subject, "emitter: nats");
             Arc::new(emitter)
         }
         "sqs" => {
@@ -148,7 +148,7 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
             )
             .await
             .context("failed to create Redis emitter")?;
-            tracing::info!(url = %cfg.url, stream = %cfg.stream, "emitter: redis");
+            tracing::info!(stream = %cfg.stream, "emitter: redis");
             Arc::new(emitter)
         }
         "channel" => {

@@ -19,6 +19,13 @@ ignore = [
     # container image layers; never touches production code paths. Upstream testcontainers
     # has not yet migrated to astral-tokio-tar.
     { id = "RUSTSEC-2025-0111", reason = "dev-dependency only via testcontainers; test harness only, no production exposure" },
+    # RUSTSEC-2026-0097: rand 0.8 unsound under a very narrow combination of conditions
+    # (custom logger calling rand::thread_rng with reseeding triggered from inside the
+    # logger). Pulled in transitively via async-nats, aws-config, sqlx-postgres, rsa, etc.
+    # Hookbox uses tracing's stock subscriber, never calls thread_rng from inside a logger,
+    # so the unsound code path is unreachable in practice. Upstream fix is rand >= 0.9.3,
+    # which the affected crates have not yet adopted.
+    { id = "RUSTSEC-2026-0097", reason = "unreachable in hookbox: no custom logger calls thread_rng; transitive via async-nats/aws/sqlx/rsa" },
     # RUSTSEC-2025-0134: rustls-pemfile is unmaintained (archived Aug 2025).
     # Transitive dependency via async-nats. Using rustls-pki-types internally; no action needed.
     { id = "RUSTSEC-2025-0134", reason = "transitive via async-nats; crate is a thin wrapper around rustls-pki-types" },

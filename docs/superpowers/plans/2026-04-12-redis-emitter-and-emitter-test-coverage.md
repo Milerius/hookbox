@@ -227,7 +227,7 @@ The `let _ = (...)` at the top of `emit()` suppresses `dead_code` warnings on th
 
 Create `crates/hookbox-emitter-redis/README.md`:
 
-```markdown
+````markdown
 # hookbox-emitter-redis
 
 Redis Streams emitter adapter for [hookbox](../../README.md).
@@ -261,7 +261,7 @@ stream = "hookbox.events"
 maxlen = 100000     # optional
 timeout_ms = 5000   # default 5000
 ```
-```
+````
 
 - [ ] **Step 4: Register the crate in the workspace root `Cargo.toml`**
 
