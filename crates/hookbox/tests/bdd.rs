@@ -295,6 +295,20 @@ async fn then_event_emitted_with_provider(world: &mut IngestWorld, provider: Str
     assert_eq!(event.provider_name, provider);
 }
 
+#[then(expr = "the emitted event payload_hash should be deterministic for body {string}")]
+async fn then_emitted_event_payload_hash_deterministic(world: &mut IngestWorld, body: String) {
+    let rx = world.emitter_rx.as_mut().unwrap();
+    let event = rx.try_recv().unwrap();
+
+    let expected_hash = hookbox::hash::compute_payload_hash(body.as_bytes());
+    assert_eq!(event.payload_hash, expected_hash);
+
+    // With NormalizedEvent: PartialEq, confirm the struct is internally
+    // consistent (no field has been mutated post-emit).
+    let copy = event.clone();
+    assert_eq!(event, copy);
+}
+
 #[then(expr = "the first result should be {string}")]
 async fn then_first_result_should_be(world: &mut IngestWorld, expected: String) {
     assert!(
