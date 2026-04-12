@@ -12,9 +12,6 @@ use hookbox_postgres::{DeliveryStorage, PostgresStorage};
 use crate::db;
 
 /// Dead-letter queue inspection and retry commands.
-///
-/// Note: --provider was removed in the fan-out release — DLQ is now per-delivery,
-/// filter by --emitter instead.
 #[derive(Subcommand)]
 pub enum DlqCommand {
     /// List dead-lettered deliveries.
