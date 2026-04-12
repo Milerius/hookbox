@@ -31,8 +31,8 @@ use hookbox_server::config::parse_and_normalize;
 pub async fn run(config_path: PathBuf) -> Result<()> {
     let raw = std::fs::read_to_string(&config_path)
         .with_context(|| format!("reading {}", config_path.display()))?;
-    let (config, warnings) =
-        parse_and_normalize(&raw).with_context(|| "normalizing config")?;
+    let (config, warnings) = parse_and_normalize(&raw)
+        .with_context(|| format!("normalizing config at {}", config_path.display()))?;
     for w in &warnings {
         eprintln!("WARNING: {w}");
     }

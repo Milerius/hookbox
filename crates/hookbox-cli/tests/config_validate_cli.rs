@@ -2,12 +2,12 @@
 
 #[expect(clippy::unwrap_used, reason = "test code")]
 #[expect(clippy::expect_used, reason = "test code")]
+#[expect(clippy::panic, reason = "test assertions panic on failure")]
 #[test]
 fn config_validate_exits_nonzero_on_bad_toml() {
     use std::io::Write as _;
 
-    let path = std::env::temp_dir()
-        .join(format!("hookbox-test-{}.toml", uuid::Uuid::new_v4()));
+    let path = std::env::temp_dir().join(format!("hookbox-test-{}.toml", uuid::Uuid::new_v4()));
     let mut f = std::fs::File::create(&path).expect("create temp file");
     f.write_all(b"[this is not valid toml!!!")
         .expect("write bad toml");
@@ -24,12 +24,12 @@ fn config_validate_exits_nonzero_on_bad_toml() {
 
 #[expect(clippy::unwrap_used, reason = "test code")]
 #[expect(clippy::expect_used, reason = "test code")]
+#[expect(clippy::panic, reason = "test assertions panic on failure")]
 #[test]
 fn config_validate_ok_output_on_valid_config() {
     use std::io::Write as _;
 
-    let path = std::env::temp_dir()
-        .join(format!("hookbox-test-{}.toml", uuid::Uuid::new_v4()));
+    let path = std::env::temp_dir().join(format!("hookbox-test-{}.toml", uuid::Uuid::new_v4()));
     let mut f = std::fs::File::create(&path).expect("create temp file");
     f.write_all(
         br#"

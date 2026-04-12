@@ -1,4 +1,5 @@
 //! CLI subcommands.
+pub mod config;
 pub mod config_validate;
 pub mod dlq;
 pub mod receipts;
