@@ -1,5 +1,7 @@
 //! Hookbox CLI — inspect, replay, and serve.
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
@@ -36,6 +38,21 @@ enum Commands {
         #[command(subcommand)]
         command: commands::dlq::DlqCommand,
     },
+    /// Config-related utilities (validate, etc.).
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+}
+
+/// Subcommands for `hookbox config`.
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Validate a hookbox TOML config file without connecting to the database.
+    Validate {
+        /// Path to the hookbox TOML config file to validate.
+        path: PathBuf,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -52,6 +69,11 @@ fn main() -> anyhow::Result<()> {
                 Commands::Receipts { command } => rt.block_on(commands::receipts::run(command)),
                 Commands::Replay { command } => rt.block_on(commands::replay::run(command)),
                 Commands::Dlq { command } => rt.block_on(commands::dlq::run(command)),
+                Commands::Config { command } => match command {
+                    ConfigCommand::Validate { path } => {
+                        rt.block_on(commands::config_validate::run(path))
+                    }
+                },
                 Commands::Serve => unreachable!(),
             }
         }
