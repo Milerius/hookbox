@@ -2,7 +2,6 @@
 
 #[expect(clippy::unwrap_used, reason = "test code")]
 #[expect(clippy::expect_used, reason = "test code")]
-#[expect(clippy::panic, reason = "test assertions panic on failure")]
 #[test]
 fn config_validate_exits_nonzero_on_bad_toml() {
     use std::io::Write as _;
@@ -24,7 +23,6 @@ fn config_validate_exits_nonzero_on_bad_toml() {
 
 #[expect(clippy::unwrap_used, reason = "test code")]
 #[expect(clippy::expect_used, reason = "test code")]
-#[expect(clippy::panic, reason = "test assertions panic on failure")]
 #[test]
 fn config_validate_ok_output_on_valid_config() {
     use std::io::Write as _;
