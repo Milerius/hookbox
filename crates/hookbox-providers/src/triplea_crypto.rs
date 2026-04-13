@@ -290,4 +290,38 @@ mod tests {
         let verifier = TripleACryptoVerifier::new("triplea-prod".to_owned(), "secret".to_owned());
         assert_eq!(verifier.provider_name(), "triplea-prod");
     }
+
+    /// Mutant: `replace > with >= in TripleACryptoVerifier::verify` (line 110).
+    ///
+    /// The tolerance check is `now.abs_diff(timestamp) > tolerance_secs`.
+    /// - Original (`>`):  delta == tolerance is ACCEPTED.
+    /// - Mutant (`>=`):   delta == tolerance is REJECTED.
+    ///
+    /// We set a custom tolerance of exactly `T` seconds and use a timestamp
+    /// exactly `T` seconds in the past.  The original must accept; the mutant rejects.
+    #[tokio::test]
+    async fn timestamp_exactly_at_tolerance_boundary_is_accepted() {
+        let secret = "test_notify_secret";
+        let body = b"{\"event\":\"payment\"}";
+        let tolerance_secs = 120_u64;
+        let ts = now_secs().saturating_sub(tolerance_secs);
+        let sig = compute_sig(secret, ts, body);
+        let header_str = format!("t={ts},v1={sig}");
+
+        let verifier = TripleACryptoVerifier::new("triplea".to_owned(), secret.to_owned())
+            .with_tolerance(Duration::from_secs(tolerance_secs));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "triplea-signature",
+            HeaderValue::from_str(&header_str).expect("valid header value"),
+        );
+
+        let result = verifier.verify(&headers, body).await;
+        // abs_diff == tolerance → NOT > tolerance → should be Verified.
+        assert_eq!(
+            result.status,
+            VerificationStatus::Verified,
+            "timestamp exactly at tolerance boundary must be accepted (uses strict >)"
+        );
+    }
 }
