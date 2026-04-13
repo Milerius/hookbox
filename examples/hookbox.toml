@@ -1,0 +1,69 @@
+# Example hookbox server configuration using the [[emitters]] fan-out shape.
+#
+# Run:
+#   hookbox serve --config examples/hookbox.toml
+#
+# Every accepted receipt is persisted once and fanned out to each configured
+# emitter as an independent delivery row. Emitters retry on their own schedule
+# and a failure in one emitter does not block the others.
+
+[database]
+url = "postgres://hookbox:hookbox@localhost:5432/hookbox"
+
+[server]
+host = "0.0.0.0"
+port = 8080
+body_limit = 1048576
+
+[retry]
+# Global worker cadence. Per-emitter [emitters.retry] blocks below
+# override the exponential backoff shape on a per-emitter basis.
+interval_seconds = 30
+max_attempts = 5
+
+[providers.stripe]
+type = "stripe"
+secret = "whsec_replace_me"
+
+[providers.bvnk]
+type = "bvnk"
+secret = "replace_me"
+
+# First emitter: Kafka for the billing event bus.
+[[emitters]]
+name = "kafka-billing"
+type = "kafka"
+poll_interval_seconds = 5
+concurrency = 4
+
+[emitters.retry]
+max_attempts = 8
+initial_backoff_seconds = 30
+max_backoff_seconds = 3600
+backoff_multiplier = 2.0
+jitter = 0.1
+
+[emitters.kafka]
+brokers = "localhost:9092"
+topic = "billing.webhooks"
+client_id = "hookbox"
+acks = "all"
+timeout_ms = 5000
+
+# Second emitter: SQS for the audit trail. Slower cadence, smaller fan-out.
+[[emitters]]
+name = "sqs-audit"
+type = "sqs"
+poll_interval_seconds = 10
+concurrency = 2
+
+[emitters.retry]
+max_attempts = 12
+initial_backoff_seconds = 60
+max_backoff_seconds = 7200
+backoff_multiplier = 2.0
+jitter = 0.2
+
+[emitters.sqs]
+queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/hookbox-audit"
+region = "us-east-1"

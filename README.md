@@ -54,30 +54,75 @@ Hookbox is designed to work in two modes:
 - **embedded library** for teams that want to integrate it into an existing Rust/Axum service
 - **standalone service** for teams that want a dedicated webhook-ingestion boundary
 
-### Embedded in your Axum app
-
-```rust
-let pipeline = HookboxPipeline::builder()
-    .storage(PostgresStorage::new(pool).await?)
-    .dedupe(LayeredDedupe::new(
-        InMemoryLruDedupe::new(10_000),
-        StorageDedupe::new(storage.clone()),
-    ))
-    .emitter(CallbackEmitter::new(|event| async move {
-        my_business_logic(event).await
-    }))
-    .verifier(StripeVerifier::new("stripe".to_owned(), stripe_secret))
-    .verifier(GenericHmacVerifier::new("bvnk", config))
-    .build();
-
-let app = Router::new()
-    .route("/webhooks/:provider", post(hookbox::axum::handler(pipeline)));
-```
-
 ### Standalone service
 
 ```bash
 hookbox serve --config hookbox.toml
+```
+
+A minimal fan-out configuration with two downstream emitters:
+
+```toml
+[database]
+url = "postgres://hookbox:hookbox@localhost:5432/hookbox"
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[providers.stripe]
+type = "stripe"
+secret = "whsec_..."
+
+[[emitters]]
+name = "kafka-billing"
+type = "kafka"
+concurrency = 4
+[emitters.retry]
+max_attempts = 8
+initial_backoff_seconds = 30
+max_backoff_seconds = 3600
+backoff_multiplier = 2.0
+jitter = 0.1
+[emitters.kafka]
+brokers = "localhost:9092"
+topic = "billing.webhooks"
+acks = "all"
+
+[[emitters]]
+name = "sqs-audit"
+type = "sqs"
+concurrency = 2
+[emitters.sqs]
+queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/audit"
+region = "us-east-1"
+```
+
+Each receipt is stored once and fanned out to every configured emitter as an
+independent delivery row. Emitters run concurrently and retry on their own
+schedule — a failing Kafka broker does not block SQS delivery, and vice versa.
+
+### Migrating from the legacy `[emitter]` section
+
+The pre-fan-out single-emitter shape is still accepted and automatically
+rewritten to a `"default"` entry, but emits a deprecation warning. Migrate by
+wrapping your existing block in `[[emitters]]` and giving it a name:
+
+```toml
+# before
+[emitter]
+type = "kafka"
+[emitter.kafka]
+brokers = "localhost:9092"
+topic = "events"
+
+# after
+[[emitters]]
+name = "kafka-primary"
+type = "kafka"
+[emitters.kafka]
+brokers = "localhost:9092"
+topic = "events"
 ```
 
 ## What Hookbox gives you
@@ -100,8 +145,8 @@ hookbox serve --config hookbox.toml
 - **Retry worker**  
   Background retries with configurable interval and max attempts.
 
-- **Emitter adapters**  
-  Pluggable downstream forwarding: built-in channel emitter, plus Kafka, NATS, SQS, and Redis Streams adapters for production message broker integration.
+- **Emitter fan-out**  
+  Configure one or many downstream emitters with `[[emitters]]`. Each entry is an independently retried delivery row per receipt — partial failures don't block healthy emitters. Built-in channel emitter plus Kafka, NATS, SQS, and Redis Streams adapters for production message broker integration.
 
 - **Observability by default**  
   Structured tracing, Prometheus metrics, health/readiness endpoints, and operational visibility at every pipeline stage.
