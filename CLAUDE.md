@@ -9,6 +9,8 @@ Build:          cargo build
 Build all:      cargo build --all-features
 Test:           cargo test --all-features
 Test nextest:   cargo nextest run --all-features
+BDD core:       cargo test -p hookbox-scenarios --test core_bdd
+BDD server:     cargo test -p hookbox-scenarios --test server_bdd --features bdd-server
 Lint:           cargo clippy --all-targets --all-features -- -D warnings
 Format:         cargo fmt --all
 Format check:   cargo fmt --all --check
@@ -48,11 +50,12 @@ Provider webhook → Receive → Verify → Dedupe → Store durably → Emit do
 ## Workspace Layout
 
 ```
-crates/hookbox/           hookbox           Core: traits, types, pipeline, lightweight impls
+crates/hookbox/           hookbox            Core: traits, types, pipeline, lightweight impls
 crates/hookbox-postgres/  hookbox-postgres   PostgreSQL storage backend
 crates/hookbox-providers/ hookbox-providers  Signature verifiers (Stripe, BVNK, generic HMAC)
 crates/hookbox-server/    hookbox-server     Standalone Axum HTTP server
 crates/hookbox-cli/       hookbox-cli        CLI binary (inspect, replay, serve)
+scenario-tests/           hookbox-scenarios  Cucumber BDD suite (core in-memory; server testcontainer behind bdd-server feature)
 ```
 
 ## Error Handling
