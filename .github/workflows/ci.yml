@@ -57,8 +57,8 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - name: Unit tests (nextest)
         run: cargo nextest run --all-features --profile ci --no-tests=warn --workspace --exclude hookbox-integration-tests --exclude hookbox-emitter-kafka --exclude hookbox-emitter-nats --exclude hookbox-emitter-sqs --exclude hookbox-emitter-redis
-      - name: BDD scenario tests
-        run: cargo test -p hookbox --test bdd
+      - name: BDD scenario tests (core, in-memory)
+        run: cargo test -p hookbox-scenarios --test core_bdd
 
   test-integration:
     name: Integration Test (Postgres)
