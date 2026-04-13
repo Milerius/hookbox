@@ -31,7 +31,7 @@ use crate::bootstrap::{build_provider_verifiers, validate_retry_config};
 use crate::build_router;
 use crate::config::{EmitterEntry, HookboxConfig};
 use crate::emitter_factory::{BuiltEmitter, build_emitter};
-use crate::worker::{EmitterHealth, EmitterWorker};
+use crate::worker::{EmitterHealth, EmitterWorker, HealthStatus};
 use crate::{AppState, ServerAppState};
 
 /// Default lease duration for an `EmitterWorker` when the TOML entry omits
@@ -166,6 +166,7 @@ async fn spawn_emitter_workers(
 
         let health = Arc::new(ArcSwap::from_pointee(EmitterHealth::default()));
         emitter_health.insert(entry.name.clone(), Arc::clone(&health));
+        let supervisor_health = Arc::clone(&health);
 
         let worker = EmitterWorker {
             name: entry.name.clone(),
@@ -185,10 +186,50 @@ async fn spawn_emitter_workers(
             concurrency = entry.concurrency,
             "spawning EmitterWorker"
         );
-        worker_handles.push((entry.name.clone(), worker.spawn(shutdown_rx.clone())));
+        let inner_handle = worker.spawn(shutdown_rx.clone());
+        let supervisor = supervise_worker(entry.name.clone(), inner_handle, supervisor_health);
+        worker_handles.push((entry.name.clone(), supervisor));
     }
 
     Ok((emitter_health, worker_handles))
+}
+
+/// Wrap an emitter worker's `JoinHandle` in a supervising task that flips
+/// the health snapshot to `Unhealthy` the moment the inner task panics —
+/// without waiting for shutdown — so `/readyz` surfaces silent delivery
+/// outages in real time. The supervisor then resumes the panic so its own
+/// handle still returns `Err(JoinError)` and `drain_worker_handles` records
+/// the outage at shutdown, matching the pre-supervisor contract.
+fn supervise_worker(
+    name: String,
+    inner: JoinHandle<()>,
+    health: Arc<ArcSwap<EmitterHealth>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        match inner.await {
+            Ok(()) => {}
+            Err(join_err) => {
+                tracing::error!(
+                    emitter = %name,
+                    error = %join_err,
+                    "emitter worker task terminated abnormally — marking Unhealthy"
+                );
+                let previous = health.load_full();
+                let degraded = EmitterHealth {
+                    last_success_at: previous.last_success_at,
+                    last_failure_at: Some(chrono::Utc::now()),
+                    consecutive_failures: previous.consecutive_failures.saturating_add(1),
+                    status: HealthStatus::Unhealthy,
+                    dlq_depth: previous.dlq_depth,
+                    pending_count: previous.pending_count,
+                };
+                health.store(Arc::new(degraded));
+                if join_err.is_panic() {
+                    std::panic::resume_unwind(join_err.into_panic());
+                }
+            }
+        }
+    })
 }
 
 /// Await every spawned emitter task and aggregate any panics.
@@ -247,4 +288,61 @@ async fn drain_emitter(
         );
     }
     tracing::warn!(emitter = %emitter_name, "emitter channel closed — drain task exiting");
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "expect is acceptable in test code")]
+#[expect(clippy::panic, reason = "panic is acceptable in test assertions")]
+mod tests {
+    use super::*;
+
+    /// A clean exit from the inner worker must leave the health snapshot
+    /// untouched and let the supervisor handle resolve successfully.
+    #[tokio::test]
+    async fn supervise_worker_leaves_health_untouched_on_clean_exit() {
+        let health = Arc::new(ArcSwap::from_pointee(EmitterHealth::default()));
+        let inner: JoinHandle<()> = tokio::spawn(async {});
+        let supervisor = supervise_worker("ok-emitter".to_owned(), inner, Arc::clone(&health));
+
+        supervisor.await.expect("supervisor should exit cleanly");
+
+        let snapshot = health.load_full();
+        assert_eq!(snapshot.status, HealthStatus::Healthy);
+        assert!(snapshot.last_failure_at.is_none());
+        assert_eq!(snapshot.consecutive_failures, 0);
+    }
+
+    /// A panicking inner worker must flip the `ArcSwap` health to `Unhealthy`
+    /// *before* shutdown, and re-raise the panic so the supervisor handle
+    /// still returns `Err(JoinError)` for `drain_worker_handles` to catch.
+    #[tokio::test]
+    async fn supervise_worker_marks_unhealthy_and_propagates_on_panic() {
+        let health = Arc::new(ArcSwap::from_pointee(EmitterHealth::default()));
+        let inner: JoinHandle<()> =
+            tokio::spawn(async { panic!("simulated emitter worker panic") });
+        let supervisor = supervise_worker("panicky-emitter".to_owned(), inner, Arc::clone(&health));
+
+        let result = supervisor.await;
+        assert!(
+            result.is_err(),
+            "supervisor must propagate panics as JoinError",
+        );
+        let join_err = result.expect_err("panic already asserted");
+        assert!(
+            join_err.is_panic(),
+            "supervisor JoinError should carry the original panic",
+        );
+
+        let snapshot = health.load_full();
+        assert_eq!(
+            snapshot.status,
+            HealthStatus::Unhealthy,
+            "panic must flip health to Unhealthy immediately, not at shutdown",
+        );
+        assert!(
+            snapshot.last_failure_at.is_some(),
+            "panic must stamp last_failure_at",
+        );
+        assert_eq!(snapshot.consecutive_failures, 1);
+    }
 }

@@ -646,6 +646,23 @@ url = "postgres://localhost/hookbox_test"
 [emitter]
 type = "channel"
 "#;
+    // Pin the contract that this body actually triggers a deprecation
+    // warning during normalization — without this, a regression that
+    // dropped the warning would still let the test pass because
+    // replay::run only writes warnings to stderr and returns Ok.
+    let (_parsed, warnings) =
+        hookbox_server::config::parse_and_normalize(body).expect("legacy config should parse");
+    assert!(
+        !warnings.is_empty(),
+        "expected a deprecation warning for legacy [emitter] section, got none"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("deprecated") || w.contains("[[emitters]]")),
+        "expected a deprecation warning naming the legacy section, got {warnings:?}"
+    );
+
     std::fs::write(&path, body).expect("write legacy config");
     let config = path.to_string_lossy().into_owned();
 

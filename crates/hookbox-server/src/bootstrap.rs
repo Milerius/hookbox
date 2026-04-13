@@ -32,9 +32,10 @@ pub fn validate_retry_config(retry: &RetryConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build one [`SignatureVerifier`] per entry in `providers`, preserving the
-/// map's iteration order so error messages point at the first offending
-/// provider in a deterministic way.
+/// Build one [`SignatureVerifier`] per entry in `providers`, walking the
+/// providers in lexicographic order by name so the returned list and the
+/// "first offending provider" error are both stable across runs regardless
+/// of the caller's `HashMap` hasher.
 ///
 /// Returns the list boxed so the caller can register them against a
 /// [`HookboxPipelineBuilder`] without having to monomorphise over concrete
@@ -42,14 +43,18 @@ pub fn validate_retry_config(retry: &RetryConfig) -> anyhow::Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error on the first provider that is missing a required field
-/// (`secret`, `public_key`, …) or has an invalid key material format (e.g.
-/// malformed Adyen hex, unparseable Triple-A PEM, bad Walapay whsec).
+/// Returns an error on the first provider (in name order) that is missing a
+/// required field (`secret`, `public_key`, …) or has an invalid key material
+/// format (e.g. malformed Adyen hex, unparseable Triple-A PEM, bad Walapay
+/// whsec).
 pub fn build_provider_verifiers<H: BuildHasher>(
     providers: &HashMap<String, ProviderConfig, H>,
 ) -> anyhow::Result<Vec<Box<dyn SignatureVerifier>>> {
-    let mut out: Vec<Box<dyn SignatureVerifier>> = Vec::with_capacity(providers.len());
-    for (name, provider) in providers {
+    let mut ordered: Vec<(&String, &ProviderConfig)> = providers.iter().collect();
+    ordered.sort_unstable_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
+
+    let mut out: Vec<Box<dyn SignatureVerifier>> = Vec::with_capacity(ordered.len());
+    for (name, provider) in ordered {
         out.push(build_one_verifier(name, provider).with_context(|| format!("provider '{name}'"))?);
     }
     Ok(out)

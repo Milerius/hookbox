@@ -661,6 +661,13 @@ async fn spawn_exits_when_watch_sender_dropped(pool: PgPool) {
 /// Spawn a worker against a table with no pending deliveries; the claim
 /// returns an empty vec so the loop takes the `refresh_gauges → continue`
 /// branch and then exits cleanly on shutdown.
+///
+/// The test gates shutdown on an observable effect of `refresh_gauges`
+/// (the health `ArcSwap` pointer flipping to a new snapshot) rather than
+/// a fixed sleep. With no pending rows the only call site that ever
+/// stores a new health snapshot is the empty-claim branch, so a pointer
+/// change proves that branch executed; a slow scheduler just makes the
+/// test wait longer, it cannot let shutdown win before the first poll.
 #[sqlx::test(migrations = "../crates/hookbox-postgres/migrations")]
 async fn spawn_handles_empty_claim_and_shuts_down(pool: PgPool) {
     let worker = make_worker(
@@ -671,13 +678,31 @@ async fn spawn_handles_empty_claim_and_shuts_down(pool: PgPool) {
         1,
     );
 
+    // Capture the initial health snapshot before handing `worker` to
+    // `spawn`; the returned `JoinHandle` hides the worker so we have to
+    // clone the health handle first.
+    let health = Arc::clone(&worker.health);
+    let initial_snapshot = health.load_full();
+
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let handle = worker.spawn(shutdown_rx);
 
-    // Give the loop enough time to complete at least one empty-claim tick
-    // (`make_worker` sets poll_interval = 50ms) so `refresh_gauges` actually
-    // runs on a claim_pending == [] path.
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // Wait (up to 3s) until the worker's first `refresh_gauges` call
+    // swaps the health Arc — that is the only thing that happens on the
+    // `claim_pending == []` branch, so observing a pointer flip proves
+    // the branch ran.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if !Arc::ptr_eq(&health.load_full(), &initial_snapshot) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "worker did not complete an empty-claim poll cycle within 3s"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
     shutdown_tx.send(true).expect("send shutdown");
 
     tokio::time::timeout(Duration::from_secs(3), handle)
