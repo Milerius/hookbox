@@ -43,8 +43,8 @@ impl RetryWorker {
 
     /// Spawn the worker as a background Tokio task.
     ///
-    /// The returned [`JoinHandle`](tokio::task::JoinHandle) can be used to
-    /// monitor or cancel the worker.
+    /// The returned [`JoinHandle`] can be used to monitor or cancel the
+    /// worker.
     #[must_use]
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move { self.run().await })

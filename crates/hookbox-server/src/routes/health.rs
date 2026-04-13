@@ -88,8 +88,8 @@ pub async fn healthz() -> StatusCode {
 /// emitters are healthy or degraded, `503 Service Unavailable` when the
 /// database is unreachable or any emitter is unhealthy.
 ///
-/// The response body is a JSON [`ReadyzResponse`] with per-emitter health
-/// snapshots read from each worker's [`ArcSwap<EmitterHealth>`] — no
+/// The response body is a JSON `ReadyzResponse` with per-emitter health
+/// snapshots read from each worker's `ArcSwap<EmitterHealth>` — no
 /// additional database roundtrip is made for emitter health.
 pub async fn readyz<S: Storage, D: DedupeStrategy>(
     State(state): State<Arc<AppState<S, D>>>,

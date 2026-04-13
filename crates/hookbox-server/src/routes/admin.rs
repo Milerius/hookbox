@@ -463,7 +463,9 @@ where
 /// List all configured emitters with their current health snapshot.
 ///
 /// Returns a JSON array sorted by emitter name (`BTreeMap` iteration order).
-/// Each element has `name` plus all fields from [`EmitterHealthSnapshot`].
+/// Each element has `name` plus all fields from the crate-private
+/// `EmitterHealthSnapshot` struct (`state`, `consecutive_failures`,
+/// `last_success_at`, `last_failure_at`, `last_error`).
 pub async fn list_emitters<S, D>(
     State(state): State<Arc<AppState<S, D>>>,
     headers: HeaderMap,

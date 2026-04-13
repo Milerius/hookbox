@@ -108,9 +108,9 @@ pub trait Storage: Send + Sync {
     ///
     /// The default implementation delegates to [`store`](Storage::store) and
     /// ignores `emitter_names`, which keeps all existing mock implementations
-    /// compiling without modification.  Only [`PostgresStorage`] and the new
-    /// pipeline-unit-test mock override this to provide real transactional
-    /// behaviour.
+    /// compiling without modification.  Only `PostgresStorage` (in the
+    /// `hookbox-postgres` crate) and the pipeline-unit-test mock override
+    /// this to provide real transactional behaviour.
     async fn store_with_deliveries(
         &self,
         receipt: &WebhookReceipt,

@@ -1,8 +1,8 @@
 [profile.ci]
-default-filter = "all() - binary(bdd)"
+default-filter = "all() - binary(core_bdd) - binary(server_bdd)"
 
 [profile.ci.junit]
 path = "junit.xml"
 
 [profile.default]
-default-filter = "all() - binary(bdd)"
+default-filter = "all() - binary(core_bdd) - binary(server_bdd)"

@@ -10,8 +10,9 @@
 //!
 //! Stage 5 (inline emit) has been removed. After a successful store the
 //! pipeline writes one `webhook_deliveries` row per configured emitter name
-//! via [`Storage::store_with_deliveries`].  The [`EmitterWorker`] (Phase 7)
-//! picks up those rows and performs the actual downstream emission.
+//! via [`Storage::store_with_deliveries`].  The `EmitterWorker` (in the
+//! `hookbox-server` crate) picks up those rows and performs the actual
+//! downstream emission.
 //!
 //! Construction is done via [`HookboxPipelineBuilder`], obtained from
 //! [`HookboxPipeline::builder()`].

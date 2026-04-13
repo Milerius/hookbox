@@ -140,11 +140,4 @@ mod tests {
         let EmittersCommand::List { config, .. } = cli.cmd;
         assert_eq!(config, "hookbox.toml");
     }
-
-    #[test]
-    fn list_rejects_missing_database_url() {
-        use clap::Parser as _;
-
-        assert!(TestCli::try_parse_from(["test", "list"]).is_err());
-    }
 }

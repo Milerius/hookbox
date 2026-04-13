@@ -31,7 +31,7 @@ use crate::fake_emitter::{EmitterBehavior, FakeEmitter};
 
 /// In-memory [`Storage`] implementation for scenario tests.
 ///
-/// Supports delivery-row tracking via [`store_with_deliveries`] override so
+/// Supports delivery-row tracking via [`Storage::store_with_deliveries`] override so
 /// fan-out BDD scenarios can inspect per-emitter delivery state without a
 /// real database.
 pub struct MemoryStorage {
@@ -618,7 +618,7 @@ impl IngestWorld {
         }
     }
 
-    /// Like [`run_deliveries_to_completion`] but keeps re-running rounds until
+    /// Like [`Self::run_deliveries_to_completion`] but keeps re-running rounds until
     /// ALL rows are in a terminal state (`Emitted` or `DeadLettered`), or the
     /// iteration budget is hit.
     ///
