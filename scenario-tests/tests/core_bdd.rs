@@ -6,5 +6,6 @@ use cucumber::World as _;
 
 #[tokio::main]
 async fn main() {
-    hookbox_scenarios::world::IngestWorld::run("scenario-tests/features/core").await;
+    let features = concat!(env!("CARGO_MANIFEST_DIR"), "/features/core");
+    hookbox_scenarios::world::IngestWorld::run(features).await;
 }

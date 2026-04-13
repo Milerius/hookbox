@@ -29,14 +29,8 @@ uuid.workspace = true
 
 [dev-dependencies]
 criterion = { workspace = true }
-cucumber = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
-futures = { workspace = true }
-
-[[test]]
-name = "bdd"
-harness = false
 
 [[bench]]
 name = "ingest"
