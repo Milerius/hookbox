@@ -2090,6 +2090,7 @@ name = "hookbox-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "axum",
  "chrono",
  "clap",

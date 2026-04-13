@@ -5,8 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
+use arc_swap::ArcSwap;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::net::TcpListener;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
 
 use hookbox::dedupe::{InMemoryRecentDedupe, LayeredDedupe};
@@ -19,10 +22,16 @@ use hookbox_providers::{
 };
 use hookbox_server::ServerAppState;
 use hookbox_server::build_router;
-use hookbox_server::config::HookboxConfig;
+use hookbox_server::config::{EmitterEntry, HookboxConfig, parse_and_normalize};
 use hookbox_server::emitter_factory::{BuiltEmitter, build_emitter};
 use hookbox_server::shutdown::shutdown_signal;
-use hookbox_server::worker::RetryWorker;
+use hookbox_server::worker::{EmitterHealth, EmitterWorker};
+
+/// Default lease duration for an `EmitterWorker` when the TOML entry omits
+/// `lease_duration_seconds`. Matches the conservative value used by the
+/// server BDD harness and gives ample headroom over the default poll
+/// interval so a single poll tick can't orphan in-flight rows.
+const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(30);
 
 /// Run the `serve` subcommand.
 ///
@@ -37,15 +46,15 @@ pub fn run(config_path: &str) -> anyhow::Result<()> {
     let raw = std::fs::read_to_string(config_path)
         .with_context(|| format!("failed to read config file: {config_path}"))?;
 
-    let config: HookboxConfig =
-        toml::from_str(&raw).with_context(|| format!("failed to parse config: {config_path}"))?;
+    let (config, warnings) = parse_and_normalize(&raw)
+        .with_context(|| format!("failed to parse config: {config_path}"))?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("failed to build Tokio runtime")?;
 
-    runtime.block_on(run_server(config))
+    runtime.block_on(run_server(config, warnings))
 }
 
 /// Async server startup: tracing, database, migrations, pipeline, and HTTP serve.
@@ -53,7 +62,7 @@ pub fn run(config_path: &str) -> anyhow::Result<()> {
     clippy::too_many_lines,
     reason = "provider dispatch match arms require all types inline"
 )]
-async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
+async fn run_server(config: HookboxConfig, config_warnings: Vec<String>) -> anyhow::Result<()> {
     anyhow::ensure!(
         config.retry.interval_seconds >= 1,
         "retry.interval_seconds must be >= 1"
@@ -75,6 +84,10 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
         .with_env_filter(filter)
         .init();
 
+    for warning in &config_warnings {
+        tracing::warn!(warning = %warning, "config normalization warning");
+    }
+
     tracing::info!("connecting to database");
 
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -95,26 +108,18 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
     let storage_dedupe = StorageDedupe::new(pool.clone());
     let dedupe = LayeredDedupe::new(lru, storage_dedupe);
 
-    // Build the downstream emitter from config. The factory returns the
-    // production emitters as `Ready`; the development `channel` variant
-    // additionally yields a receiver that this binary drains for logging.
-    // TODO(Task 14 / fan-out): replace with build_workers once serve.rs is rewired.
-    let legacy_emitter_cfg = config.emitter.clone().unwrap_or_default();
-    let emitter: Arc<dyn Emitter + Send + Sync> = match build_emitter(&legacy_emitter_cfg).await? {
-        BuiltEmitter::Ready(emitter) => emitter,
-        BuiltEmitter::Channel { emitter, rx } => {
-            tokio::spawn(drain_emitter(rx));
-            emitter
-        }
-    };
+    // Collect the declared emitter names so the pipeline can insert one
+    // pending delivery row per emitter on accept.  `parse_and_normalize`
+    // guarantees `config.emitters` is non-empty.
+    let emitter_names: Vec<String> = config.emitters.iter().map(|e| e.name.clone()).collect();
 
-    // Clone the emitter for the retry worker before moving into the pipeline.
-    let worker_emitter: Box<dyn Emitter + Send + Sync> = Box::new(Arc::clone(&emitter));
-
-    // Build pipeline and register provider verifiers from config.
-    // Emitter names are not yet wired here — Phase 7 (EmitterWorker) will
-    // plumb them from config.  For now the pipeline creates no delivery rows.
-    let mut builder = HookboxPipeline::builder().storage(storage).dedupe(dedupe);
+    // Build pipeline with emitter names wired so `store_with_deliveries`
+    // inserts one row per emitter on accept.  Provider verifiers are
+    // registered from config below.
+    let mut builder = HookboxPipeline::builder()
+        .storage(storage)
+        .dedupe(dedupe)
+        .emitter_names(emitter_names.clone());
 
     for (name, provider) in &config.providers {
         match provider.verifier_type.as_str() {
@@ -272,21 +277,52 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
 
     let pipeline = builder.build();
 
-    let retry_worker = RetryWorker::new(
-        PostgresStorage::new(pool.clone()),
-        worker_emitter,
-        Duration::from_secs(config.retry.interval_seconds),
-        config.retry.max_attempts,
-    );
-    let retry_handle = retry_worker.spawn();
+    // Spawn one `EmitterWorker` per configured emitter. Each worker owns its
+    // health snapshot (published via `/readyz`) and its own shutdown receiver
+    // so the whole pool can be stopped atomically from the graceful-shutdown
+    // path below.
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let mut emitter_health: BTreeMap<String, Arc<ArcSwap<EmitterHealth>>> = BTreeMap::new();
+    let mut worker_handles: Vec<JoinHandle<()>> = Vec::new();
+
+    for entry in &config.emitters {
+        let (emitter, drain_handle) = build_emitter_for_entry(entry).await?;
+        if let Some(handle) = drain_handle {
+            // Channel drain tasks stay alive for the process lifetime; abort
+            // on shutdown so the binary exits cleanly.
+            worker_handles.push(handle);
+        }
+
+        let health = Arc::new(ArcSwap::from_pointee(EmitterHealth::default()));
+        emitter_health.insert(entry.name.clone(), Arc::clone(&health));
+
+        let worker = EmitterWorker {
+            name: entry.name.clone(),
+            emitter,
+            storage: PostgresStorage::new(pool.clone()),
+            policy: entry.retry.clone().into_policy(),
+            concurrency: entry.concurrency,
+            poll_interval: Duration::from_secs(entry.poll_interval_seconds),
+            lease_duration: entry
+                .lease_duration_seconds
+                .map_or(DEFAULT_LEASE_DURATION, Duration::from_secs),
+            health,
+        };
+        tracing::info!(
+            emitter = %entry.name,
+            emitter_type = %entry.emitter_type,
+            concurrency = entry.concurrency,
+            "spawning EmitterWorker"
+        );
+        worker_handles.push(worker.spawn(shutdown_rx.clone()));
+    }
 
     let state: Arc<ServerAppState> = Arc::new(ServerAppState {
         pipeline,
         pool: Some(pool),
         admin_token: config.admin.bearer_token.clone(),
         prometheus: Some(prometheus),
-        // TODO(fan-out): populate from spawned EmitterWorker handles in a future task.
-        emitter_health: BTreeMap::new(),
+        emitter_health,
     });
 
     let router = build_router(state, config.server.body_limit);
@@ -298,32 +334,64 @@ async fn run_server(config: HookboxConfig) -> anyhow::Result<()> {
 
     tracing::info!(addr = %bind_addr, "hookbox server listening");
 
+    // Hold the sender inside the graceful-shutdown future so the same signal
+    // that stops axum also flips the workers' shutdown watch.
+    let shutdown_tx_for_axum = shutdown_tx.clone();
     axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            let _ = shutdown_tx_for_axum.send(true);
+        })
         .await
         .context("server encountered a fatal error")?;
 
-    tracing::info!("server shut down gracefully");
+    tracing::info!("server shut down gracefully, waiting for workers to drain");
 
-    retry_handle.abort();
-    tracing::info!("retry worker stopped");
+    // Make sure every worker sees the shutdown even if axum returned for
+    // another reason (panic, listener drop, etc.).
+    let _ = shutdown_tx.send(true);
+    for handle in worker_handles {
+        let _ = handle.await;
+    }
+    tracing::info!("emitter workers stopped");
 
     Ok(())
 }
 
-/// Drain the emitter channel, logging each received event.
+/// Build one [`EmitterWorker`]'s downstream emitter from an [`EmitterEntry`].
+///
+/// Returns the type-erased emitter plus, for the development `channel`
+/// variant, a join handle for the drain task that keeps the receiver alive.
+/// Production backends (kafka / nats / sqs / redis) return `Ok((_, None))`.
+async fn build_emitter_for_entry(
+    entry: &EmitterEntry,
+) -> anyhow::Result<(Arc<dyn Emitter + Send + Sync>, Option<JoinHandle<()>>)> {
+    match build_emitter(&entry.to_emitter_config()).await? {
+        BuiltEmitter::Ready(emitter) => Ok((emitter, None)),
+        BuiltEmitter::Channel { emitter, rx } => {
+            let handle = tokio::spawn(drain_emitter(entry.name.clone(), rx));
+            Ok((emitter, Some(handle)))
+        }
+    }
+}
+
+/// Drain the channel-backed emitter's receiver, logging each received event.
 ///
 /// In a real deployment this would forward events to a message broker,
 /// trigger downstream processing, etc. For the MVP standalone server it
 /// simply keeps the channel receiver alive so that emits don't fail.
-async fn drain_emitter(mut rx: tokio::sync::mpsc::Receiver<hookbox::NormalizedEvent>) {
+async fn drain_emitter(
+    emitter_name: String,
+    mut rx: tokio::sync::mpsc::Receiver<hookbox::NormalizedEvent>,
+) {
     while let Some(event) = rx.recv().await {
         tracing::info!(
+            emitter = %emitter_name,
             receipt_id = %event.receipt_id,
             provider = %event.provider_name,
             event_type = ?event.event_type,
             "event emitted (no consumer wired — drain task)"
         );
     }
-    tracing::warn!("emitter channel closed — drain task exiting");
+    tracing::warn!(emitter = %emitter_name, "emitter channel closed — drain task exiting");
 }

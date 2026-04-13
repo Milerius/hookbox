@@ -35,4 +35,5 @@ anyhow.workspace = true
 chrono.workspace = true
 sqlx.workspace = true
 axum.workspace = true
+arc-swap.workspace = true
 metrics-exporter-prometheus.workspace = true

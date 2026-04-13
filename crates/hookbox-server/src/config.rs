@@ -421,6 +421,22 @@ impl EmitterEntry {
             ..Default::default()
         }
     }
+
+    /// Project this entry's backend selection into a legacy-shaped
+    /// [`EmitterConfig`] that [`crate::emitter_factory::build_emitter`]
+    /// accepts.  Used by `hookbox serve` to reuse the existing factory for
+    /// each entry in the `[[emitters]]` array without duplicating the
+    /// kafka/nats/sqs/redis/channel dispatch logic.
+    #[must_use]
+    pub fn to_emitter_config(&self) -> EmitterConfig {
+        EmitterConfig {
+            emitter_type: self.emitter_type.clone(),
+            kafka: self.kafka.clone(),
+            nats: self.nats.clone(),
+            sqs: self.sqs.clone(),
+            redis: self.redis.clone(),
+        }
+    }
 }
 
 /// Returns `true` if `name` is a valid emitter identifier (`[a-zA-Z0-9_-]{1,64}`).
