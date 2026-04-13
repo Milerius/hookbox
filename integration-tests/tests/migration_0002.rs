@@ -180,7 +180,12 @@ async fn test_migration_all_immutable_fallback_to_processing_state(pool: PgPool)
     use hookbox::state::{ProcessingState, ReceiptId};
     use hookbox_postgres::{DeliveryStorage, PostgresStorage};
 
-    // Each case: (receipt_id, stored_state, delivery_state, fallback, expected)
+    // `fallback` and `expected` are intentionally equal for every case: the
+    // invariant under test is that an all-immutable delivery set collapses the
+    // latest-mutable view to empty, so `receipt_aggregate_state` must return the
+    // caller's fallback verbatim — regardless of any state carried on the
+    // immutable rows. Keeping the two fields separate documents that identity
+    // without requiring a reader to recompute the mapping.
     let cases: [(Uuid, &str, &str, ProcessingState, ProcessingState); 3] = [
         (
             Uuid::new_v4(),
@@ -207,6 +212,9 @@ async fn test_migration_all_immutable_fallback_to_processing_state(pool: PgPool)
 
     let storage = PostgresStorage::new(pool.clone());
 
+    // The `seed_receipt` helper above generates its own UUID and can't be
+    // reused here: the test needs pre-declared UUIDs so the second loop can
+    // correlate each seeded row back to its expected fallback.
     for (receipt_id, stored_state, delivery_state, _fallback, _expected) in &cases {
         sqlx::query(
             "INSERT INTO webhook_receipts \
