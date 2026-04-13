@@ -19,7 +19,7 @@ use hookbox_server::shutdown::shutdown_signal;
 /// Run the `serve` subcommand.
 ///
 /// Reads and parses the TOML configuration at `config_path`, builds a Tokio
-/// runtime, and blocks on [`run_server`].
+/// runtime, and blocks on [`serve_inner`].
 ///
 /// # Errors
 ///

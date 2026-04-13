@@ -38,7 +38,7 @@ pub fn validate_retry_config(retry: &RetryConfig) -> anyhow::Result<()> {
 /// of the caller's `HashMap` hasher.
 ///
 /// Returns the list boxed so the caller can register them against a
-/// [`HookboxPipelineBuilder`] without having to monomorphise over concrete
+/// `HookboxPipeline` builder without having to monomorphise over concrete
 /// verifier types at every call site.
 ///
 /// # Errors
