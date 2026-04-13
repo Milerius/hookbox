@@ -327,36 +327,60 @@ mod backoff_tests {
 
 // ── Fan-out aggregate helpers ─────────────────────────────────────────────────
 
+/// Pure aggregation rule over a slice of latest-per-emitter [`DeliveryState`]s.
+///
+/// This is the stack-only decision core of [`receipt_aggregate_state`]: given
+/// the already-deduplicated set of delivery states (one per emitter), decide
+/// which [`ProcessingState`] represents the receipt as a whole.
+///
+/// Extracted from [`receipt_aggregate_state`] so that Kani can model-check the
+/// precedence rules without having to reason about the heap-allocated
+/// `BTreeMap<String, DeliveryState>` that dedupes by emitter name.
+///
+/// Precedence (highest to lowest) is identical to [`receipt_aggregate_state`]:
+/// 1. `DeadLettered` — at least one state is `dead_lettered`.
+/// 2. `EmitFailed`   — at least one is `failed`, none `dead_lettered`.
+/// 3. `Emitted`      — every state is `emitted`.
+/// 4. `Stored`       — otherwise.
+///
+/// Empty input falls back to `fallback` (matching the behaviour of
+/// [`receipt_aggregate_state`] when all delivery rows are immutable).
+#[must_use]
+pub fn aggregate_from_states(
+    states: &[DeliveryState],
+    fallback: ProcessingState,
+) -> ProcessingState {
+    if states.is_empty() {
+        return fallback;
+    }
+    if states.contains(&DeliveryState::DeadLettered) {
+        return ProcessingState::DeadLettered;
+    }
+    if states.contains(&DeliveryState::Failed) {
+        return ProcessingState::EmitFailed;
+    }
+    if states.iter().all(|s| *s == DeliveryState::Emitted) {
+        return ProcessingState::Emitted;
+    }
+    ProcessingState::Stored
+}
+
 /// Derive the visible [`ProcessingState`] for a receipt from its delivery rows.
 ///
 /// Operates only on the latest non-immutable row per `emitter_name`. If the
 /// resulting set is empty (all immutable or no rows), falls back to `fallback`
 /// (the receipt's stored `processing_state`).
 ///
-/// Aggregation precedence (highest to lowest):
-/// 1. `DeadLettered` — at least one latest row is `dead_lettered`.
-/// 2. `EmitFailed`   — at least one latest row is `failed`, none `dead_lettered`.
-/// 3. `Emitted`      — every latest row is `emitted`.
-/// 4. `Stored`       — all latest rows are `pending` or `in_flight`.
+/// The precedence rules are implemented by [`aggregate_from_states`]; this
+/// function only handles the per-emitter deduplication.
 #[must_use]
 pub fn receipt_aggregate_state(
     deliveries: &[WebhookDelivery],
     fallback: ProcessingState,
 ) -> ProcessingState {
     let latest = latest_mutable_per_emitter(deliveries);
-    if latest.is_empty() {
-        return fallback;
-    }
-    if latest.values().any(|s| *s == DeliveryState::DeadLettered) {
-        return ProcessingState::DeadLettered;
-    }
-    if latest.values().any(|s| *s == DeliveryState::Failed) {
-        return ProcessingState::EmitFailed;
-    }
-    if latest.values().all(|s| *s == DeliveryState::Emitted) {
-        return ProcessingState::Emitted;
-    }
-    ProcessingState::Stored
+    let states: Vec<DeliveryState> = latest.into_values().collect();
+    aggregate_from_states(&states, fallback)
 }
 
 /// Per-emitter delivery state from the latest non-immutable row for each emitter.
