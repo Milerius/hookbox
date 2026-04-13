@@ -163,15 +163,20 @@ async fn full_http_flow() {
     let resp = client.get(format!("{base}/api/dlq")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
 
-    // Test 9: POST /api/receipts/:id/replay → 200 replayed
+    // Test 9: POST /api/receipts/:id/replay → 202 Accepted with delivery_ids
+    // New fan-out semantics: replay inserts pending delivery rows for
+    // `EmitterWorker` to pick up, rather than flipping a receipt state.
     let resp = client
         .post(format!("{base}/api/receipts/{receipt_id}/replay"))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200, "replay should succeed");
+    assert_eq!(resp.status(), 202, "replay should be accepted");
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "replayed");
+    assert!(
+        body["delivery_ids"].is_array(),
+        "replay response must include delivery_ids array, got: {body}"
+    );
 
     // Test 10: GET /api/receipts/:id → found (non-existent → 404)
     let fake_id = Uuid::new_v4();
