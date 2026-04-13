@@ -92,7 +92,7 @@ where
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (emitter_health, worker_handles) =
-        spawn_emitter_workers(&config, &pool, shutdown_rx).await?;
+        spawn_emitter_workers(&config, &pool, &shutdown_tx, shutdown_rx).await?;
 
     let state: Arc<ServerAppState> = Arc::new(AppState {
         pipeline,
@@ -104,18 +104,30 @@ where
     let router = build_router(state, config.server.body_limit);
 
     let shutdown_tx_for_axum = shutdown_tx.clone();
-    axum::serve(listener, router)
+    // Capture (not `?`) the serve result so a fatal axum error still
+    // reaches the drain path below: without this, spawned emitter and
+    // drain tasks would leak past the failure and keep dispatching.
+    let serve_result = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             shutdown.await;
             let _ = shutdown_tx_for_axum.send(true);
         })
         .await
-        .context("server encountered a fatal error")?;
+        .context("server encountered a fatal error");
 
-    tracing::info!("server shut down gracefully, waiting for workers to drain");
+    match &serve_result {
+        Ok(()) => tracing::info!("server shut down gracefully, waiting for workers to drain"),
+        Err(err) => tracing::error!(error = %err, "server stopped with error, draining workers"),
+    }
 
     let _ = shutdown_tx.send(true);
-    drain_worker_handles(worker_handles).await
+    let drain_result = drain_worker_handles(worker_handles).await;
+
+    // The serve error is the primary failure; surface it first so the
+    // caller sees the original root cause. Drain errors are logged in
+    // `drain_worker_handles` either way.
+    serve_result?;
+    drain_result
 }
 
 /// Build the `HookboxPipeline` with dedupe layers and provider verifiers.
@@ -147,9 +159,16 @@ fn build_pipeline(
 
 /// Spawn one `EmitterWorker` per configured emitter plus any drain tasks
 /// needed by channel-backed dev emitters.
+///
+/// On a partial-start failure (`build_emitter_for_entry` errors for a later
+/// entry after earlier emitters and drain tasks have already been spawned),
+/// this function signals shutdown via `shutdown_tx` and awaits the already
+/// spawned handles before returning the error, so the caller never sees a
+/// startup failure with background tasks still dispatching events.
 async fn spawn_emitter_workers(
     config: &HookboxConfig,
     pool: &PgPool,
+    shutdown_tx: &watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
 ) -> anyhow::Result<(
     BTreeMap<String, Arc<ArcSwap<EmitterHealth>>>,
@@ -159,7 +178,25 @@ async fn spawn_emitter_workers(
     let mut worker_handles: Vec<(String, JoinHandle<()>)> = Vec::new();
 
     for entry in &config.emitters {
-        let (emitter, drain_handle) = build_emitter_for_entry(entry).await?;
+        let built = match build_emitter_for_entry(entry).await {
+            Ok(built) => built,
+            Err(err) => {
+                tracing::error!(
+                    emitter = %entry.name,
+                    error = %err,
+                    "emitter failed to build during startup — rolling back already spawned workers"
+                );
+                let _ = shutdown_tx.send(true);
+                if let Err(drain_err) = drain_worker_handles(worker_handles).await {
+                    tracing::error!(
+                        error = %drain_err,
+                        "drain failed while rolling back partial start"
+                    );
+                }
+                return Err(err);
+            }
+        };
+        let (emitter, drain_handle) = built;
         if let Some(handle) = drain_handle {
             worker_handles.push((format!("{}-drain", entry.name), handle));
         }

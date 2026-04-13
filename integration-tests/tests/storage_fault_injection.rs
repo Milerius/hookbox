@@ -4,7 +4,7 @@
 //! around its sqlx call. The happy-path BDD + integration suites never
 //! exercise those branches because the test Postgres is always healthy.
 //!
-//! This module deliberately closes the pool mid-test (`pool.close_now()`) and
+//! This module deliberately closes the pool mid-test (`pool.close().await`) and
 //! asserts that every Storage / `DeliveryStorage` entry point surfaces the
 //! pool error as `StorageError::Internal`. That pins the behavioural contract
 //! ("we never swallow a db error") and drives coverage through every
