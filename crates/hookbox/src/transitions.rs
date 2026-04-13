@@ -323,6 +323,114 @@ mod backoff_tests {
             }
         }
     }
+
+    /// Mutant: `replace || with && in compute_backoff` (line 158).
+    ///
+    /// With `||`, a NaN multiplier short-circuits at the first condition
+    /// (`!is_finite()` is true) and returns the fallback.  With `&&`, the NaN
+    /// case would skip the guard (because NaN <= 0.0 is false) and fall through
+    /// to `powi` → `from_secs_f64(NaN)` which panics.
+    ///
+    /// In debug builds the `debug_assert!` fires first, but either way the
+    /// mutant is distinguished from the original.
+    #[test]
+    fn nan_multiplier_returns_fallback_not_panic() {
+        if cfg!(debug_assertions) {
+            // In debug mode the debug_assert fires; catch the panic to distinguish.
+            let p = RetryPolicy {
+                max_attempts: 5,
+                initial_backoff: Duration::from_secs(30),
+                max_backoff: Duration::from_secs(3600),
+                backoff_multiplier: f64::NAN,
+                jitter: 0.0,
+            };
+            let result = std::panic::catch_unwind(|| compute_backoff(1, &p));
+            assert!(result.is_err(), "debug_assert must fire for NaN multiplier");
+        } else {
+            // In release mode the guard must catch NaN and return the fallback.
+            let initial = Duration::from_secs(30);
+            let max = Duration::from_secs(3600);
+            let p = RetryPolicy {
+                max_attempts: 5,
+                initial_backoff: initial,
+                max_backoff: max,
+                backoff_multiplier: f64::NAN,
+                jitter: 0.0,
+            };
+            let d = compute_backoff(1, &p);
+            assert_eq!(d, initial.min(max));
+        }
+    }
+
+    // Mutants: `replace > with ==`, `replace > with <`, `replace > with >=`
+    // in the jitter branch condition `if policy.jitter > 0.0` (line 171).
+    //
+    // With `jitter = 0.0`:
+    // - Original (>): takes the else branch → jitter_factor = 1.0 → deterministic.
+    // - Mutant ==:   takes the if branch → random jitter applied → non-deterministic.
+    // - Mutant >=:   0.0 >= 0.0 = true → if branch → random.
+    // - Mutant <:    0.0 < 0.0 = false → else branch → same as original (equivalent).
+    //
+    // Running 100 iterations with jitter=0.0 must all return the exact same
+    // deterministic value. Any mutant that applies random jitter would, with
+    // overwhelming probability, produce at least one differing value.
+    #[test]
+    fn zero_jitter_produces_deterministic_result() {
+        let p = RetryPolicy {
+            max_attempts: 10,
+            initial_backoff: Duration::from_secs(10),
+            max_backoff: Duration::from_secs(1000),
+            backoff_multiplier: 1.0,
+            jitter: 0.0,
+        };
+        // attempt=1, multiplier=1.0 → base = 10s, jitter_factor = 1.0 → exactly 10s
+        let expected = Duration::from_secs(10);
+        for _ in 0..100 {
+            let d = compute_backoff(1, &p);
+            assert_eq!(
+                d, expected,
+                "zero jitter must produce the exact same value every call"
+            );
+        }
+    }
+
+    // Mutant: `replace + with -` in `1.0 + fastrand::f64().mul_add(…)` (line 172).
+    //
+    // For a symmetric jitter, the distributions of `1+x` and `1-x` (where x in [-j,+j))
+    // are identical in aggregate but differ per-sample for any concrete seed.
+    //
+    // Structural check: with a non-zero jitter the results must span a range wider than
+    // zero over 500 samples, proving jitter is actually applied (not skipped or negated
+    // to always return the exact base value).  The zero_jitter test covers the == mutant;
+    // this test ensures the + path produces variance when jitter is active.
+    #[test]
+    fn positive_jitter_deviates_from_base() {
+        // Verify that over many samples the jittered results are not all identical
+        // to the base, proving jitter is actually applied.
+        let p = RetryPolicy {
+            max_attempts: 10,
+            initial_backoff: Duration::from_secs(100),
+            max_backoff: Duration::from_secs(10000),
+            backoff_multiplier: 1.0,
+            jitter: 0.5,
+        };
+        let base = Duration::from_secs(100);
+        let lo = Duration::from_secs_f64(100.0 * (1.0 - 0.5));
+        let hi = Duration::from_secs_f64(100.0 * (1.0 + 0.5));
+
+        let mut all_equal_to_base = true;
+        for _ in 0..500 {
+            let d = compute_backoff(1, &p);
+            assert!(d >= lo && d <= hi, "jitter out of bounds: {d:?}");
+            if d != base {
+                all_equal_to_base = false;
+            }
+        }
+        assert!(
+            !all_equal_to_base,
+            "with jitter=0.5, results must deviate from base occasionally"
+        );
+    }
 }
 
 // ── Fan-out aggregate helpers ─────────────────────────────────────────────────
@@ -564,6 +672,58 @@ mod aggregate_tests {
         let rows = vec![delivery("legacy", DeliveryState::Emitted, true, 0)];
         let summary = receipt_deliveries_summary(&rows);
         assert!(summary.is_empty());
+    }
+
+    // Mutant: `replace > with >= in latest_mutable_per_emitter` (line 409).
+    //
+    // The function uses `d.created_at > *ts` to pick the latest row per emitter.
+    // The correct behavior is: only update if the new row is STRICTLY later.
+    //
+    // To distinguish `>` from `>=`, we need equal timestamps.  The first row is
+    // inserted via `or_insert`.  The second row triggers `and_modify`.
+    //   Original (>):  t2 > t1 where t2==t1 → false → keeps first state.
+    //   Mutant (>=):   t2 >= t1 where t2==t1 → true  → replaces with second state.
+    //
+    // We build both rows with an explicitly shared timestamp and assert the FIRST
+    // row's state is preserved.
+    #[test]
+    fn equal_timestamps_first_entry_wins() {
+        use crate::state::{DeliveryId, ReceiptId};
+
+        let fixed_ts = Utc::now();
+
+        let make_delivery = |emitter: &str, state: DeliveryState| -> WebhookDelivery {
+            WebhookDelivery {
+                delivery_id: DeliveryId(uuid::Uuid::new_v4()),
+                receipt_id: ReceiptId(uuid::Uuid::new_v4()),
+                emitter_name: emitter.to_string(),
+                state,
+                attempt_count: 0,
+                last_error: None,
+                last_attempt_at: None,
+                next_attempt_at: fixed_ts,
+                emitted_at: None,
+                immutable: false,
+                created_at: fixed_ts, // EXACTLY the same timestamp for both rows
+            }
+        };
+
+        let rows = vec![
+            make_delivery("emitter-a", DeliveryState::Pending),
+            make_delivery("emitter-a", DeliveryState::Failed),
+        ];
+        // Both rows have identical created_at.
+        // The first row is inserted via or_insert → (fixed_ts, Pending).
+        // The second row triggers and_modify:
+        //   Original (>):  fixed_ts > fixed_ts = false → keeps Pending.
+        //   Mutant  (>=): fixed_ts >= fixed_ts = true  → updates to Failed.
+        let summary = receipt_deliveries_summary(&rows);
+        assert_eq!(summary.len(), 1);
+        assert_eq!(
+            summary["emitter-a"],
+            DeliveryState::Pending,
+            "on equal timestamps the first-encountered row must win (strict > comparison)"
+        );
     }
 }
 
