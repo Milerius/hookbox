@@ -16,8 +16,10 @@ use hookbox::types::{ReceiptFilter, WebhookReceipt};
 use hookbox::{ProcessingState, receipt_aggregate_state, receipt_deliveries_summary};
 use hookbox_postgres::DeliveryStorage;
 
+use std::collections::BTreeMap;
+
 use crate::AppState;
-use crate::routes::health::EmitterHealthSnapshot;
+use crate::routes::health::{EmitterHealthSnapshot, synthesize_missing_emitters};
 use crate::worker::EmitterHealth;
 
 /// Build a `serde_json::Value` for a receipt list item by serialising the base
@@ -478,7 +480,7 @@ where
         return resp.into_response();
     }
 
-    let items: Vec<serde_json::Value> = state
+    let mut snapshots: BTreeMap<String, EmitterHealthSnapshot> = state
         .emitter_health
         .iter()
         .map(|(name, arc_swap)| {
@@ -491,9 +493,20 @@ where
                 dlq_depth: h.dlq_depth,
                 pending_count: h.pending_count,
             };
+            (name.clone(), snapshot)
+        })
+        .collect();
+
+    // Synthesize Unhealthy entries for any configured emitter that never
+    // registered a worker handle, mirroring `/readyz`.
+    synthesize_missing_emitters(&mut snapshots, state.pipeline.emitter_names());
+
+    let items: Vec<serde_json::Value> = snapshots
+        .into_iter()
+        .map(|(name, snapshot)| {
             let mut val = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);
             if let serde_json::Value::Object(ref mut map) = val {
-                map.insert("name".to_owned(), serde_json::Value::String(name.clone()));
+                map.insert("name".to_owned(), serde_json::Value::String(name));
             }
             val
         })

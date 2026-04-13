@@ -6,7 +6,7 @@ use anyhow::{Context as _, anyhow};
 use clap::Subcommand;
 use uuid::Uuid;
 
-use hookbox::DeliveryId;
+use hookbox::{DeliveryId, DeliveryState};
 use hookbox_postgres::{DeliveryStorage, PostgresStorage};
 use hookbox_server::config::parse_and_normalize;
 
@@ -149,6 +149,13 @@ pub async fn run(command: DlqCommand) -> anyhow::Result<()> {
                 .await
                 .context("failed to fetch delivery")?
                 .with_context(|| format!("delivery {delivery_id} not found"))?;
+
+            if !matches!(delivery.state, DeliveryState::DeadLettered) {
+                return Err(anyhow!(
+                    "refusing to replay delivery {delivery_id}: state is {:?}, expected DeadLettered. Use `hookbox replay id` for non-DLQ receipts.",
+                    delivery.state
+                ));
+            }
 
             if !parsed
                 .emitters

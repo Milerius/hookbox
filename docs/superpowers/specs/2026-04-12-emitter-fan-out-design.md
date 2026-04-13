@@ -203,11 +203,14 @@ Apply over the *latest-mutable-per-emitter* set:
 #### Helper signature
 
 ```rust
-pub fn receipt_aggregate_state(deliveries: &[WebhookDelivery]) -> ProcessingState
+pub fn receipt_aggregate_state(
+    deliveries: &[WebhookDelivery],
+    fallback: ProcessingState,
+) -> ProcessingState
 pub fn receipt_deliveries_summary(deliveries: &[WebhookDelivery]) -> BTreeMap<String, DeliveryState>
 ```
 
-Both helpers live in `hookbox::transitions` and operate on a slice that already excludes immutable rows. Callers (the admin API serializers) pass either a pre-filtered slice or the full set — the helpers are documented to ignore `immutable = true` rows for forward safety. If the resulting latest set is empty (all immutable, or no deliveries at all), `receipt_aggregate_state` falls back to reading the receipt's stored `processing_state`. No DB-side trigger, no denormalized cache, no double-write hazard.
+Both helpers live in `hookbox::transitions` and operate on a slice that already excludes immutable rows. Callers (the admin API serializers) pass either a pre-filtered slice or the full set — the helpers are documented to ignore `immutable = true` rows for forward safety. If the resulting latest set is empty (all immutable, or no deliveries at all), `receipt_aggregate_state` returns the caller-supplied `fallback` (typically the receipt's stored `processing_state`). No DB-side trigger, no denormalized cache, no double-write hazard.
 
 ### Why no separate DLQ table
 

@@ -182,8 +182,14 @@ impl<S: DeliveryStorage + Send + Sync + 'static> EmitterWorker<S> {
             loop {
                 tokio::select! {
                     () = tokio::time::sleep(self.poll_interval) => {}
-                    _ = shutdown_rx.changed() => {
-                        if *shutdown_rx.borrow() { break; }
+                    res = shutdown_rx.changed() => {
+                        match res {
+                            Ok(()) if *shutdown_rx.borrow() => break,
+                            Ok(()) => {}
+                            // Sender dropped: treat as shutdown so we do not
+                            // spin the select arm on an ever-ready Err.
+                            Err(_) => break,
+                        }
                     }
                 }
 

@@ -143,8 +143,20 @@ pub fn compute_backoff(attempt: i32, policy: &RetryPolicy) -> Duration {
         "jitter must be in [0.0, 1.0]; got {}",
         policy.jitter
     );
+    debug_assert!(
+        policy.backoff_multiplier.is_finite() && policy.backoff_multiplier > 0.0,
+        "backoff_multiplier must be finite and > 0; got {}",
+        policy.backoff_multiplier
+    );
     if attempt <= 0 {
         return policy.initial_backoff;
+    }
+    // Release-mode safety net: a non-finite or non-positive multiplier would
+    // feed NaN / negative seconds into `Duration::from_secs_f64`, which panics.
+    // Fall back to `initial_backoff` (capped at `max_backoff`) so the worker
+    // keeps making forward progress instead of crashing on a misconfigured policy.
+    if !policy.backoff_multiplier.is_finite() || policy.backoff_multiplier <= 0.0 {
+        return policy.initial_backoff.min(policy.max_backoff);
     }
     // attempt >= 1 here (guarded above), so attempt - 1 >= 0 and the
     // subtraction never wraps. `powi` takes i32 and attempt fits in i32.
@@ -166,6 +178,14 @@ pub fn compute_backoff(attempt: i32, policy: &RetryPolicy) -> Duration {
     // catches this in dev/test).
     let jitter_factor = jitter_factor.max(0.0);
     let jittered = (base_secs * jitter_factor).min(max_secs);
+    // Final safety net: `Duration::from_secs_f64` panics on negative, NaN, or
+    // infinite input. Clamp to `[0, max_secs]` so no upstream misconfiguration
+    // can crash the worker.
+    let jittered = if jittered.is_finite() {
+        jittered.clamp(0.0, max_secs)
+    } else {
+        max_secs
+    };
 
     Duration::from_secs_f64(jittered)
 }
@@ -275,6 +295,31 @@ mod backoff_tests {
             // 1000 iterations: with the clamp, no panic regardless of fastrand
             for _ in 0..1000 {
                 let _ = compute_backoff(1, &p);
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_backoff_multiplier_does_not_panic_in_release() {
+        // A negative, zero, NaN, or infinite multiplier would feed bogus
+        // seconds into `Duration::from_secs_f64` and panic. The release
+        // fallback returns `initial_backoff.min(max_backoff)` so the worker
+        // keeps making forward progress on a misconfigured policy.
+        if !cfg!(debug_assertions) {
+            let initial = Duration::from_secs(30);
+            let max = Duration::from_secs(3600);
+            for bad in [-2.0_f64, 0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                let p = RetryPolicy {
+                    max_attempts: 5,
+                    initial_backoff: initial,
+                    max_backoff: max,
+                    backoff_multiplier: bad,
+                    jitter: 0.0,
+                };
+                for attempt in 1..=10 {
+                    let d = compute_backoff(attempt, &p);
+                    assert_eq!(d, initial.min(max));
+                }
             }
         }
     }

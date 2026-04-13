@@ -580,7 +580,7 @@ pub fn validate_emitter_entries(entries: &[EmitterEntry]) -> Result<(), ConfigEr
             "kafka" => {
                 if e.kafka.is_none() {
                     return Err(ConfigError::Validation(format!(
-                        "emitter {:?}: type = \"kafka\" requires a [[emitters.kafka]] section",
+                        "emitter {:?}: type = \"kafka\" requires a [emitters.kafka] section",
                         e.name
                     )));
                 }
@@ -588,7 +588,7 @@ pub fn validate_emitter_entries(entries: &[EmitterEntry]) -> Result<(), ConfigEr
             "nats" => {
                 if e.nats.is_none() {
                     return Err(ConfigError::Validation(format!(
-                        "emitter {:?}: type = \"nats\" requires a [[emitters.nats]] section",
+                        "emitter {:?}: type = \"nats\" requires a [emitters.nats] section",
                         e.name
                     )));
                 }
@@ -596,7 +596,7 @@ pub fn validate_emitter_entries(entries: &[EmitterEntry]) -> Result<(), ConfigEr
             "sqs" => {
                 if e.sqs.is_none() {
                     return Err(ConfigError::Validation(format!(
-                        "emitter {:?}: type = \"sqs\" requires a [[emitters.sqs]] section",
+                        "emitter {:?}: type = \"sqs\" requires a [emitters.sqs] section",
                         e.name
                     )));
                 }
@@ -604,7 +604,7 @@ pub fn validate_emitter_entries(entries: &[EmitterEntry]) -> Result<(), ConfigEr
             "redis" => {
                 if e.redis.is_none() {
                     return Err(ConfigError::Validation(format!(
-                        "emitter {:?}: type = \"redis\" requires a [[emitters.redis]] section",
+                        "emitter {:?}: type = \"redis\" requires a [emitters.redis] section",
                         e.name
                     )));
                 }

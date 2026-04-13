@@ -170,14 +170,12 @@ async fn run_replay_id(
         ));
     }
 
-    let count = historical.len();
-    for name in &historical {
-        let new_id = storage
-            .insert_replay(ReceiptId(receipt_id), name)
-            .await
-            .with_context(|| {
-                format!("insert_replay failed for receipt {receipt_id} emitter {name}")
-            })?;
+    let names: Vec<String> = historical.iter().cloned().collect();
+    let new_ids = storage
+        .insert_replays(ReceiptId(receipt_id), &names)
+        .await
+        .with_context(|| format!("insert_replays failed for receipt {receipt_id}"))?;
+    for (name, new_id) in names.iter().zip(new_ids.iter()) {
         tracing::info!(
             receipt_id = %receipt_id,
             emitter = %name,
@@ -187,7 +185,7 @@ async fn run_replay_id(
     }
     tracing::info!(
         receipt_id = %receipt_id,
-        replayed = count,
+        replayed = new_ids.len(),
         "receipt replayed across all emitters"
     );
     Ok(())
