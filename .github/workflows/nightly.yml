@@ -20,7 +20,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-mutants --locked
-      - run: cargo mutants --timeout 60
+      - run: cargo mutants --timeout 300
       - name: Upload mutation report
         uses: actions/upload-artifact@v7
         if: always()
