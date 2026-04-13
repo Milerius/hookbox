@@ -55,7 +55,6 @@ jobs:
   kani:
     name: Kani Proofs
     runs-on: ubuntu-latest
-    if: hashFiles('crates/hookbox-verify/src/**') != ''
     steps:
       - uses: actions/checkout@v6
       - name: Run Kani
@@ -97,7 +96,6 @@ jobs:
   bolero:
     name: Property Tests (Bolero)
     runs-on: ubuntu-latest
-    if: hashFiles('crates/hookbox-verify/src/**') != ''
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
