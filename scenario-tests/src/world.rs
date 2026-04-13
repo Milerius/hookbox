@@ -275,9 +275,7 @@ impl Storage for SharedMemoryStorage {
         receipt: &WebhookReceipt,
         emitter_names: &[String],
     ) -> Result<StoreResult, StorageError> {
-        self.0
-            .store_with_deliveries(receipt, emitter_names)
-            .await
+        self.0.store_with_deliveries(receipt, emitter_names).await
     }
 }
 
@@ -646,9 +644,12 @@ impl IngestWorld {
             let all = inner
                 .all_deliveries()
                 .expect("mutex poisoned — all_deliveries");
-            let any_active = all
-                .iter()
-                .any(|d| !matches!(d.state, DeliveryState::Emitted | DeliveryState::DeadLettered));
+            let any_active = all.iter().any(|d| {
+                !matches!(
+                    d.state,
+                    DeliveryState::Emitted | DeliveryState::DeadLettered
+                )
+            });
             if !any_active {
                 break;
             }
