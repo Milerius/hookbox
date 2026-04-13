@@ -12,6 +12,7 @@ members = [
     "crates/hookbox-emitter-redis",
     "crates/hookbox-emitter-sqs",
     "integration-tests",
+    "scenario-tests",
 ]
 
 [workspace.package]
