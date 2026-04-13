@@ -11,7 +11,10 @@
 //! `CASE` expressions inside `PostgresStorage::retry_failed`. Any change to
 //! the SQL retry logic must be reflected here and vice-versa.
 
-use crate::state::{DedupeDecision, DeliveryState, ProcessingState, RetryPolicy, VerificationStatus, WebhookDelivery};
+use crate::state::{
+    DedupeDecision, DeliveryState, ProcessingState, RetryPolicy, VerificationStatus,
+    WebhookDelivery,
+};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -300,11 +303,8 @@ pub fn receipt_deliveries_summary(
 /// For each `emitter_name`, return the `state` of the non-immutable row
 /// with the greatest `created_at`. Mirrors the SQL:
 /// `SELECT DISTINCT ON (emitter_name) state ... ORDER BY emitter_name, created_at DESC`
-fn latest_mutable_per_emitter(
-    deliveries: &[WebhookDelivery],
-) -> BTreeMap<String, DeliveryState> {
-    let mut map: BTreeMap<String, (chrono::DateTime<chrono::Utc>, DeliveryState)> =
-        BTreeMap::new();
+fn latest_mutable_per_emitter(deliveries: &[WebhookDelivery]) -> BTreeMap<String, DeliveryState> {
+    let mut map: BTreeMap<String, (chrono::DateTime<chrono::Utc>, DeliveryState)> = BTreeMap::new();
     for d in deliveries {
         if d.immutable {
             continue;
@@ -335,18 +335,17 @@ mod aggregate_tests {
         created_offset_secs: i64,
     ) -> WebhookDelivery {
         WebhookDelivery {
-            delivery_id:     DeliveryId(Uuid::new_v4()),
-            receipt_id:      ReceiptId(Uuid::new_v4()),
-            emitter_name:    emitter.to_string(),
+            delivery_id: DeliveryId(Uuid::new_v4()),
+            receipt_id: ReceiptId(Uuid::new_v4()),
+            emitter_name: emitter.to_string(),
             state,
-            attempt_count:   0,
-            last_error:      None,
+            attempt_count: 0,
+            last_error: None,
             last_attempt_at: None,
             next_attempt_at: Utc::now(),
-            emitted_at:      None,
+            emitted_at: None,
             immutable,
-            created_at:      Utc::now()
-                + chrono::Duration::seconds(created_offset_secs),
+            created_at: Utc::now() + chrono::Duration::seconds(created_offset_secs),
         }
     }
 
@@ -382,7 +381,7 @@ mod aggregate_tests {
     #[test]
     fn any_dead_lettered_returns_dead_lettered() {
         let rows = vec![
-            delivery("a", DeliveryState::Emitted,      false, 0),
+            delivery("a", DeliveryState::Emitted, false, 0),
             delivery("b", DeliveryState::DeadLettered, false, 0),
         ];
         assert_eq!(
@@ -394,7 +393,7 @@ mod aggregate_tests {
     #[test]
     fn dead_lettered_wins_over_failed() {
         let rows = vec![
-            delivery("a", DeliveryState::Failed,       false, 0),
+            delivery("a", DeliveryState::Failed, false, 0),
             delivery("b", DeliveryState::DeadLettered, false, 0),
         ];
         assert_eq!(
@@ -407,7 +406,7 @@ mod aggregate_tests {
     fn any_failed_no_dead_lettered_returns_emit_failed() {
         let rows = vec![
             delivery("a", DeliveryState::Emitted, false, 0),
-            delivery("b", DeliveryState::Failed,  false, 0),
+            delivery("b", DeliveryState::Failed, false, 0),
         ];
         assert_eq!(
             receipt_aggregate_state(&rows, ProcessingState::Stored),
@@ -418,7 +417,7 @@ mod aggregate_tests {
     #[test]
     fn pending_and_in_flight_collapse_to_stored() {
         let rows = vec![
-            delivery("a", DeliveryState::Pending,  false, 0),
+            delivery("a", DeliveryState::Pending, false, 0),
             delivery("b", DeliveryState::InFlight, false, 0),
         ];
         assert_eq!(
@@ -431,7 +430,7 @@ mod aggregate_tests {
     fn latest_mutable_row_wins_per_emitter() {
         let rows = vec![
             delivery("a", DeliveryState::DeadLettered, false, 0),
-            delivery("a", DeliveryState::Emitted,      false, 10),
+            delivery("a", DeliveryState::Emitted, false, 10),
         ];
         assert_eq!(
             receipt_aggregate_state(&rows, ProcessingState::Stored),
@@ -443,8 +442,8 @@ mod aggregate_tests {
     fn replay_history_does_not_poison_state() {
         let rows = vec![
             delivery("a", DeliveryState::DeadLettered, false, 0),
-            delivery("a", DeliveryState::Emitted,      false, 5),
-            delivery("b", DeliveryState::Emitted,      false, 0),
+            delivery("a", DeliveryState::Emitted, false, 5),
+            delivery("b", DeliveryState::Emitted, false, 0),
         ];
         assert_eq!(
             receipt_aggregate_state(&rows, ProcessingState::Stored),
@@ -456,8 +455,8 @@ mod aggregate_tests {
     fn deliveries_summary_one_entry_per_emitter_latest_row() {
         let rows = vec![
             delivery("a", DeliveryState::DeadLettered, false, 0),
-            delivery("a", DeliveryState::Emitted,      false, 5),
-            delivery("b", DeliveryState::Failed,       false, 0),
+            delivery("a", DeliveryState::Emitted, false, 5),
+            delivery("b", DeliveryState::Failed, false, 0),
         ];
         let summary = receipt_deliveries_summary(&rows);
         assert_eq!(summary.len(), 2);
@@ -467,9 +466,7 @@ mod aggregate_tests {
 
     #[test]
     fn deliveries_summary_ignores_immutable_rows() {
-        let rows = vec![
-            delivery("legacy", DeliveryState::Emitted, true, 0),
-        ];
+        let rows = vec![delivery("legacy", DeliveryState::Emitted, true, 0)];
         let summary = receipt_deliveries_summary(&rows);
         assert!(summary.is_empty());
     }

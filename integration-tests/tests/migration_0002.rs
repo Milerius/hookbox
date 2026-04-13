@@ -10,7 +10,7 @@
 )]
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use sqlx::PgPool;
+use sqlx::{PgPool, Row as _};
 use uuid::Uuid;
 
 // ── SQL text for each migration ───────────────────────────────────────────────
@@ -55,22 +55,20 @@ async fn seed_receipt(pool: &PgPool, state: &str) -> Uuid {
     let id = Uuid::new_v4();
     let dedupe_key = Uuid::new_v4().to_string();
     let empty_body: Vec<u8> = Vec::new();
-    sqlx::query!(
-        r#"
-        INSERT INTO webhook_receipts
-            (receipt_id, provider_name, dedupe_key, payload_hash,
-             raw_body, raw_headers, verification_status,
-             processing_state, received_at)
-        VALUES
-            ($1, 'test-provider', $2, 'deadbeef',
-             $3, '{}'::jsonb, 'verified',
-             $4, now())
-        "#,
-        id,
-        dedupe_key,
-        &empty_body,
-        state,
+    sqlx::query(
+        "INSERT INTO webhook_receipts \
+             (receipt_id, provider_name, dedupe_key, payload_hash, \
+              raw_body, raw_headers, verification_status, \
+              processing_state, received_at) \
+             VALUES \
+             ($1, 'test-provider', $2, 'deadbeef', \
+              $3, '{}'::jsonb, 'verified', \
+              $4, now())",
     )
+    .bind(id)
+    .bind(&dedupe_key)
+    .bind(&empty_body)
+    .bind(state)
     .execute(pool)
     .await
     .expect("seed receipt");
@@ -94,14 +92,13 @@ async fn migration_backfills_one_row_per_receipt(pool: PgPool) {
     let count_for = |id: Uuid| {
         let pool = pool.clone();
         async move {
-            sqlx::query_scalar!(
+            sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM webhook_deliveries WHERE receipt_id = $1",
-                id
             )
+            .bind(id)
             .fetch_one(&pool)
             .await
             .unwrap()
-            .unwrap_or(0)
         }
     };
 
@@ -119,13 +116,14 @@ async fn migration_backfill_rows_are_immutable(pool: PgPool) {
     apply_migration_0002(&pool).await;
 
     let rows =
-        sqlx::query!("SELECT immutable FROM webhook_deliveries WHERE emitter_name = 'legacy'")
+        sqlx::query("SELECT immutable FROM webhook_deliveries WHERE emitter_name = 'legacy'")
             .fetch_all(&pool)
             .await
             .unwrap();
     assert!(!rows.is_empty());
     for r in rows {
-        assert!(r.immutable, "backfilled row must be immutable");
+        let immutable: bool = r.try_get("immutable").unwrap();
+        assert!(immutable, "backfilled row must be immutable");
     }
 }
 
@@ -136,15 +134,15 @@ async fn migration_stored_receipt_maps_to_failed_immutable(pool: PgPool) {
     let id = seed_receipt(&pool, "stored").await;
     apply_migration_0002(&pool).await;
 
-    let row = sqlx::query!(
-        "SELECT state, immutable FROM webhook_deliveries WHERE receipt_id = $1",
-        id
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(row.state, "failed");
-    assert!(row.immutable);
+    let row = sqlx::query("SELECT state, immutable FROM webhook_deliveries WHERE receipt_id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let state: String = row.try_get("state").unwrap();
+    let immutable: bool = row.try_get("immutable").unwrap();
+    assert_eq!(state, "failed");
+    assert!(immutable);
 }
 
 /// A receipt in state `dead_lettered` must map to delivery state `dead_lettered`.
@@ -154,14 +152,13 @@ async fn migration_dead_lettered_maps_correctly(pool: PgPool) {
     let id = seed_receipt(&pool, "dead_lettered").await;
     apply_migration_0002(&pool).await;
 
-    let row = sqlx::query!(
-        "SELECT state FROM webhook_deliveries WHERE receipt_id = $1",
-        id
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(row.state, "dead_lettered");
+    let row = sqlx::query("SELECT state FROM webhook_deliveries WHERE receipt_id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let state: String = row.try_get("state").unwrap();
+    assert_eq!(state, "dead_lettered");
 }
 
 // ── Fan-out aggregate tests (both migrations applied via sqlx::test) ──────────

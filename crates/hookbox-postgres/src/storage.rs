@@ -1081,7 +1081,9 @@ impl<T: DeliveryStorage + ?Sized> DeliveryStorage for std::sync::Arc<T> {
         next_attempt_at: DateTime<Utc>,
         last_error: &str,
     ) -> Result<(), Self::Error> {
-        (**self).mark_failed(delivery_id, attempt_count, next_attempt_at, last_error).await
+        (**self)
+            .mark_failed(delivery_id, attempt_count, next_attempt_at, last_error)
+            .await
     }
 
     async fn mark_dead_lettered(

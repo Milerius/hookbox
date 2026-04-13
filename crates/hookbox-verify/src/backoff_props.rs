@@ -52,7 +52,10 @@ mod tests {
             .for_each(|(i, d, m, a)| {
                 let p = bounded_policy(*i, *d, *m, *a);
                 let got = compute_backoff(1, &p);
-                assert_eq!(got, p.initial_backoff, "attempt=1 must equal initial_backoff");
+                assert_eq!(
+                    got, p.initial_backoff,
+                    "attempt=1 must equal initial_backoff"
+                );
             });
     }
 
