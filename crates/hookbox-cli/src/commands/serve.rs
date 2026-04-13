@@ -283,14 +283,14 @@ async fn run_server(config: HookboxConfig, config_warnings: Vec<String>) -> anyh
     // path below.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut emitter_health: BTreeMap<String, Arc<ArcSwap<EmitterHealth>>> = BTreeMap::new();
-    let mut worker_handles: Vec<JoinHandle<()>> = Vec::new();
+    let mut worker_handles: Vec<(String, JoinHandle<()>)> = Vec::new();
 
     for entry in &config.emitters {
         let (emitter, drain_handle) = build_emitter_for_entry(entry).await?;
         if let Some(handle) = drain_handle {
             // Channel drain tasks stay alive for the process lifetime; abort
             // on shutdown so the binary exits cleanly.
-            worker_handles.push(handle);
+            worker_handles.push((format!("{}-drain", entry.name), handle));
         }
 
         let health = Arc::new(ArcSwap::from_pointee(EmitterHealth::default()));
@@ -314,7 +314,7 @@ async fn run_server(config: HookboxConfig, config_warnings: Vec<String>) -> anyh
             concurrency = entry.concurrency,
             "spawning EmitterWorker"
         );
-        worker_handles.push(worker.spawn(shutdown_rx.clone()));
+        worker_handles.push((entry.name.clone(), worker.spawn(shutdown_rx.clone())));
     }
 
     let state: Arc<ServerAppState> = Arc::new(ServerAppState {
@@ -350,12 +350,27 @@ async fn run_server(config: HookboxConfig, config_warnings: Vec<String>) -> anyh
     // Make sure every worker sees the shutdown even if axum returned for
     // another reason (panic, listener drop, etc.).
     let _ = shutdown_tx.send(true);
-    for handle in worker_handles {
-        let _ = handle.await;
+    let mut panicked_tasks: Vec<String> = Vec::new();
+    for (task_name, handle) in worker_handles {
+        if let Err(e) = handle.await {
+            tracing::error!(
+                task = %task_name,
+                error = %e,
+                "emitter task terminated with a JoinError — this is a silent delivery outage",
+            );
+            panicked_tasks.push(task_name);
+        }
     }
-    tracing::info!("emitter workers stopped");
-
-    Ok(())
+    if panicked_tasks.is_empty() {
+        tracing::info!("emitter workers stopped");
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "shutdown completed but {} emitter task(s) panicked: {:?}",
+            panicked_tasks.len(),
+            panicked_tasks,
+        ))
+    }
 }
 
 /// Build one [`EmitterWorker`]'s downstream emitter from an [`EmitterEntry`].

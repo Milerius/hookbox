@@ -149,8 +149,12 @@ pub fn compute_backoff(attempt: i32, policy: &RetryPolicy) -> Duration {
     // attempt >= 1 here (guarded above), so attempt - 1 >= 0 and the
     // subtraction never wraps. `powi` takes i32 and attempt fits in i32.
     let exponent = attempt - 1;
+    let max_secs = policy.max_backoff.as_secs_f64();
     let base_secs = policy.initial_backoff.as_secs_f64() * policy.backoff_multiplier.powi(exponent);
-    let base_secs = base_secs.min(policy.max_backoff.as_secs_f64());
+    // Clamp the base before jitter as a numerical safety valve for huge
+    // multipliers, but the authoritative cap is applied after jitter below
+    // so positive jitter cannot push the final delay past `max_backoff`.
+    let base_secs = base_secs.min(max_secs);
 
     let jitter_factor = if policy.jitter > 0.0 {
         1.0 + fastrand::f64().mul_add(2.0 * policy.jitter, -policy.jitter)
@@ -161,7 +165,7 @@ pub fn compute_backoff(attempt: i32, policy: &RetryPolicy) -> Duration {
     // cannot panic if the policy was misconfigured (the debug_assert above
     // catches this in dev/test).
     let jitter_factor = jitter_factor.max(0.0);
-    let jittered = base_secs * jitter_factor;
+    let jittered = (base_secs * jitter_factor).min(max_secs);
 
     Duration::from_secs_f64(jittered)
 }
@@ -230,6 +234,28 @@ mod backoff_tests {
             let lo = Duration::from_secs_f64(base_secs * 0.8);
             let hi = Duration::from_secs_f64(base_secs * 1.2);
             assert!(d >= lo && d <= hi, "jitter out of bounds: {d:?}");
+        }
+    }
+
+    #[test]
+    fn jittered_delay_never_exceeds_max_backoff() {
+        // With jitter=1.0, the pre-jitter base equals max_backoff, and
+        // positive jitter could push the result up to 2× max_backoff if the
+        // cap is applied only before jitter. The final clamp must hold.
+        let p = RetryPolicy {
+            max_attempts: 10,
+            initial_backoff: Duration::from_secs(60),
+            max_backoff: Duration::from_secs(120),
+            backoff_multiplier: 4.0,
+            jitter: 1.0,
+        };
+        let cap = p.max_backoff;
+        for _ in 0..5000 {
+            let d = compute_backoff(5, &p);
+            assert!(
+                d <= cap,
+                "compute_backoff must clamp post-jitter: got {d:?}, cap {cap:?}"
+            );
         }
     }
 

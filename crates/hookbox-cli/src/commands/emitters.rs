@@ -6,7 +6,7 @@ use anyhow::Context as _;
 use clap::Subcommand;
 
 use hookbox_postgres::{DeliveryStorage as _, PostgresStorage};
-use hookbox_server::config::HookboxConfig;
+use hookbox_server::config::parse_and_normalize;
 
 use crate::db;
 
@@ -45,8 +45,12 @@ pub async fn run(command: EmittersCommand) -> anyhow::Result<()> {
         } => {
             let raw = std::fs::read_to_string(&config)
                 .with_context(|| format!("failed to read config file: {config}"))?;
-            let parsed: HookboxConfig = toml::from_str(&raw)
+            let (parsed, warnings) = parse_and_normalize(&raw)
                 .with_context(|| format!("failed to parse config: {config}"))?;
+            for warning in &warnings {
+                let mut err = std::io::stderr();
+                writeln!(err, "warning: {warning}").context("failed to write warning")?;
+            }
 
             let pool = db::connect(&database_url).await?;
             let storage = PostgresStorage::new(pool);

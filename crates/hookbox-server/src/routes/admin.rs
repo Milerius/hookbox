@@ -317,25 +317,25 @@ where
         state.pipeline.emitter_names().to_vec()
     };
 
-    let mut delivery_ids: Vec<String> = Vec::with_capacity(emitter_names.len());
-    for emitter_name in &emitter_names {
-        match state
-            .pipeline
-            .storage()
-            .insert_replay(receipt.receipt_id, emitter_name)
-            .await
-        {
-            Ok(delivery_id) => delivery_ids.push(delivery_id.0.to_string()),
-            Err(e) => {
-                tracing::error!(error = %e, %id, emitter = %emitter_name, "failed to insert replay delivery");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": e.to_string()})),
-                )
-                    .into_response();
-            }
+    // Atomic fan-out replay: `insert_replays` wraps all rows in a single
+    // transaction on Postgres, so a mid-batch failure rolls back and retries
+    // won't double-insert a subset of emitters.
+    let delivery_ids: Vec<String> = match state
+        .pipeline
+        .storage()
+        .insert_replays(receipt.receipt_id, &emitter_names)
+        .await
+    {
+        Ok(ids) => ids.into_iter().map(|d| d.0.to_string()).collect(),
+        Err(e) => {
+            tracing::error!(error = %e, %id, emitters = ?emitter_names, "failed to insert replay deliveries");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+                .into_response();
         }
-    }
+    };
 
     (
         StatusCode::ACCEPTED,

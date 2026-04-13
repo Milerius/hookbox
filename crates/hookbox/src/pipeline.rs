@@ -877,4 +877,44 @@ mod tests {
             "store_with_deliveries should have been called once"
         );
     }
+
+    /// Backends that do not override `store_with_deliveries` must reject any
+    /// call that carries a non-empty `emitter_names` slice. Silently falling
+    /// back to `store()` in that case would drop fan-out rows and make newly
+    /// accepted webhooks invisible to every `EmitterWorker`.
+    #[tokio::test]
+    async fn default_store_with_deliveries_rejects_non_empty_emitter_names() {
+        let storage = MemoryStorage::new();
+        let receipt = WebhookReceipt {
+            receipt_id: ReceiptId::new(),
+            provider_name: "test".to_owned(),
+            provider_event_id: None,
+            external_reference: None,
+            dedupe_key: "k".to_owned(),
+            payload_hash: "h".to_owned(),
+            raw_body: Vec::new(),
+            parsed_payload: None,
+            raw_headers: serde_json::json!({}),
+            normalized_event_type: None,
+            verification_status: VerificationStatus::Verified,
+            verification_reason: None,
+            processing_state: ProcessingState::Stored,
+            emit_count: 0,
+            last_error: None,
+            received_at: chrono::Utc::now(),
+            processed_at: None,
+            metadata: serde_json::json!({}),
+        };
+        // Empty slice still delegates to `store` — backwards compatible.
+        let ok = storage.store_with_deliveries(&receipt, &[]).await;
+        assert!(matches!(ok, Ok(StoreResult::Stored)));
+        // Non-empty slice must trip the default guard.
+        let result = storage
+            .store_with_deliveries(&receipt, &["kafka".to_owned()])
+            .await;
+        assert!(
+            matches!(result, Err(StorageError::FanOutNotImplemented)),
+            "expected Err(FanOutNotImplemented), got {result:?}",
+        );
+    }
 }

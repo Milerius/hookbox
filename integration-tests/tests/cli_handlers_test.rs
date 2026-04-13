@@ -21,6 +21,39 @@ fn database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/hookbox_test".to_owned())
 }
 
+/// Force a delivery row into the `dead_lettered` state via raw SQL, bypassing
+/// the lease-guarded `mark_dead_lettered` path. Tests that need a pre-staged
+/// DLQ row cannot use `mark_dead_lettered` directly because it only accepts
+/// `in_flight` rows (see lease-guard in `crates/hookbox-postgres/src/storage.rs`).
+async fn force_dead_lettered(pool: &PgPool, delivery_id: Uuid, note: &str) {
+    sqlx::query(
+        "UPDATE webhook_deliveries SET state = 'dead_lettered', last_error = $2 WHERE delivery_id = $1",
+    )
+    .bind(delivery_id)
+    .bind(note)
+    .execute(pool)
+    .await
+    .expect("force dead_lettered");
+}
+
+/// Write a minimal valid hookbox.toml containing a single `test-emitter`
+/// channel entry. Returns the temp path — keep the returned `String` alive
+/// for the duration of the test so the file is not deleted prematurely.
+fn write_test_config() -> String {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("hookbox-cli-test-{}.toml", Uuid::new_v4()));
+    let body = r#"
+[database]
+url = "postgres://localhost/hookbox_test"
+
+[[emitters]]
+name = "test-emitter"
+type = "channel"
+"#;
+    std::fs::write(&path, body).expect("write test config");
+    path.to_string_lossy().into_owned()
+}
+
 /// Connect and migrate, but do NOT delete existing data.
 /// Tests that insert their own data by unique UUID will not collide.
 async fn setup_pool() -> PgPool {
@@ -252,10 +285,7 @@ async fn dlq_inspect_existing() {
         .insert_replay(ReceiptId(receipt_id), "test-emitter")
         .await
         .expect("insert delivery row");
-    storage
-        .mark_dead_lettered(delivery_id, "test dead letter")
-        .await
-        .expect("mark dead-lettered");
+    force_dead_lettered(&pool, delivery_id.0, "test dead letter").await;
 
     let cmd = dlq::DlqCommand::Inspect {
         database_url: database_url(),
@@ -271,6 +301,7 @@ async fn dlq_retry_nonexistent() {
 
     let cmd = dlq::DlqCommand::Retry {
         database_url: database_url(),
+        config: write_test_config(),
         delivery_id: random_id,
     };
     let result = dlq::run(cmd).await;
@@ -291,13 +322,11 @@ async fn dlq_retry_existing() {
         .insert_replay(ReceiptId(receipt_id), "test-emitter")
         .await
         .expect("insert original delivery");
-    storage
-        .mark_dead_lettered(original, "test dead letter")
-        .await
-        .expect("mark dead-lettered");
+    force_dead_lettered(&pool, original.0, "test dead letter").await;
 
     let cmd = dlq::DlqCommand::Retry {
         database_url: database_url(),
+        config: write_test_config(),
         delivery_id: original.0,
     };
     dlq::run(cmd).await.expect("dlq retry should succeed");
@@ -326,6 +355,7 @@ async fn replay_single_existing_explicit_emitter() {
     // pre-existing delivery rows.
     let cmd = replay::ReplayCommand::Id {
         database_url: database_url(),
+        config: write_test_config(),
         receipt_id,
         emitter: Some("test-emitter".to_owned()),
     };
@@ -351,6 +381,7 @@ async fn replay_single_without_emitter_bails_without_history() {
     // No pre-existing delivery rows + no --emitter: handler must bail.
     let cmd = replay::ReplayCommand::Id {
         database_url: database_url(),
+        config: write_test_config(),
         receipt_id,
         emitter: None,
     };
@@ -368,6 +399,7 @@ async fn replay_single_nonexistent() {
 
     let cmd = replay::ReplayCommand::Id {
         database_url: database_url(),
+        config: write_test_config(),
         receipt_id: random_id,
         emitter: None,
     };
@@ -491,10 +523,7 @@ async fn dlq_list_with_results() {
         .insert_replay(ReceiptId(receipt_id), &emitter_name)
         .await
         .expect("insert delivery row");
-    storage
-        .mark_dead_lettered(delivery_id, "test")
-        .await
-        .expect("mark dead-lettered");
+    force_dead_lettered(&pool, delivery_id.0, "test").await;
 
     let cmd = dlq::DlqCommand::List {
         database_url: database_url(),

@@ -11,6 +11,15 @@ pub enum StorageError {
     /// Serialization/deserialization failure.
     #[error("serialization error: {0}")]
     Serialization(String),
+    /// The default [`Storage::store_with_deliveries`] implementation was
+    /// invoked with a non-empty `emitter_names` slice, but this backend did
+    /// not override it. Production backends must override the method to
+    /// transactionally insert one delivery row per emitter; the default impl
+    /// only supports `emitter_names.is_empty()`.
+    #[error(
+        "fan-out not implemented by this Storage backend; override store_with_deliveries to transactionally insert delivery rows"
+    )]
+    FanOutNotImplemented,
 }
 
 /// Errors from the `DedupeStrategy` trait.

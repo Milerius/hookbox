@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use hookbox::state::{RetryPolicy, WebhookDelivery};
 use hookbox::traits::Emitter;
 use hookbox::transitions::compute_backoff;
@@ -373,23 +373,18 @@ impl<S: DeliveryStorage + Send + Sync + 'static> EmitterWorker<S> {
             next.last_failure_at = Some(Utc::now());
             next.consecutive_failures += 1;
         }
-        next.status = if next.consecutive_failures >= 10 {
-            HealthStatus::Unhealthy
-        } else if next
-            .last_failure_at
-            .is_some_and(|t| Utc::now().signed_duration_since(t).num_seconds() < 60)
-        {
-            HealthStatus::Degraded
-        } else {
-            HealthStatus::Healthy
-        };
+        next.status = derive_status(next.consecutive_failures, next.last_failure_at);
         self.health.store(Arc::new(next));
     }
 
     /// Refresh DLQ depth, pending count, and in-flight count gauges.
     ///
     /// Writes Prometheus gauges for operator dashboards and updates the
-    /// in-process health snapshot consumed by `/readyz`.
+    /// in-process health snapshot consumed by `/readyz`. Also re-evaluates
+    /// the `Degraded → Healthy` decay: [`Self::update_health`] only runs
+    /// after a dispatch, so an emitter that failed and then went idle
+    /// would remain `Degraded` indefinitely. Recomputing the status here
+    /// on each tick lets the in-process snapshot decay on its own.
     async fn refresh_gauges(&self) {
         let dlq = self.storage.count_dlq(&self.name).await.unwrap_or(0);
         let pending = self.storage.count_pending(&self.name).await.unwrap_or(0);
@@ -413,7 +408,27 @@ impl<S: DeliveryStorage + Send + Sync + 'static> EmitterWorker<S> {
         let mut next = (**current).clone();
         next.dlq_depth = dlq;
         next.pending_count = pending;
+        next.status = derive_status(next.consecutive_failures, next.last_failure_at);
         self.health.store(Arc::new(next));
+    }
+}
+
+/// Derive an [`HealthStatus`] from failure counters. Shared between
+/// [`EmitterWorker::update_health`] (dispatch-driven) and
+/// [`EmitterWorker::refresh_gauges`] (tick-driven) so the tick path can
+/// decay `Degraded → Healthy` on its own once the failure window expires.
+fn derive_status(
+    consecutive_failures: u32,
+    last_failure_at: Option<DateTime<Utc>>,
+) -> HealthStatus {
+    if consecutive_failures >= 10 {
+        HealthStatus::Unhealthy
+    } else if last_failure_at
+        .is_some_and(|t| Utc::now().signed_duration_since(t).num_seconds() < 60)
+    {
+        HealthStatus::Degraded
+    } else {
+        HealthStatus::Healthy
     }
 }
 

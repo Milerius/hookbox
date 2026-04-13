@@ -27,6 +27,7 @@ Feature: Webhook Ingest Pipeline
     Then the result should be "accepted"
 
   Scenario: Accept webhook with emitter names configured
-    Given a pipeline with a passing verifier for "test"
-    When I ingest a webhook from "test" with body '{"event":"test"}'
+    Given the pipeline is configured with emitters "kafka,sqs"
+    When I ingest a webhook from "stripe" with body '{"event":"test"}'
     Then the result should be "accepted"
+    And the receipt has 2 delivery rows

@@ -296,7 +296,13 @@ const fn default_redis_timeout_ms() -> u64 {
 ///
 /// Each `[[emitters]]` entry can override these defaults to tune backoff
 /// behaviour independently of the global `[retry]` worker settings.
+///
+/// `#[serde(default)]` is applied at the struct level so that a partial
+/// `[emitters.retry]` table (e.g. only `max_attempts = 10`) still
+/// deserializes successfully, with missing fields filled in from
+/// [`RetryPolicyConfig::default()`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct RetryPolicyConfig {
     /// Maximum number of delivery attempts before promoting to the dead-letter queue.
     pub max_attempts: i32,
@@ -348,6 +354,7 @@ impl RetryPolicyConfig {
 /// config back to TOML for diff/output. It is intentionally unused at
 /// present.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EmitterEntry {
     /// Unique name identifying this emitter (must match `[a-zA-Z0-9_-]{1,64}`).
     pub name: String,
@@ -405,19 +412,31 @@ impl Default for EmitterEntry {
 }
 
 impl EmitterEntry {
-    /// Convert the legacy `[emitter]` section into a named `EmitterEntry`.
+    /// Convert the legacy `[emitter]` section into a named `EmitterEntry`,
+    /// inheriting poll/retry settings from the global `[retry]` block.
     ///
     /// The synthesised entry is named `"default"` so that downstream code has
     /// a stable name to reference even when the user has not migrated yet.
+    /// Global `retry.interval_seconds` is mapped to the per-entry
+    /// `poll_interval_seconds`, and `retry.max_attempts` is carried on the
+    /// per-entry `retry.max_attempts`, so upgrading from a legacy config
+    /// preserves the operator's tuning instead of silently falling back to
+    /// [`RetryPolicyConfig::default()`].
     #[must_use]
-    pub fn from_legacy(legacy: EmitterConfig) -> Self {
+    pub fn from_legacy(legacy: EmitterConfig, global_retry: &RetryConfig) -> Self {
+        let retry = RetryPolicyConfig {
+            max_attempts: global_retry.max_attempts,
+            ..RetryPolicyConfig::default()
+        };
         Self {
             name: "default".to_owned(),
             emitter_type: legacy.emitter_type,
+            poll_interval_seconds: global_retry.interval_seconds,
             kafka: legacy.kafka,
             nats: legacy.nats,
             sqs: legacy.sqs,
             redis: legacy.redis,
+            retry,
             ..Default::default()
         }
     }
@@ -492,7 +511,7 @@ pub fn normalize(mut config: HookboxConfig) -> Result<(HookboxConfig, Vec<String
         }
         (Some(legacy), true) => {
             warnings.push("`[emitter]` is deprecated; migrate to `[[emitters]]`".into());
-            let entry = EmitterEntry::from_legacy(legacy.clone());
+            let entry = EmitterEntry::from_legacy(legacy.clone(), &config.retry);
             config.emitters = vec![entry];
             config.emitter = None;
         }
@@ -532,6 +551,12 @@ pub fn validate_emitter_entries(entries: &[EmitterEntry]) -> Result<(), ConfigEr
                 e.name
             )));
         }
+        if e.poll_interval_seconds == 0 {
+            return Err(ConfigError::Validation(format!(
+                "emitter {:?}: poll_interval_seconds must be >= 1 (0 would busy-loop against Postgres)",
+                e.name
+            )));
+        }
         if e.retry.jitter < 0.0 || e.retry.jitter > 1.0 {
             return Err(ConfigError::Validation(format!(
                 "emitter {:?}: retry.jitter must be in [0.0, 1.0]",
@@ -550,6 +575,47 @@ pub fn validate_emitter_entries(entries: &[EmitterEntry]) -> Result<(), ConfigEr
                 e.name
             )));
         }
+        match e.emitter_type.as_str() {
+            "channel" => {}
+            "kafka" => {
+                if e.kafka.is_none() {
+                    return Err(ConfigError::Validation(format!(
+                        "emitter {:?}: type = \"kafka\" requires a [[emitters.kafka]] section",
+                        e.name
+                    )));
+                }
+            }
+            "nats" => {
+                if e.nats.is_none() {
+                    return Err(ConfigError::Validation(format!(
+                        "emitter {:?}: type = \"nats\" requires a [[emitters.nats]] section",
+                        e.name
+                    )));
+                }
+            }
+            "sqs" => {
+                if e.sqs.is_none() {
+                    return Err(ConfigError::Validation(format!(
+                        "emitter {:?}: type = \"sqs\" requires a [[emitters.sqs]] section",
+                        e.name
+                    )));
+                }
+            }
+            "redis" => {
+                if e.redis.is_none() {
+                    return Err(ConfigError::Validation(format!(
+                        "emitter {:?}: type = \"redis\" requires a [[emitters.redis]] section",
+                        e.name
+                    )));
+                }
+            }
+            other => {
+                return Err(ConfigError::Validation(format!(
+                    "emitter {:?}: unknown type {other:?}; expected one of \"channel\", \"kafka\", \"nats\", \"sqs\", \"redis\"",
+                    e.name
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -557,6 +623,11 @@ pub fn validate_emitter_entries(entries: &[EmitterEntry]) -> Result<(), ConfigEr
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "expect is acceptable in test code")]
 #[expect(clippy::unwrap_used, reason = "unwrap is acceptable in test code")]
+#[expect(clippy::panic, reason = "panic is acceptable in test code")]
+#[expect(
+    clippy::float_cmp,
+    reason = "exact comparison against defaults is intentional"
+)]
 mod tests {
     use super::*;
 
@@ -1035,5 +1106,134 @@ secret = "checkout_secret"
             ..Default::default()
         }];
         assert!(validate_emitter_entries(&entries).is_err());
+    }
+
+    #[test]
+    fn validate_unknown_emitter_type_is_error() {
+        let entries = vec![EmitterEntry {
+            name: "a".into(),
+            emitter_type: "mystery".into(),
+            ..Default::default()
+        }];
+        let err =
+            validate_emitter_entries(&entries).expect_err("unknown type must fail validation");
+        let ConfigError::Validation(msg) = err else {
+            panic!("expected Validation");
+        };
+        assert!(msg.contains("unknown type"), "got: {msg}");
+        assert!(msg.contains("mystery"), "got: {msg}");
+    }
+
+    #[test]
+    fn validate_kafka_without_backend_section_is_error() {
+        let entries = vec![EmitterEntry {
+            name: "k".into(),
+            emitter_type: "kafka".into(),
+            kafka: None,
+            ..Default::default()
+        }];
+        let err = validate_emitter_entries(&entries)
+            .expect_err("kafka without section must fail validation");
+        let ConfigError::Validation(msg) = err else {
+            panic!("expected Validation");
+        };
+        assert!(msg.contains("kafka"), "got: {msg}");
+        assert!(
+            msg.contains("section") || msg.contains("requires"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_nats_without_backend_section_is_error() {
+        let entries = vec![EmitterEntry {
+            name: "n".into(),
+            emitter_type: "nats".into(),
+            nats: None,
+            ..Default::default()
+        }];
+        assert!(validate_emitter_entries(&entries).is_err());
+    }
+
+    #[test]
+    fn validate_sqs_without_backend_section_is_error() {
+        let entries = vec![EmitterEntry {
+            name: "s".into(),
+            emitter_type: "sqs".into(),
+            sqs: None,
+            ..Default::default()
+        }];
+        assert!(validate_emitter_entries(&entries).is_err());
+    }
+
+    #[test]
+    fn validate_redis_without_backend_section_is_error() {
+        let entries = vec![EmitterEntry {
+            name: "r".into(),
+            emitter_type: "redis".into(),
+            redis: None,
+            ..Default::default()
+        }];
+        assert!(validate_emitter_entries(&entries).is_err());
+    }
+
+    #[test]
+    fn validate_channel_without_backend_section_is_ok() {
+        let entries = vec![EmitterEntry {
+            name: "c".into(),
+            emitter_type: "channel".into(),
+            ..Default::default()
+        }];
+        assert!(validate_emitter_entries(&entries).is_ok());
+    }
+
+    #[test]
+    fn normalize_legacy_emitter_preserves_global_retry() {
+        // Custom global [retry] should carry over to the synthesised
+        // per-emitter entry so upgrading doesn't silently reset to defaults.
+        let toml = r#"
+            [database]
+            url = "postgres://localhost/test"
+            [retry]
+            interval_seconds = 7
+            max_attempts = 42
+            [emitter]
+            type = "channel"
+        "#;
+        let (config, _) = parse_and_normalize(toml).expect("should normalize ok");
+        assert_eq!(config.emitters.len(), 1);
+        let entry = &config.emitters[0];
+        assert_eq!(
+            entry.retry.max_attempts, 42,
+            "global retry.max_attempts must flow into synthesised entry"
+        );
+        assert_eq!(
+            entry.poll_interval_seconds, 7,
+            "global retry.interval_seconds must map to entry.poll_interval_seconds"
+        );
+    }
+
+    #[test]
+    fn partial_retry_table_uses_defaults_for_missing_fields() {
+        // The #[serde(default)] on RetryPolicyConfig lets a partial table
+        // (only max_attempts) still deserialize, with other fields defaulting.
+        let toml = r#"
+            [database]
+            url = "postgres://localhost/test"
+            [[emitters]]
+            name = "ch"
+            type = "channel"
+            [emitters.retry]
+            max_attempts = 9
+        "#;
+        let (config, _) =
+            parse_and_normalize(toml).expect("partial retry table must parse with defaults");
+        let entry = &config.emitters[0];
+        assert_eq!(entry.retry.max_attempts, 9);
+        assert_eq!(
+            entry.retry.initial_backoff_seconds, 30,
+            "default initial_backoff"
+        );
+        assert_eq!(entry.retry.backoff_multiplier, 2.0, "default multiplier");
     }
 }

@@ -575,7 +575,10 @@ impl IngestWorld {
                         inner
                             .update_delivery(delivery.delivery_id, |row| {
                                 row.state = DeliveryState::Emitted;
-                                row.attempt_count += 1;
+                                // Do NOT bump attempt_count on success — production
+                                // `mark_emitted` only touches state/emitted_at, matching
+                                // the worker's retry accounting (count tracks failures,
+                                // not successful attempts).
                                 row.last_attempt_at = Some(Utc::now());
                                 row.emitted_at = Some(Utc::now());
                                 // Do NOT set immutable here — `latest_mutable_per_emitter`

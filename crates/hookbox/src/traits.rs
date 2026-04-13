@@ -106,17 +106,22 @@ pub trait Storage: Send + Sync {
     /// [`StoreResult::Duplicate`] short-circuits before any delivery rows are
     /// inserted).
     ///
-    /// The default implementation delegates to [`store`](Storage::store) and
-    /// ignores `emitter_names`, which keeps all existing mock implementations
-    /// compiling without modification.  Only `PostgresStorage` (in the
-    /// `hookbox-postgres` crate) and the pipeline-unit-test mock override
-    /// this to provide real transactional behaviour.
+    /// The default implementation only supports `emitter_names.is_empty()`
+    /// and delegates to [`store`](Storage::store) in that case.  When
+    /// `emitter_names` is non-empty, it returns
+    /// [`StorageError::FanOutNotImplemented`] — this forces any production
+    /// backend used with a fan-out-configured pipeline to provide a real
+    /// transactional override, while still letting in-memory test doubles
+    /// that never exercise the fan-out path reuse the default.  Overridden
+    /// by `PostgresStorage` and the pipeline-unit-test mock.
     async fn store_with_deliveries(
         &self,
         receipt: &WebhookReceipt,
         emitter_names: &[String],
     ) -> Result<StoreResult, StorageError> {
-        let _ = emitter_names;
+        if !emitter_names.is_empty() {
+            return Err(StorageError::FanOutNotImplemented);
+        }
         self.store(receipt).await
     }
 }

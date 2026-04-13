@@ -92,6 +92,10 @@ impl FakeEmitter {
 
     /// Change the behavior at runtime (useful for "recover after N failures" tests).
     ///
+    /// Also resets the `FailFor` start timer so the new behavior's window
+    /// begins from this moment rather than inheriting a stale `fail_start`
+    /// from a previous `FailFor` behavior.
+    ///
     /// # Errors
     ///
     /// Returns an error string if the internal mutex is poisoned.
@@ -100,6 +104,12 @@ impl FakeEmitter {
             .lock()
             .map(|mut g| {
                 *g = behavior;
+            })
+            .map_err(|e| e.to_string())?;
+        self.fail_start
+            .lock()
+            .map(|mut g| {
+                *g = None;
             })
             .map_err(|e| e.to_string())
     }

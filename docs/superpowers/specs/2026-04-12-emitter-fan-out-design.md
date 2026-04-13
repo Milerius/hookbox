@@ -97,7 +97,7 @@ The unique constraint on `(receipt_id, emitter_name)` is **deliberately omitted*
 
 ### Delivery state machine
 
-```
+```text
 pending  ──dispatch──>  in_flight  ──emit_ok──>   emitted   (terminal happy)
                            │
                            └──emit_err──>  failed
@@ -217,13 +217,13 @@ Per-emitter DLQ is just `SELECT … WHERE emitter_name = $1 AND state = 'dead_le
 
 ### Old flow
 
-```
+```text
 Receive → Verify → Dedupe → Store → Emit (inline await)
 ```
 
 ### New flow
 
-```
+```text
 Receive → Verify → Dedupe → Store + insert N pending deliveries (single txn) → return Accepted
 ```
 

@@ -177,6 +177,11 @@ async fn full_http_flow() {
         body["delivery_ids"].is_array(),
         "replay response must include delivery_ids array, got: {body}"
     );
+    assert_eq!(
+        body["delivery_ids"],
+        serde_json::json!([]),
+        "replay must not enqueue deliveries when no emitters are configured"
+    );
 
     // Test 10: GET /api/receipts/:id → found (non-existent → 404)
     let fake_id = Uuid::new_v4();

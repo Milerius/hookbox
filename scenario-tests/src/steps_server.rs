@@ -97,12 +97,11 @@ pub async fn given_always_fail(world: &mut ServerWorld, name: String) {
 #[when(regex = r#"^I POST a webhook with id "([^"]+)"$"#)]
 pub async fn when_post(world: &mut ServerWorld, id: String) {
     let base = world.base_url().to_owned();
-    let body = format!(r#"{{"id":"{id}"}}"#);
+    let body = serde_json::json!({ "id": id });
     let client = world.client();
     let resp = client
         .post(format!("{base}/webhooks/{FAKE_PROVIDER}"))
-        .header("content-type", "application/json")
-        .body(body)
+        .json(&body)
         .send()
         .await
         .expect("post webhook");

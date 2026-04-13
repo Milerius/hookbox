@@ -1,14 +1,16 @@
 //! `replay` subcommands — re-queue individual or failed receipts for retry.
 
 use std::collections::BTreeSet;
+use std::io::Write as _;
 
-use anyhow::Context as _;
+use anyhow::{Context as _, anyhow};
 use chrono::Utc;
 use clap::Subcommand;
 use uuid::Uuid;
 
 use hookbox::ReceiptId;
 use hookbox_postgres::{DeliveryStorage as _, PostgresStorage};
+use hookbox_server::config::parse_and_normalize;
 
 use crate::db;
 
@@ -20,11 +22,18 @@ pub enum ReplayCommand {
     /// Without `--emitter`, fans out across all emitters that previously
     /// received a delivery for this receipt. With `--emitter <name>`, replays
     /// only that one emitter. Fails if no delivery rows exist and `--emitter`
-    /// is not supplied.
+    /// is not supplied. Every target emitter must still be present in the
+    /// supplied config — replays targeting a removed emitter would be
+    /// stranded with no worker to process them.
     Id {
         /// Database connection URL.
         #[arg(long, env = "DATABASE_URL")]
         database_url: String,
+
+        /// Path to hookbox.toml — used to validate that the target emitters
+        /// are still configured before queuing replays.
+        #[arg(long, default_value = "hookbox.toml", value_name = "PATH")]
+        config: String,
 
         /// Receipt UUID to replay.
         receipt_id: Uuid,
@@ -65,65 +74,10 @@ pub async fn run(command: ReplayCommand) -> anyhow::Result<()> {
     match command {
         ReplayCommand::Id {
             database_url,
+            config,
             receipt_id,
             emitter,
-        } => {
-            let pool = db::connect(&database_url).await?;
-            let storage = PostgresStorage::new(pool);
-
-            if let Some(name) = emitter {
-                let new_id = storage
-                    .insert_replay(ReceiptId(receipt_id), &name)
-                    .await
-                    .with_context(|| {
-                        format!("insert_replay failed for receipt {receipt_id} emitter {name}")
-                    })?;
-                tracing::info!(
-                    receipt_id = %receipt_id,
-                    emitter = %name,
-                    new_delivery_id = %new_id,
-                    "delivery queued for retry"
-                );
-            } else {
-                let deliveries = storage
-                    .get_deliveries_for_receipt(ReceiptId(receipt_id))
-                    .await
-                    .with_context(|| {
-                        format!("get_deliveries_for_receipt failed for {receipt_id}")
-                    })?;
-
-                if deliveries.is_empty() {
-                    anyhow::bail!(
-                        "receipt {receipt_id} has no existing deliveries — cannot infer emitter \
-                         set; pass --emitter explicitly"
-                    );
-                }
-
-                let emitter_names: BTreeSet<String> =
-                    deliveries.iter().map(|d| d.emitter_name.clone()).collect();
-
-                let count = emitter_names.len();
-                for name in &emitter_names {
-                    let new_id = storage
-                        .insert_replay(ReceiptId(receipt_id), name)
-                        .await
-                        .with_context(|| {
-                            format!("insert_replay failed for receipt {receipt_id} emitter {name}")
-                        })?;
-                    tracing::info!(
-                        receipt_id = %receipt_id,
-                        emitter = %name,
-                        new_delivery_id = %new_id,
-                        "delivery queued for retry"
-                    );
-                }
-                tracing::info!(
-                    receipt_id = %receipt_id,
-                    replayed = count,
-                    "receipt replayed across all emitters"
-                );
-            }
-        }
+        } => run_replay_id(database_url, config, receipt_id, emitter).await?,
 
         ReplayCommand::Failed {
             database_url,
@@ -150,6 +104,92 @@ pub async fn run(command: ReplayCommand) -> anyhow::Result<()> {
             tracing::info!(count, "total receipts replayed");
         }
     }
+    Ok(())
+}
+
+async fn run_replay_id(
+    database_url: String,
+    config: String,
+    receipt_id: Uuid,
+    emitter: Option<String>,
+) -> anyhow::Result<()> {
+    let raw = std::fs::read_to_string(&config)
+        .with_context(|| format!("failed to read config file: {config}"))?;
+    let (parsed, warnings) =
+        parse_and_normalize(&raw).with_context(|| format!("failed to parse config: {config}"))?;
+    for warning in &warnings {
+        let mut err = std::io::stderr();
+        writeln!(err, "warning: {warning}").context("failed to write warning")?;
+    }
+    let configured: BTreeSet<String> = parsed.emitters.iter().map(|e| e.name.clone()).collect();
+
+    let pool = db::connect(&database_url).await?;
+    let storage = PostgresStorage::new(pool);
+
+    if let Some(name) = emitter {
+        if !configured.contains(&name) {
+            return Err(anyhow!(
+                "refusing to replay receipt {receipt_id}: emitter {name:?} is not present in {config}; configured emitters: {configured:?}"
+            ));
+        }
+        let new_id = storage
+            .insert_replay(ReceiptId(receipt_id), &name)
+            .await
+            .with_context(|| {
+                format!("insert_replay failed for receipt {receipt_id} emitter {name}")
+            })?;
+        tracing::info!(
+            receipt_id = %receipt_id,
+            emitter = %name,
+            new_delivery_id = %new_id,
+            "delivery queued for retry"
+        );
+        return Ok(());
+    }
+
+    let deliveries = storage
+        .get_deliveries_for_receipt(ReceiptId(receipt_id))
+        .await
+        .with_context(|| format!("get_deliveries_for_receipt failed for {receipt_id}"))?;
+
+    if deliveries.is_empty() {
+        anyhow::bail!(
+            "receipt {receipt_id} has no existing deliveries — cannot infer emitter set; pass \
+             --emitter explicitly"
+        );
+    }
+
+    let historical: BTreeSet<String> = deliveries.iter().map(|d| d.emitter_name.clone()).collect();
+    let stale: Vec<&String> = historical
+        .iter()
+        .filter(|n| !configured.contains(*n))
+        .collect();
+    if !stale.is_empty() {
+        return Err(anyhow!(
+            "refusing to replay receipt {receipt_id}: historical emitters {stale:?} are no longer present in {config}; configured emitters: {configured:?}"
+        ));
+    }
+
+    let count = historical.len();
+    for name in &historical {
+        let new_id = storage
+            .insert_replay(ReceiptId(receipt_id), name)
+            .await
+            .with_context(|| {
+                format!("insert_replay failed for receipt {receipt_id} emitter {name}")
+            })?;
+        tracing::info!(
+            receipt_id = %receipt_id,
+            emitter = %name,
+            new_delivery_id = %new_id,
+            "delivery queued for retry"
+        );
+    }
+    tracing::info!(
+        receipt_id = %receipt_id,
+        replayed = count,
+        "receipt replayed across all emitters"
+    );
     Ok(())
 }
 

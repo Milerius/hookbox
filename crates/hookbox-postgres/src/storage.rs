@@ -329,20 +329,21 @@ impl Storage for PostgresStorage {
             });
         }
 
-        // Insert one pending delivery row per emitter name.
-        let now = chrono::Utc::now();
+        // Insert one pending delivery row per emitter name. Queue timestamps
+        // use the database clock so newly inserted rows are immediately
+        // eligible under `claim_pending()`'s `next_attempt_at <= now()`
+        // predicate even when app and DB clocks drift.
         for name in emitter_names {
             sqlx::query(
                 r"
                 INSERT INTO webhook_deliveries
                     (delivery_id, receipt_id, emitter_name, state, next_attempt_at, created_at)
                 VALUES
-                    (gen_random_uuid(), $1, $2, 'pending', $3, $3)
+                    (gen_random_uuid(), $1, $2, 'pending', now(), now())
                 ",
             )
             .bind(receipt.receipt_id.0)
             .bind(name)
-            .bind(now)
             .execute(&mut *tx)
             .await
             .map_err(|e| StorageError::Internal(e.to_string()))?;
@@ -749,6 +750,23 @@ pub trait DeliveryStorage: Send + Sync {
         emitter_name: &str,
     ) -> Result<DeliveryId, Self::Error>;
 
+    /// Insert replay rows for every name in `emitter_names`, atomically where
+    /// the backend supports transactions. The production Postgres impl wraps
+    /// the batch in a single `BEGIN/COMMIT` so a mid-batch failure leaves no
+    /// partial replays behind; the default implementation is a non-atomic
+    /// sequential fallback suitable for in-memory test doubles.
+    async fn insert_replays(
+        &self,
+        receipt_id: ReceiptId,
+        emitter_names: &[String],
+    ) -> Result<Vec<DeliveryId>, Self::Error> {
+        let mut ids = Vec::with_capacity(emitter_names.len());
+        for name in emitter_names {
+            ids.push(self.insert_replay(receipt_id, name).await?);
+        }
+        Ok(ids)
+    }
+
     /// Fetch a single delivery row plus its parent receipt.
     async fn get_delivery(
         &self,
@@ -850,17 +868,27 @@ impl DeliveryStorage for PostgresStorage {
     }
 
     async fn mark_emitted(&self, delivery_id: DeliveryId) -> Result<(), Self::Error> {
-        sqlx::query(
+        // Lease guard: only flip in_flight → emitted. If a concurrent
+        // `reclaim_expired` has already moved this row back to 'failed'
+        // (or another final state) the UPDATE matches 0 rows and we log
+        // it as a stale lease rather than clobbering the reclaim.
+        let result = sqlx::query(
             r"
             UPDATE webhook_deliveries
             SET state = 'emitted', emitted_at = now(), last_error = NULL
-            WHERE delivery_id = $1
+            WHERE delivery_id = $1 AND state = 'in_flight'
             ",
         )
         .bind(delivery_id.0)
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            tracing::warn!(
+                delivery_id = %delivery_id.0,
+                "mark_emitted affected 0 rows — stale lease, row already reclaimed or moved"
+            );
+        }
         Ok(())
     }
 
@@ -871,14 +899,14 @@ impl DeliveryStorage for PostgresStorage {
         next_attempt_at: DateTime<Utc>,
         last_error: &str,
     ) -> Result<(), Self::Error> {
-        sqlx::query(
+        let result = sqlx::query(
             r"
             UPDATE webhook_deliveries
             SET state = 'failed',
                 attempt_count = $2,
                 next_attempt_at = $3,
                 last_error = $4
-            WHERE delivery_id = $1
+            WHERE delivery_id = $1 AND state = 'in_flight'
             ",
         )
         .bind(delivery_id.0)
@@ -888,6 +916,12 @@ impl DeliveryStorage for PostgresStorage {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            tracing::warn!(
+                delivery_id = %delivery_id.0,
+                "mark_failed affected 0 rows — stale lease, row already reclaimed or moved"
+            );
+        }
         Ok(())
     }
 
@@ -896,11 +930,11 @@ impl DeliveryStorage for PostgresStorage {
         delivery_id: DeliveryId,
         last_error: &str,
     ) -> Result<(), Self::Error> {
-        sqlx::query(
+        let result = sqlx::query(
             r"
             UPDATE webhook_deliveries
             SET state = 'dead_lettered', last_error = $2
-            WHERE delivery_id = $1
+            WHERE delivery_id = $1 AND state = 'in_flight'
             ",
         )
         .bind(delivery_id.0)
@@ -908,6 +942,12 @@ impl DeliveryStorage for PostgresStorage {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            tracing::warn!(
+                delivery_id = %delivery_id.0,
+                "mark_dead_lettered affected 0 rows — stale lease, row already reclaimed or moved"
+            );
+        }
         Ok(())
     }
 
@@ -923,8 +963,16 @@ impl DeliveryStorage for PostgresStorage {
     }
 
     async fn count_pending(&self, emitter_name: &str) -> Result<u64, Self::Error> {
+        // Mirror `claim_pending`'s predicate: count only rows that are actually
+        // dispatchable *right now*, not backed-off retries waiting for their
+        // next_attempt_at to expire. Otherwise the pending gauge overstates
+        // real queue depth and triggers spurious backlog alerts.
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM webhook_deliveries WHERE emitter_name = $1 AND state IN ('pending', 'failed') AND immutable = FALSE",
+            "SELECT COUNT(*) FROM webhook_deliveries \
+             WHERE emitter_name = $1 \
+               AND state IN ('pending', 'failed') \
+               AND next_attempt_at <= now() \
+               AND immutable = FALSE",
         )
         .bind(emitter_name)
         .fetch_one(&self.pool)
@@ -962,6 +1010,40 @@ impl DeliveryStorage for PostgresStorage {
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))?;
         Ok(DeliveryId(delivery_id))
+    }
+
+    async fn insert_replays(
+        &self,
+        receipt_id: ReceiptId,
+        emitter_names: &[String],
+    ) -> Result<Vec<DeliveryId>, Self::Error> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        let mut ids = Vec::with_capacity(emitter_names.len());
+        for emitter_name in emitter_names {
+            let delivery_id: Uuid = sqlx::query_scalar(
+                r"
+                INSERT INTO webhook_deliveries (delivery_id, receipt_id, emitter_name, state, next_attempt_at)
+                VALUES (gen_random_uuid(), $1, $2, 'pending', now())
+                RETURNING delivery_id
+                ",
+            )
+            .bind(receipt_id.0)
+            .bind(emitter_name)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+            ids.push(DeliveryId(delivery_id));
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        Ok(ids)
     }
 
     async fn get_delivery(
@@ -1112,6 +1194,14 @@ impl<T: DeliveryStorage + ?Sized> DeliveryStorage for std::sync::Arc<T> {
         emitter_name: &str,
     ) -> Result<DeliveryId, Self::Error> {
         (**self).insert_replay(receipt_id, emitter_name).await
+    }
+
+    async fn insert_replays(
+        &self,
+        receipt_id: ReceiptId,
+        emitter_names: &[String],
+    ) -> Result<Vec<DeliveryId>, Self::Error> {
+        (**self).insert_replays(receipt_id, emitter_names).await
     }
 
     async fn get_delivery(

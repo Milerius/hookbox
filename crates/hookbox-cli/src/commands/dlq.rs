@@ -2,12 +2,13 @@
 
 use std::io::Write as _;
 
-use anyhow::Context as _;
+use anyhow::{Context as _, anyhow};
 use clap::Subcommand;
 use uuid::Uuid;
 
 use hookbox::DeliveryId;
 use hookbox_postgres::{DeliveryStorage, PostgresStorage};
+use hookbox_server::config::parse_and_normalize;
 
 use crate::db;
 
@@ -47,10 +48,19 @@ pub enum DlqCommand {
     },
 
     /// Retry a dead-lettered delivery by ID.
+    ///
+    /// The delivery's emitter must still be present in the supplied config —
+    /// retrying a delivery for an emitter that has since been removed would
+    /// leave the row stranded with no worker to process it.
     Retry {
         /// Database connection URL.
         #[arg(long, env = "DATABASE_URL")]
         database_url: String,
+
+        /// Path to hookbox.toml — used to validate that the delivery's
+        /// emitter is still configured before queuing a replay.
+        #[arg(long, default_value = "hookbox.toml", value_name = "PATH")]
+        config: String,
 
         /// Delivery UUID to retry.
         delivery_id: Uuid,
@@ -119,8 +129,18 @@ pub async fn run(command: DlqCommand) -> anyhow::Result<()> {
 
         DlqCommand::Retry {
             database_url,
+            config,
             delivery_id,
         } => {
+            let raw = std::fs::read_to_string(&config)
+                .with_context(|| format!("failed to read config file: {config}"))?;
+            let (parsed, warnings) = parse_and_normalize(&raw)
+                .with_context(|| format!("failed to parse config: {config}"))?;
+            for warning in &warnings {
+                let mut err = std::io::stderr();
+                writeln!(err, "warning: {warning}").context("failed to write warning")?;
+            }
+
             let pool = db::connect(&database_url).await?;
             let storage = PostgresStorage::new(pool);
 
@@ -129,6 +149,18 @@ pub async fn run(command: DlqCommand) -> anyhow::Result<()> {
                 .await
                 .context("failed to fetch delivery")?
                 .with_context(|| format!("delivery {delivery_id} not found"))?;
+
+            if !parsed
+                .emitters
+                .iter()
+                .any(|e| e.name == delivery.emitter_name)
+            {
+                return Err(anyhow!(
+                    "refusing to replay delivery {delivery_id}: emitter {:?} is no longer present in {config}; configured emitters: {:?}",
+                    delivery.emitter_name,
+                    parsed.emitters.iter().map(|e| &e.name).collect::<Vec<_>>(),
+                ));
+            }
 
             let new_id = storage
                 .insert_replay(receipt.receipt_id, &delivery.emitter_name)

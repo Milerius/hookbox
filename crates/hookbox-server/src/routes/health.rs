@@ -107,7 +107,7 @@ pub async fn readyz<S: Storage, D: DedupeStrategy>(
     };
 
     // ── Emitter snapshots ──────────────────────────────────────────────────────
-    let emitters: BTreeMap<String, EmitterHealthSnapshot> = state
+    let mut emitters: BTreeMap<String, EmitterHealthSnapshot> = state
         .emitter_health
         .iter()
         .map(|(name, arc_swap)| {
@@ -123,6 +123,24 @@ pub async fn readyz<S: Storage, D: DedupeStrategy>(
             (name.clone(), snapshot)
         })
         .collect();
+
+    // Synthesize an Unhealthy snapshot for any configured emitter that has no
+    // registered worker handle. This happens when worker spawning failed at
+    // startup or the handle was never wired into `AppState::emitter_health`;
+    // without this guard `/readyz` would misreport a non-dispatching emitter
+    // as Healthy.
+    for name in state.pipeline.emitter_names() {
+        emitters
+            .entry(name.clone())
+            .or_insert(EmitterHealthSnapshot {
+                status: HealthStatus::Unhealthy,
+                last_success_at: None,
+                last_failure_at: None,
+                consecutive_failures: 0,
+                dlq_depth: 0,
+                pending_count: 0,
+            });
+    }
 
     // ── Aggregate ──────────────────────────────────────────────────────────────
     let overall = compute_overall_status(db_status, &emitters);
