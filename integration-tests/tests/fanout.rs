@@ -582,3 +582,106 @@ async fn test_aggregate_state_pending_in_flight_collapse_to_stored(pool: PgPool)
         "Emitted delivery must derive Emitted"
     );
 }
+
+// ── EmitterWorker::spawn loop coverage ───────────────────────────────────────
+
+/// Spawns a real `EmitterWorker` against a real `PostgresStorage`, lets it
+/// poll once and dispatch a seeded delivery, then signals shutdown via the
+/// `watch` channel. Exercises the full `spawn` loop body: sleep arm,
+/// `reclaim_expired`, `claim_pending` (non-empty branch), `join_all` dispatch,
+/// `refresh_gauges`, and the `borrow_and_update` shutdown check after the
+/// batch. None of this is covered by the `dispatch_one` direct-call tests.
+#[sqlx::test(migrations = "../crates/hookbox-postgres/migrations")]
+async fn spawn_polls_and_shuts_down_gracefully(pool: PgPool) {
+    let receipt_id = ingest_one(&pool, vec!["spawn-test".to_owned()]).await;
+    let storage = PostgresStorage::new(pool.clone());
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let worker = make_worker(
+        PostgresStorage::new(pool.clone()),
+        Arc::new(ChannelEmitter(tx)),
+        "spawn-test",
+        RetryPolicy::default(),
+        1,
+    );
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let handle = worker.spawn(shutdown_rx);
+
+    // Wait up to 3s for the channel emitter to receive the one event, which
+    // proves the spawn loop executed a full cycle (claim → dispatch → mark_emitted).
+    let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+        .await
+        .expect("spawn loop did not emit within 3s")
+        .expect("channel must receive event");
+    assert_eq!(event.receipt_id.0, receipt_id);
+
+    // Signal shutdown and wait for the loop to exit on the post-batch check.
+    shutdown_tx.send(true).expect("send shutdown");
+    tokio::time::timeout(Duration::from_secs(3), handle)
+        .await
+        .expect("worker did not exit within 3s on shutdown")
+        .expect("worker task panicked");
+
+    // Delivery row is now in Emitted state.
+    let deliveries = storage
+        .get_deliveries_for_receipt(hookbox::state::ReceiptId(receipt_id))
+        .await
+        .expect("get_deliveries_for_receipt");
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(deliveries[0].state, DeliveryState::Emitted);
+}
+
+/// The `spawn` loop must also exit when the `watch::Sender` is dropped
+/// rather than sent an explicit shutdown — this covers the `Err(_) => break`
+/// arm that protects against spinning on an ever-ready closed channel.
+#[sqlx::test(migrations = "../crates/hookbox-postgres/migrations")]
+async fn spawn_exits_when_watch_sender_dropped(pool: PgPool) {
+    let worker = make_worker(
+        PostgresStorage::new(pool.clone()),
+        Arc::new(AlwaysFailEmitter),
+        "no-work",
+        RetryPolicy::default(),
+        1,
+    );
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let handle = worker.spawn(shutdown_rx);
+
+    // Drop the sender; the `changed()` arm returns Err, which must break
+    // the loop rather than spin on it.
+    drop(shutdown_tx);
+
+    tokio::time::timeout(Duration::from_secs(3), handle)
+        .await
+        .expect("worker did not exit within 3s after sender drop")
+        .expect("worker task panicked");
+}
+
+/// Spawn a worker against a table with no pending deliveries; the claim
+/// returns an empty vec so the loop takes the `refresh_gauges → continue`
+/// branch and then exits cleanly on shutdown.
+#[sqlx::test(migrations = "../crates/hookbox-postgres/migrations")]
+async fn spawn_handles_empty_claim_and_shuts_down(pool: PgPool) {
+    let worker = make_worker(
+        PostgresStorage::new(pool.clone()),
+        Arc::new(AlwaysFailEmitter),
+        "empty",
+        RetryPolicy::default(),
+        1,
+    );
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let handle = worker.spawn(shutdown_rx);
+
+    // Give the loop enough time to complete at least one empty-claim tick
+    // (`make_worker` sets poll_interval = 50ms) so `refresh_gauges` actually
+    // runs on a claim_pending == [] path.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    shutdown_tx.send(true).expect("send shutdown");
+
+    tokio::time::timeout(Duration::from_secs(3), handle)
+        .await
+        .expect("worker did not exit within 3s")
+        .expect("worker task panicked");
+}
