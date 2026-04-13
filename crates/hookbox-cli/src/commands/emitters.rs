@@ -55,13 +55,8 @@ pub async fn run(command: EmittersCommand) -> anyhow::Result<()> {
             let pool = db::connect(&database_url).await?;
             let storage = PostgresStorage::new(pool);
 
-            if parsed.emitters.is_empty() {
-                let mut out = std::io::stdout();
-                out.write_all(b"No emitters configured.\n")
-                    .context("failed to write to stdout")?;
-                return Ok(());
-            }
-
+            // `parse_and_normalize` rejects configs with zero emitters, so
+            // `parsed.emitters` is guaranteed non-empty here.
             let mut out = std::io::stdout();
             writeln!(
                 out,

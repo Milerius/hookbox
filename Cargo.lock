@@ -2284,6 +2284,7 @@ dependencies = [
  "hookbox-postgres",
  "hookbox-providers",
  "http-body-util",
+ "libc",
  "metrics",
  "metrics-exporter-prometheus",
  "serde",
