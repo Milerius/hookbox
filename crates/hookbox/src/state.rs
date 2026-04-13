@@ -124,6 +124,31 @@ mod tests {
     }
 
     #[test]
+    fn delivery_state_display_non_empty_for_all_variants() {
+        // The mutation `replace fmt -> fmt::Result with Ok(Default::default())`
+        // writes nothing to the formatter, producing an empty string.  Asserting
+        // non-empty is necessary and sufficient to kill the mutant.
+        let cases = [
+            (DeliveryState::Pending, "pending"),
+            (DeliveryState::InFlight, "in_flight"),
+            (DeliveryState::Emitted, "emitted"),
+            (DeliveryState::Failed, "failed"),
+            (DeliveryState::DeadLettered, "dead_lettered"),
+        ];
+        for (state, expected) in &cases {
+            let formatted = format!("{state}");
+            assert_eq!(
+                formatted, *expected,
+                "Display for {state:?} must be '{expected}', got '{formatted}'"
+            );
+            assert!(
+                !formatted.is_empty(),
+                "Display for {state:?} must not be empty"
+            );
+        }
+    }
+
+    #[test]
     fn delivery_state_serde_round_trip() {
         let cases = [
             (DeliveryState::Pending, "\"pending\""),
