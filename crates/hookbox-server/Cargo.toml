@@ -40,6 +40,10 @@ futures.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+base64.workspace = true
 http-body-util.workspace = true
 hookbox = { workspace = true }
 tokio = { workspace = true }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

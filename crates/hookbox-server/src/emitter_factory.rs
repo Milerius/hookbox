@@ -177,6 +177,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn kafka_with_section_builds_ready_variant() {
+        // `KafkaEmitter::new` is synchronous and uses rdkafka's ClientConfig,
+        // which does not actually connect — it only validates the property
+        // map. So a well-formed config returns `Ok` without a broker, and we
+        // exercise the kafka arm's success path (including the tracing and
+        // `BuiltEmitter::Ready` construction).
+        let cfg = EmitterConfig {
+            emitter_type: "kafka".to_owned(),
+            kafka: Some(crate::config::KafkaEmitterConfig {
+                brokers: "localhost:9092".to_owned(),
+                topic: "coverage-test".to_owned(),
+                client_id: "hookbox-test".to_owned(),
+                acks: "all".to_owned(),
+                timeout_ms: 1000,
+            }),
+            ..EmitterConfig::default()
+        };
+        let built = build_emitter(&cfg)
+            .await
+            .expect("kafka build should succeed");
+        match built {
+            BuiltEmitter::Ready(_) => {}
+            BuiltEmitter::Channel { .. } => panic!("expected Ready variant, got Channel"),
+        }
+    }
+
+    #[tokio::test]
+    async fn nats_with_section_fails_on_unreachable_broker() {
+        // `async_nats::connect` eagerly dials the broker, so pointing at a
+        // closed port reliably trips the `.context("failed to create NATS
+        // emitter")` branch and covers the nats arm end-to-end.
+        let cfg = EmitterConfig {
+            emitter_type: "nats".to_owned(),
+            nats: Some(crate::config::NatsEmitterConfig {
+                url: "nats://127.0.0.1:1".to_owned(),
+                subject: "coverage-test".to_owned(),
+            }),
+            ..EmitterConfig::default()
+        };
+        let msg = expect_build_error(&cfg).await;
+        assert!(msg.contains("failed to create NATS emitter"), "msg = {msg}");
+    }
+
+    #[tokio::test]
+    async fn sqs_with_section_builds_ready_variant() {
+        // The AWS SQS client is lazy: `aws_config::from_env()` +
+        // `SqsClient::new` does not make network calls during construction,
+        // so we exercise the sqs arm's success path without reaching the
+        // `.context("failed to create SQS emitter")` branch.
+        let cfg = EmitterConfig {
+            emitter_type: "sqs".to_owned(),
+            sqs: Some(crate::config::SqsEmitterConfig {
+                queue_url: "http://localhost:4566/000000000000/coverage-test".to_owned(),
+                region: Some("us-east-1".to_owned()),
+                fifo: false,
+                endpoint_url: Some("http://localhost:4566".to_owned()),
+            }),
+            ..EmitterConfig::default()
+        };
+        let built = build_emitter(&cfg).await.expect("sqs build should succeed");
+        match built {
+            BuiltEmitter::Ready(_) => {}
+            BuiltEmitter::Channel { .. } => panic!("expected Ready variant, got Channel"),
+        }
+    }
+
+    #[tokio::test]
+    async fn redis_with_section_fails_on_unreachable_server() {
+        // `ConnectionManager::new_with_config` eagerly dials the redis server
+        // with the configured timeout. Pointing at a closed port + a short
+        // timeout trips the `.context("failed to create Redis emitter")`
+        // branch quickly.
+        let cfg = EmitterConfig {
+            emitter_type: "redis".to_owned(),
+            redis: Some(crate::config::RedisEmitterConfig {
+                url: "redis://127.0.0.1:1".to_owned(),
+                stream: "coverage-test".to_owned(),
+                maxlen: None,
+                timeout_ms: 200,
+            }),
+            ..EmitterConfig::default()
+        };
+        let msg = expect_build_error(&cfg).await;
+        assert!(
+            msg.contains("failed to create Redis emitter"),
+            "msg = {msg}"
+        );
+    }
+
+    #[tokio::test]
     async fn channel_returns_channel_variant() {
         let cfg = cfg_with_type("channel");
         let built = build_emitter(&cfg).await.expect("build should succeed");

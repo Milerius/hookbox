@@ -3,9 +3,11 @@
 //! Provides [`AppState`], [`build_router`], and all HTTP route handlers for
 //! webhook ingestion, health checks, and administrative operations.
 
+pub mod bootstrap;
 pub mod config;
 pub mod emitter_factory;
 pub mod routes;
+pub mod serve;
 pub mod shutdown;
 pub mod worker;
 
