@@ -540,6 +540,7 @@ pub fn validate_emitter_entries(entries: &[EmitterEntry]) -> Result<(), ConfigEr
 
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "expect is acceptable in test code")]
+#[expect(clippy::unwrap_used, reason = "unwrap is acceptable in test code")]
 mod tests {
     use super::*;
 

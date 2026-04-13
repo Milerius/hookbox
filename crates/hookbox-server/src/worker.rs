@@ -421,7 +421,7 @@ impl<S: DeliveryStorage + Send + Sync + 'static> EmitterWorker<S> {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "unwrap is acceptable in test code")]
-#[expect(clippy::panic, reason = "panics are acceptable in test code")]
+#[expect(clippy::expect_used, reason = "expect is acceptable in test code")]
 mod tests {
     use super::*;
 
@@ -506,7 +506,7 @@ mod tests {
                 payload_hash: "h".to_owned(),
                 raw_body: b"{}".to_vec(),
                 parsed_payload: None,
-                raw_headers: serde_json::Value::Object(Default::default()),
+                raw_headers: serde_json::Value::Object(serde_json::Map::default()),
                 normalized_event_type: None,
                 verification_status: hookbox::state::VerificationStatus::Verified,
                 verification_reason: None,
@@ -515,7 +515,7 @@ mod tests {
                 last_error: None,
                 received_at: Utc::now(),
                 processed_at: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: serde_json::Value::Object(serde_json::Map::default()),
             };
             receipts.insert(receipt_id, receipt);
 

@@ -1124,8 +1124,8 @@ async fn replay_receipt_storage_error_returns_500() {
     assert!(json["error"].as_str().unwrap().contains("simulated"));
 }
 
-/// `list_dlq` now calls `DeliveryStorage::list_dlq` (noop in FailingStorage),
-/// not `Storage::query`.  The FailingStorage noop returns Ok([]), so the
+/// `list_dlq` now calls `DeliveryStorage::list_dlq` (noop in `FailingStorage`),
+/// not `Storage::query`.  The `FailingStorage` noop returns Ok([]), so the
 /// endpoint returns 200 with an empty array rather than 500.
 #[tokio::test]
 async fn list_dlq_with_failing_storage_returns_200_empty() {
