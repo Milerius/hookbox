@@ -1,7 +1,6 @@
 # Mutation testing configuration
-# Exclude non-application crates from mutation testing
-
-[filter]
+# Exclude non-application crates from mutation testing.
+# cargo-mutants config uses top-level keys (no [filter] section).
 exclude_re = [
     "hookbox-cli::.*",
 ]
