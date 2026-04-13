@@ -104,5 +104,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Bolero property tests
         run: cargo test -p hookbox-verify --all-features -- --test-threads=1
-      - name: BDD scenario tests
-        run: cargo test -p hookbox --test bdd
+      - name: BDD scenario tests (core, in-memory)
+        run: cargo test -p hookbox-scenarios --test core_bdd

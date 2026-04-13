@@ -88,6 +88,18 @@ jobs:
         env:
           DATABASE_URL: postgres://hookbox:hookbox@localhost:5432/hookbox_test
 
+  test-server-bdd:
+    name: BDD Scenario Tests (Server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install system deps (rdkafka build)
+        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Server BDD scenarios (testcontainer Postgres)
+        run: cargo test -p hookbox-scenarios --test server_bdd --features bdd-server
+
   test-emitters:
     name: Emitter Round-Trip Tests (Linux only)
     runs-on: ubuntu-latest
