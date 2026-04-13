@@ -98,6 +98,32 @@ pub trait Storage: Send + Sync {
     /// All filter fields are optional; an empty filter returns all receipts
     /// up to any backend-enforced maximum.
     async fn query(&self, filter: ReceiptFilter) -> Result<Vec<WebhookReceipt>, StorageError>;
+
+    /// Atomically insert the receipt and one pending delivery row per emitter.
+    ///
+    /// Either all inserts succeed, or the entire transaction is rolled back.
+    /// Returns [`StoreResult`] (same shape as [`store`](Storage::store);
+    /// [`StoreResult::Duplicate`] short-circuits before any delivery rows are
+    /// inserted).
+    ///
+    /// The default implementation only supports `emitter_names.is_empty()`
+    /// and delegates to [`store`](Storage::store) in that case.  When
+    /// `emitter_names` is non-empty, it returns
+    /// [`StorageError::FanOutNotImplemented`] — this forces any production
+    /// backend used with a fan-out-configured pipeline to provide a real
+    /// transactional override, while still letting in-memory test doubles
+    /// that never exercise the fan-out path reuse the default.  Overridden
+    /// by `PostgresStorage` and the pipeline-unit-test mock.
+    async fn store_with_deliveries(
+        &self,
+        receipt: &WebhookReceipt,
+        emitter_names: &[String],
+    ) -> Result<StoreResult, StorageError> {
+        if !emitter_names.is_empty() {
+            return Err(StorageError::FanOutNotImplemented);
+        }
+        self.store(receipt).await
+    }
 }
 
 /// Advisory fast-path duplicate detection.

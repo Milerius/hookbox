@@ -22,12 +22,28 @@ let emitter = RedisEmitter::new(
 ## Configuration via `hookbox.toml`
 
 ```toml
-[emitter]
+[[emitters]]
+name = "redis"                 # used as the `emitter` label on metrics and /readyz
 type = "redis"
+poll_interval_seconds = 1
+concurrency = 8
 
-[emitter.redis]
-url    = "redis://127.0.0.1:6379"
-stream = "hookbox.events"
-maxlen = 100000     # optional
-timeout_ms = 5000   # default 5000
+[emitters.redis]
+url        = "redis://127.0.0.1:6379"
+stream     = "hookbox.events"
+maxlen     = 100000            # optional XADD MAXLEN ~
+timeout_ms = 5000              # default 5000
+
+[emitters.retry]
+max_attempts = 8
+initial_backoff_seconds = 2
+max_backoff_seconds = 600
+backoff_multiplier = 2.0
+jitter = 0.2
 ```
+
+Multiple `[[emitters]]` blocks with `type = "redis"` are allowed — each runs an independent worker with its own `name`, poll interval, concurrency, and retry policy. The adapter is wired automatically by `hookbox-server` for every entry with `type = "redis"`.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](../../LICENSE-APACHE) or [MIT License](../../LICENSE-MIT) at your option.

@@ -1,12 +1,18 @@
 //! Pipeline orchestration for the hookbox ingest flow.
 //!
 //! [`HookboxPipeline`] wires together the four extension-point traits
-//! ([`Storage`], [`DedupeStrategy`], [`Emitter`], [`SignatureVerifier`]) into
-//! the five-stage ingest pipeline:
+//! ([`Storage`], [`DedupeStrategy`], [`SignatureVerifier`]) into
+//! the four-stage ingest pipeline:
 //!
 //! ```text
-//! Receive → Verify → Dedupe → Store → Emit
+//! Receive → Verify → Dedupe → Store (with delivery rows)
 //! ```
+//!
+//! Stage 5 (inline emit) has been removed. After a successful store the
+//! pipeline writes one `webhook_deliveries` row per configured emitter name
+//! via [`Storage::store_with_deliveries`].  The `EmitterWorker` (in the
+//! `hookbox-server` crate) picks up those rows and performs the actual
+//! downstream emission.
 //!
 //! Construction is done via [`HookboxPipelineBuilder`], obtained from
 //! [`HookboxPipeline::builder()`].
@@ -22,35 +28,35 @@ use serde_json::json;
 use crate::error::IngestError;
 use crate::hash::compute_payload_hash;
 use crate::state::{DedupeDecision, IngestResult, ProcessingState, ReceiptId, VerificationStatus};
-use crate::traits::{DedupeStrategy, Emitter, SignatureVerifier, Storage};
+use crate::traits::{DedupeStrategy, SignatureVerifier, Storage};
 use crate::transitions;
-use crate::types::{NormalizedEvent, WebhookReceipt};
+use crate::types::WebhookReceipt;
 
-/// Core pipeline that orchestrates webhook ingestion through five stages:
-/// receive, verify, dedupe, store, and emit.
+/// Core pipeline that orchestrates webhook ingestion through four stages:
+/// receive, verify, dedupe, and store (with delivery rows).
 ///
-/// Generic over `S` (storage), `D` (deduplication), and `E` (emission) to
-/// allow arbitrary backend implementations.
-pub struct HookboxPipeline<S, D, E> {
+/// Generic over `S` (storage) and `D` (deduplication) to allow arbitrary
+/// backend implementations.  The emitter type has been removed; downstream
+/// forwarding is now handled by `EmitterWorker` in Phase 7.
+pub struct HookboxPipeline<S, D> {
     storage: S,
     dedupe: D,
-    emitter: E,
+    emitter_names: Vec<String>,
     verifiers: HashMap<String, Box<dyn SignatureVerifier>>,
 }
 
-impl<S, D, E> HookboxPipeline<S, D, E>
+impl<S, D> HookboxPipeline<S, D>
 where
     S: Storage,
     D: DedupeStrategy,
-    E: Emitter,
 {
     /// Create a new [`HookboxPipelineBuilder`].
     #[must_use]
-    pub fn builder() -> HookboxPipelineBuilder<S, D, E> {
+    pub fn builder() -> HookboxPipelineBuilder<S, D> {
         HookboxPipelineBuilder {
             storage: None,
             dedupe: None,
-            emitter: None,
+            emitter_names: Vec::new(),
             verifiers: HashMap::new(),
         }
     }
@@ -61,16 +67,16 @@ where
         &self.storage
     }
 
-    /// Access the emitter (e.g. for replay).
+    /// Returns the configured emitter names for this pipeline.
     #[must_use]
-    pub fn emitter(&self) -> &E {
-        &self.emitter
+    pub fn emitter_names(&self) -> &[String] {
+        &self.emitter_names
     }
 
-    /// Ingest a single webhook event through the five-stage pipeline.
+    /// Ingest a single webhook event through the four-stage pipeline.
     ///
-    /// Returns [`IngestResult::Accepted`] only after durable storage succeeds.
-    /// Emit failures are recorded but do **not** prevent acceptance.
+    /// Returns [`IngestResult::Accepted`] only after durable storage succeeds
+    /// (receipt + delivery rows committed atomically).
     ///
     /// # Errors
     ///
@@ -192,7 +198,7 @@ where
             );
         }
 
-        // ── Stage 4: Store (build receipt + durable write) ───────────
+        // ── Stage 4: Store (build receipt + durable write with deliveries) ──
         let parsed_payload: Option<serde_json::Value> = serde_json::from_slice(&body).ok();
         let raw_headers = headers_to_json(&headers);
         let now = Utc::now();
@@ -205,7 +211,7 @@ where
             dedupe_key: dedupe_key.clone(),
             payload_hash: payload_hash.clone(),
             raw_body: body.to_vec(),
-            parsed_payload: parsed_payload.clone(),
+            parsed_payload,
             raw_headers,
             normalized_event_type: None,
             verification_status,
@@ -218,9 +224,12 @@ where
             metadata: json!({}),
         };
 
-        // ── (continued) Store durably ────────────────────────────────
         let store_start = Instant::now();
-        let store_result = match self.storage.store(&receipt).await {
+        let store_result = match self
+            .storage
+            .store_with_deliveries(&receipt, &self.emitter_names)
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 metrics::counter!(
@@ -236,6 +245,7 @@ where
         };
         metrics::histogram!("hookbox_store_duration_seconds")
             .record(store_start.elapsed().as_secs_f64());
+
         match store_result {
             crate::state::StoreResult::Duplicate { existing_id } => {
                 tracing::info!(
@@ -262,52 +272,6 @@ where
             }
         }
 
-        // ── Stage 5: Emit ─────────────────────────────────────────────
-        let event = NormalizedEvent {
-            receipt_id,
-            provider_name: provider.to_owned(),
-            event_type: None,
-            external_reference: None,
-            parsed_payload,
-            payload_hash,
-            received_at: now,
-            metadata: json!({}),
-        };
-
-        let emit_start = Instant::now();
-        let emit_result = self.emitter.emit(&event).await;
-        metrics::histogram!("hookbox_emit_duration_seconds")
-            .record(emit_start.elapsed().as_secs_f64());
-
-        let emit_label = if emit_result.is_ok() {
-            "success"
-        } else {
-            "failure"
-        };
-        metrics::counter!(
-            "hookbox_emit_results_total",
-            "provider" => provider.to_owned(),
-            "result" => emit_label
-        )
-        .increment(1);
-
-        if let Err(e) = emit_result {
-            tracing::warn!(%receipt_id, error = %e, "emit failed, receipt remains accepted");
-            let _ = self
-                .storage
-                .update_state(
-                    receipt_id.0,
-                    ProcessingState::EmitFailed,
-                    Some(&e.to_string()),
-                )
-                .await;
-        } else {
-            let _ = self
-                .storage
-                .update_state(receipt_id.0, ProcessingState::Emitted, None)
-                .await;
-        }
-
         tracing::info!(%receipt_id, %provider, "webhook accepted");
         metrics::counter!(
             "hookbox_ingest_results_total",
@@ -327,20 +291,19 @@ where
 ///
 /// # Panics
 ///
-/// [`build()`](HookboxPipelineBuilder::build) panics if `storage`, `dedupe`,
-/// or `emitter` have not been set.
-pub struct HookboxPipelineBuilder<S, D, E> {
+/// [`build()`](HookboxPipelineBuilder::build) panics if `storage` or `dedupe`
+/// have not been set.
+pub struct HookboxPipelineBuilder<S, D> {
     storage: Option<S>,
     dedupe: Option<D>,
-    emitter: Option<E>,
+    emitter_names: Vec<String>,
     verifiers: HashMap<String, Box<dyn SignatureVerifier>>,
 }
 
-impl<S, D, E> HookboxPipelineBuilder<S, D, E>
+impl<S, D> HookboxPipelineBuilder<S, D>
 where
     S: Storage,
     D: DedupeStrategy,
-    E: Emitter,
 {
     /// Set the storage backend.
     #[must_use]
@@ -356,10 +319,11 @@ where
         self
     }
 
-    /// Set the emitter.
+    /// Set the list of emitter names for which delivery rows will be created
+    /// atomically alongside each new receipt.
     #[must_use]
-    pub fn emitter(mut self, e: E) -> Self {
-        self.emitter = Some(e);
+    pub fn emitter_names(mut self, names: Vec<String>) -> Self {
+        self.emitter_names = names;
         self
     }
 
@@ -378,17 +342,17 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if `storage`, `dedupe`, or `emitter` have not been set.
+    /// Panics if `storage` or `dedupe` have not been set.
     #[expect(
         clippy::expect_used,
         reason = "builder panics by design when required fields are missing"
     )]
     #[must_use]
-    pub fn build(self) -> HookboxPipeline<S, D, E> {
+    pub fn build(self) -> HookboxPipeline<S, D> {
         HookboxPipeline {
             storage: self.storage.expect("storage must be set before build()"),
             dedupe: self.dedupe.expect("dedupe must be set before build()"),
-            emitter: self.emitter.expect("emitter must be set before build()"),
+            emitter_names: self.emitter_names,
             verifiers: self.verifiers,
         }
     }
@@ -427,11 +391,10 @@ mod tests {
 
     use super::*;
     use crate::dedupe::InMemoryRecentDedupe;
-    use crate::emitter::CallbackEmitter;
-    use crate::error::{EmitError, StorageError};
+    use crate::error::StorageError;
     use crate::state::{StoreResult, VerificationResult, VerificationStatus};
     use crate::traits::{SignatureVerifier, Storage};
-    use crate::types::{NormalizedEvent, ReceiptFilter, WebhookReceipt};
+    use crate::types::{ReceiptFilter, WebhookReceipt};
 
     // ── Test helpers ──────────────────────────────────────────────────
 
@@ -498,6 +461,81 @@ mod tests {
         }
     }
 
+    /// Mock storage that records `store_with_deliveries` calls and asserts
+    /// `store()` is never called directly by the pipeline (it has been replaced
+    /// by `store_with_deliveries`).
+    struct MockStorage {
+        /// Recorded (`receipt_id`, `emitter_names`) pairs for each call.
+        calls: Mutex<Vec<(Uuid, Vec<String>)>>,
+        /// Whether to simulate a duplicate on the next call.
+        return_duplicate: bool,
+    }
+
+    impl MockStorage {
+        fn new() -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                return_duplicate: false,
+            }
+        }
+
+        fn new_returning_duplicate() -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                return_duplicate: true,
+            }
+        }
+
+        fn recorded_calls(&self) -> Vec<(Uuid, Vec<String>)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Storage for MockStorage {
+        async fn store(&self, _receipt: &WebhookReceipt) -> Result<StoreResult, StorageError> {
+            panic!(
+                "store() must not be called after the fan-out refactor — pipeline must use store_with_deliveries()"
+            );
+        }
+
+        async fn get(&self, _id: Uuid) -> Result<Option<WebhookReceipt>, StorageError> {
+            Ok(None)
+        }
+
+        async fn update_state(
+            &self,
+            _id: Uuid,
+            _state: ProcessingState,
+            _error: Option<&str>,
+        ) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn query(&self, _filter: ReceiptFilter) -> Result<Vec<WebhookReceipt>, StorageError> {
+            Ok(vec![])
+        }
+
+        async fn store_with_deliveries(
+            &self,
+            receipt: &WebhookReceipt,
+            emitter_names: &[String],
+        ) -> Result<StoreResult, StorageError> {
+            let mut calls = self
+                .calls
+                .lock()
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+            calls.push((receipt.receipt_id.0, emitter_names.to_vec()));
+
+            if self.return_duplicate {
+                return Ok(StoreResult::Duplicate {
+                    existing_id: receipt.receipt_id,
+                });
+            }
+            Ok(StoreResult::Stored)
+        }
+    }
+
     /// Verifier that always returns [`VerificationStatus::Verified`].
     struct PassVerifier;
 
@@ -532,15 +570,6 @@ mod tests {
         }
     }
 
-    type NoopEmitter = CallbackEmitter<
-        fn(NormalizedEvent) -> std::future::Ready<Result<(), EmitError>>,
-        std::future::Ready<Result<(), EmitError>>,
-    >;
-
-    fn noop_emitter() -> NoopEmitter {
-        CallbackEmitter::new((|_event: NormalizedEvent| std::future::ready(Ok(()))) as fn(_) -> _)
-    }
-
     // ── Tests ─────────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -548,7 +577,7 @@ mod tests {
         let pipeline = HookboxPipeline::builder()
             .storage(MemoryStorage::new())
             .dedupe(InMemoryRecentDedupe::new(100))
-            .emitter(noop_emitter())
+            .emitter_names(vec![])
             .verifier(PassVerifier)
             .build();
 
@@ -571,7 +600,7 @@ mod tests {
         let pipeline = HookboxPipeline::builder()
             .storage(MemoryStorage::new())
             .dedupe(InMemoryRecentDedupe::new(100))
-            .emitter(noop_emitter())
+            .emitter_names(vec![])
             .verifier(PassVerifier)
             .build();
 
@@ -596,7 +625,7 @@ mod tests {
         let pipeline = HookboxPipeline::builder()
             .storage(MemoryStorage::new())
             .dedupe(InMemoryRecentDedupe::new(100))
-            .emitter(noop_emitter())
+            .emitter_names(vec![])
             .verifier(FailVerifier)
             .build();
 
@@ -618,7 +647,7 @@ mod tests {
         let pipeline = HookboxPipeline::builder()
             .storage(MemoryStorage::new())
             .dedupe(InMemoryRecentDedupe::new(100))
-            .emitter(noop_emitter())
+            .emitter_names(vec![])
             // No verifier registered for "unknown-provider".
             .build();
 
@@ -684,43 +713,13 @@ mod tests {
         }
     }
 
-    /// Emitter that always returns a downstream error.
-    struct FailEmitter;
-
-    #[async_trait]
-    impl Emitter for FailEmitter {
-        async fn emit(&self, _event: &NormalizedEvent) -> Result<(), EmitError> {
-            Err(EmitError::Downstream("test_failure".to_owned()))
-        }
-    }
-
-    #[tokio::test]
-    async fn ingest_accepted_even_when_emit_fails() {
-        let pipeline = HookboxPipeline::builder()
-            .storage(MemoryStorage::new())
-            .dedupe(InMemoryRecentDedupe::new(100))
-            .emitter(FailEmitter)
-            .verifier(PassVerifier)
-            .build();
-
-        let body = Bytes::from(r#"{"event":"payment.completed"}"#);
-        let result = pipeline
-            .ingest("test-provider", HeaderMap::new(), body)
-            .await;
-
-        assert!(
-            matches!(result, Ok(IngestResult::Accepted { .. })),
-            "pipeline should return Accepted even when the emitter fails, got {result:?}"
-        );
-    }
-
     #[tokio::test]
     async fn ingest_verification_failed_with_no_reason() {
         // Covers the `unwrap_or_else(|| "verification_failed".to_owned())` branch.
         let pipeline = HookboxPipeline::builder()
             .storage(MemoryStorage::new())
             .dedupe(InMemoryRecentDedupe::new(100))
-            .emitter(noop_emitter())
+            .emitter_names(vec![])
             .verifier(FailVerifierNoReason)
             .build();
 
@@ -743,7 +742,7 @@ mod tests {
         let pipeline = HookboxPipeline::builder()
             .storage(MemoryStorage::new())
             .dedupe(InMemoryRecentDedupe::new(100))
-            .emitter(noop_emitter())
+            .emitter_names(vec![])
             .verifier(PassVerifierNoReason)
             .build();
 
@@ -764,7 +763,7 @@ mod tests {
         let pipeline = HookboxPipeline::builder()
             .storage(MemoryStorage::new())
             .dedupe(InMemoryRecentDedupe::new(100))
-            .emitter(noop_emitter())
+            .emitter_names(vec![])
             .verifier(SkipVerifierNoReason)
             .build();
 
@@ -787,7 +786,7 @@ mod tests {
         let pipeline = HookboxPipeline::builder()
             .storage(storage)
             .dedupe(InMemoryRecentDedupe::new(100))
-            .emitter(noop_emitter())
+            .emitter_names(vec![])
             .verifier(PassVerifier)
             .build();
 
@@ -812,5 +811,110 @@ mod tests {
             .await
             .unwrap();
         assert!(!all.is_empty(), "query() should return stored receipts");
+    }
+
+    /// Pipeline calls `store_with_deliveries` (not `store`) and passes the
+    /// correct emitter names.
+    #[tokio::test]
+    async fn pipeline_calls_store_with_deliveries_with_correct_names() {
+        let storage = MockStorage::new();
+        let names = vec!["kafka".to_owned(), "sqs".to_owned()];
+
+        let pipeline = HookboxPipeline::builder()
+            .storage(storage)
+            .dedupe(InMemoryRecentDedupe::new(100))
+            .emitter_names(names.clone())
+            .build();
+
+        let body = Bytes::from(r#"{"event":"fan-out-test"}"#);
+        let result = pipeline
+            .ingest("test-provider", HeaderMap::new(), body)
+            .await;
+
+        assert!(
+            matches!(result, Ok(IngestResult::Accepted { .. })),
+            "expected Accepted, got {result:?}"
+        );
+
+        let calls = pipeline.storage().recorded_calls();
+        assert_eq!(
+            calls.len(),
+            1,
+            "expected exactly one store_with_deliveries call"
+        );
+        assert_eq!(calls[0].1, names, "emitter names should be passed through");
+    }
+
+    /// When storage returns `Duplicate`, the pipeline short-circuits and does
+    /// not insert delivery rows (that is the responsibility of the storage
+    /// implementation, which we verify separately; here we just check the
+    /// pipeline returns `Duplicate`).
+    #[tokio::test]
+    async fn pipeline_returns_duplicate_when_storage_reports_conflict() {
+        let storage = MockStorage::new_returning_duplicate();
+
+        let pipeline = HookboxPipeline::builder()
+            .storage(storage)
+            .dedupe(InMemoryRecentDedupe::new(100))
+            .emitter_names(vec!["kafka".to_owned()])
+            .build();
+
+        let body = Bytes::from(r#"{"event":"duplicate-test"}"#);
+        let result = pipeline
+            .ingest("test-provider", HeaderMap::new(), body)
+            .await;
+
+        assert!(
+            matches!(result, Ok(IngestResult::Duplicate { .. })),
+            "expected Duplicate, got {result:?}"
+        );
+
+        // store_with_deliveries was still called once (the mock decides to return Duplicate).
+        let calls = pipeline.storage().recorded_calls();
+        assert_eq!(
+            calls.len(),
+            1,
+            "store_with_deliveries should have been called once"
+        );
+    }
+
+    /// Backends that do not override `store_with_deliveries` must reject any
+    /// call that carries a non-empty `emitter_names` slice. Silently falling
+    /// back to `store()` in that case would drop fan-out rows and make newly
+    /// accepted webhooks invisible to every `EmitterWorker`.
+    #[tokio::test]
+    async fn default_store_with_deliveries_rejects_non_empty_emitter_names() {
+        let storage = MemoryStorage::new();
+        let receipt = WebhookReceipt {
+            receipt_id: ReceiptId::new(),
+            provider_name: "test".to_owned(),
+            provider_event_id: None,
+            external_reference: None,
+            dedupe_key: "k".to_owned(),
+            payload_hash: "h".to_owned(),
+            raw_body: Vec::new(),
+            parsed_payload: None,
+            raw_headers: serde_json::json!({}),
+            normalized_event_type: None,
+            verification_status: VerificationStatus::Verified,
+            verification_reason: None,
+            processing_state: ProcessingState::Stored,
+            emit_count: 0,
+            last_error: None,
+            received_at: chrono::Utc::now(),
+            processed_at: None,
+            metadata: serde_json::json!({}),
+        };
+        // Empty slice still delegates to `store` — backwards compatible.
+        let ok = storage.store_with_deliveries(&receipt, &[]).await;
+        assert!(matches!(ok, Ok(StoreResult::Stored)));
+        // Non-empty slice must trip the default guard.
+        let result = storage
+            .store_with_deliveries(&receipt, &["kafka".to_owned()])
+            .await;
+        assert!(
+            matches!(result, Err(StorageError::FanOutNotImplemented)),
+            "expected Err(FanOutNotImplemented), got {result:?}",
+        );
     }
 }

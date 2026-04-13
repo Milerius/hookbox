@@ -47,6 +47,10 @@ allow = [
     "Zlib",
     "OpenSSL",
     "CDLA-Permissive-2.0",
+    # BlueOak-1.0.0 is OSI-approved permissive (similar rights to MIT/Apache).
+    # Pulled in transitively via cucumber-codegen → synthez → synthez-{core,codegen}
+    # in the hookbox-scenarios BDD crate.
+    "BlueOak-1.0.0",
 ]
 
 [bans]

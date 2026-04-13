@@ -567,4 +567,23 @@ The exact SQL schema is an implementation detail for `hookbox-postgres`, but the
 - **Name**: hookbox
 - **License**: MIT OR Apache-2.0
 - **Language**: Rust
-- **Crate family**: hookbox, hookbox-postgres, hookbox-providers, hookbox-server, hookbox-cli
+- **Crate family**: hookbox, hookbox-postgres, hookbox-providers, hookbox-server, hookbox-cli, hookbox-verify, hookbox-scenarios, hookbox-emitter-{kafka,nats,sqs,redis}
+
+---
+
+## Revision History
+
+| Date       | Spec                                                                  | Summary                                                                                                                                    |
+|------------|-----------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|
+| 2026-04-10 | (this document)                                                       | Initial MVP design: single-emitter pipeline, Postgres storage, core traits, five-stage ingest flow.                                        |
+| 2026-04-11 | [emitter-adapters](2026-04-11-emitter-adapters-design.md)             | Kafka / NATS / SQS emitter adapters with config-driven selection and `Arc<dyn Emitter>` shared ownership.                                  |
+| 2026-04-11 | [mvp-gaps](2026-04-11-mvp-gaps-design.md)                             | Prometheus metrics, retry worker, CLI subcommands, graceful shutdown, shared transition functions.                                         |
+| 2026-04-12 | [redis-emitter-and-emitter-test-coverage](2026-04-12-redis-emitter-and-emitter-test-coverage-design.md) | Redis Streams emitter (XADD) and round-trip testcontainers coverage for all four production emitters.                                     |
+| 2026-04-12 | [emitter-fan-out](2026-04-12-emitter-fan-out-design.md)               | Receipt/delivery lifecycle split: `[[emitters]]` array config, `webhook_deliveries` table, per-delivery retry, derived `receipt.state`.    |
+
+The current on-disk pipeline shape reflects the **emitter-fan-out** revision:
+receipts are persisted once and fan out to one or more independently retried
+delivery rows. Read this document for the original core architecture, then
+read the later specs in order for the incremental changes that supersede the
+single-emitter assumptions made here (notably around `ProcessingState` and the
+`Emitter` trait's position in the pipeline).

@@ -2072,8 +2072,7 @@ dependencies = [
  "bytes",
  "chrono",
  "criterion",
- "cucumber",
- "futures",
+ "fastrand",
  "hex",
  "http 1.4.0",
  "metrics",
@@ -2091,6 +2090,7 @@ name = "hookbox-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "axum",
  "chrono",
  "clap",
@@ -2180,10 +2180,12 @@ name = "hookbox-integration-tests"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "async-trait",
  "axum",
  "bytes",
  "chrono",
+ "futures",
  "hookbox",
  "hookbox-cli",
  "hookbox-postgres",
@@ -2237,14 +2239,43 @@ dependencies = [
 ]
 
 [[package]]
-name = "hookbox-server"
+name = "hookbox-scenarios"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "async-trait",
  "axum",
  "bytes",
  "chrono",
+ "cucumber",
+ "futures",
+ "hookbox",
+ "hookbox-postgres",
+ "hookbox-providers",
+ "hookbox-server",
+ "http 1.4.0",
+ "reqwest",
+ "serde_json",
+ "sqlx",
+ "testcontainers",
+ "testcontainers-modules",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "hookbox-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "axum",
+ "bytes",
+ "chrono",
+ "futures",
  "hookbox",
  "hookbox-emitter-kafka",
  "hookbox-emitter-nats",

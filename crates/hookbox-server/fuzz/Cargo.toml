@@ -1,0 +1,21 @@
+[package]
+name = "hookbox-server-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+hookbox-server = { path = ".." }
+toml = "0.8"
+
+[[bin]]
+name = "config_normalize"
+path = "fuzz_targets/config_normalize.rs"
+test = false
+doc = false

@@ -10,7 +10,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use hookbox::dedupe::InMemoryRecentDedupe;
-use hookbox::emitter::ChannelEmitter;
 use hookbox::error::StorageError;
 use hookbox::pipeline::HookboxPipeline;
 use hookbox::state::{ProcessingState, StoreResult};
@@ -67,13 +66,10 @@ fn bench_ingest(c: &mut Criterion) {
 
     for size in [64, 256, 1024, 4096] {
         group.bench_with_input(BenchmarkId::new("body_size", size), &size, |b, &size| {
-            let (emitter, mut rx) = ChannelEmitter::new(65536);
-            rt.spawn(async move { while rx.recv().await.is_some() {} });
-
             let pipeline = HookboxPipeline::builder()
                 .storage(BenchStorage::new())
                 .dedupe(InMemoryRecentDedupe::new(100_000))
-                .emitter(emitter)
+                .emitter_names(vec![])
                 .build();
 
             let base_body = vec![b'x'; size];

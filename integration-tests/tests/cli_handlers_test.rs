@@ -9,16 +9,49 @@
 
 #![expect(clippy::expect_used, reason = "expect is acceptable in test code")]
 
-use hookbox::state::ProcessingState;
+use hookbox::state::{ProcessingState, ReceiptId};
 use hookbox::traits::Storage;
 use hookbox_cli::commands::{dlq, receipts, replay};
 use hookbox_cli::db;
-use hookbox_postgres::PostgresStorage;
+use hookbox_postgres::{DeliveryStorage as _, PostgresStorage};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 fn database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/hookbox_test".to_owned())
+}
+
+/// Force a delivery row into the `dead_lettered` state via raw SQL, bypassing
+/// the lease-guarded `mark_dead_lettered` path. Tests that need a pre-staged
+/// DLQ row cannot use `mark_dead_lettered` directly because it only accepts
+/// `in_flight` rows (see lease-guard in `crates/hookbox-postgres/src/storage.rs`).
+async fn force_dead_lettered(pool: &PgPool, delivery_id: Uuid, note: &str) {
+    sqlx::query(
+        "UPDATE webhook_deliveries SET state = 'dead_lettered', last_error = $2 WHERE delivery_id = $1",
+    )
+    .bind(delivery_id)
+    .bind(note)
+    .execute(pool)
+    .await
+    .expect("force dead_lettered");
+}
+
+/// Write a minimal valid hookbox.toml containing a single `test-emitter`
+/// channel entry. Returns the temp path — keep the returned `String` alive
+/// for the duration of the test so the file is not deleted prematurely.
+fn write_test_config() -> String {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("hookbox-cli-test-{}.toml", Uuid::new_v4()));
+    let body = r#"
+[database]
+url = "postgres://localhost/hookbox_test"
+
+[[emitters]]
+name = "test-emitter"
+type = "channel"
+"#;
+    std::fs::write(&path, body).expect("write test config");
+    path.to_string_lossy().into_owned()
 }
 
 /// Connect and migrate, but do NOT delete existing data.
@@ -202,8 +235,9 @@ async fn dlq_list_empty() {
 
     let cmd = dlq::DlqCommand::List {
         database_url: database_url(),
-        provider: None,
+        emitter: None,
         limit: 20,
+        offset: 0,
     };
     dlq::run(cmd).await.expect("dlq list should succeed");
 }
@@ -214,8 +248,9 @@ async fn dlq_list_with_provider_filter() {
 
     let cmd = dlq::DlqCommand::List {
         database_url: database_url(),
-        provider: Some("some-provider".to_owned()),
+        emitter: Some("some-emitter".to_owned()),
         limit: 20,
+        offset: 0,
     };
     dlq::run(cmd)
         .await
@@ -229,7 +264,7 @@ async fn dlq_inspect_nonexistent() {
 
     let cmd = dlq::DlqCommand::Inspect {
         database_url: database_url(),
-        receipt_id: random_id,
+        delivery_id: random_id,
     };
     let result = dlq::run(cmd).await;
     assert!(
@@ -241,18 +276,20 @@ async fn dlq_inspect_nonexistent() {
 #[tokio::test]
 async fn dlq_inspect_existing() {
     let pool = setup_pool().await;
-    let id = ingest_receipt(&pool, "test-provider").await;
+    let receipt_id = ingest_receipt(&pool, "test-provider").await;
 
-    // Transition to DeadLettered so it shows up in DLQ queries.
+    // Create a delivery row, then transition it to DeadLettered so the
+    // delivery-level DLQ inspect handler can find it.
     let storage = PostgresStorage::new(pool.clone());
-    storage
-        .update_state(id, ProcessingState::DeadLettered, Some("test dead letter"))
+    let delivery_id = storage
+        .insert_replay(ReceiptId(receipt_id), "test-emitter")
         .await
-        .expect("set dead-lettered");
+        .expect("insert delivery row");
+    force_dead_lettered(&pool, delivery_id.0, "test dead letter").await;
 
     let cmd = dlq::DlqCommand::Inspect {
         database_url: database_url(),
-        receipt_id: id,
+        delivery_id: delivery_id.0,
     };
     dlq::run(cmd).await.expect("dlq inspect should succeed");
 }
@@ -264,7 +301,8 @@ async fn dlq_retry_nonexistent() {
 
     let cmd = dlq::DlqCommand::Retry {
         database_url: database_url(),
-        receipt_id: random_id,
+        config: write_test_config(),
+        delivery_id: random_id,
     };
     let result = dlq::run(cmd).await;
     assert!(
@@ -276,53 +314,82 @@ async fn dlq_retry_nonexistent() {
 #[tokio::test]
 async fn dlq_retry_existing() {
     let pool = setup_pool().await;
-    let id = ingest_receipt(&pool, "test-provider").await;
+    let receipt_id = ingest_receipt(&pool, "test-provider").await;
 
-    // Transition to DeadLettered.
+    // Seed a dead-lettered delivery row that the retry handler can target.
     let storage = PostgresStorage::new(pool.clone());
-    storage
-        .update_state(id, ProcessingState::DeadLettered, Some("test dead letter"))
+    let original = storage
+        .insert_replay(ReceiptId(receipt_id), "test-emitter")
         .await
-        .expect("set dead-lettered");
+        .expect("insert original delivery");
+    force_dead_lettered(&pool, original.0, "test dead letter").await;
 
     let cmd = dlq::DlqCommand::Retry {
         database_url: database_url(),
-        receipt_id: id,
+        config: write_test_config(),
+        delivery_id: original.0,
     };
     dlq::run(cmd).await.expect("dlq retry should succeed");
 
-    // Verify the receipt is now in EmitFailed state (reset_for_retry sets it).
-    let receipt = storage
-        .get(id)
+    // Fan-out retry inserts a fresh pending delivery row; the original stays
+    // in DeadLettered. Verify there are now two rows for this receipt.
+    let deliveries = storage
+        .get_deliveries_for_receipt(ReceiptId(receipt_id))
         .await
-        .expect("get receipt")
-        .expect("receipt exists");
+        .expect("get_deliveries_for_receipt");
     assert_eq!(
-        receipt.processing_state,
-        ProcessingState::EmitFailed,
-        "receipt should be in EmitFailed after retry"
+        deliveries.len(),
+        2,
+        "retry should have inserted a second delivery row"
     );
 }
 
 // ── replay::run ──────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn replay_single_existing() {
+async fn replay_single_existing_explicit_emitter() {
     let pool = setup_pool().await;
-    let id = ingest_receipt(&pool, "test-provider").await;
+    let receipt_id = ingest_receipt(&pool, "test-provider").await;
 
+    // --emitter forces single-emitter path, which does not require
+    // pre-existing delivery rows.
     let cmd = replay::ReplayCommand::Id {
         database_url: database_url(),
-        receipt_id: id,
+        config: write_test_config(),
+        receipt_id,
+        emitter: Some("test-emitter".to_owned()),
     };
     replay::run(cmd)
         .await
         .expect("replay single should succeed");
 
-    // Verify the receipt is in EmitFailed state (reset_for_retry).
+    // A fresh pending delivery row should now exist for the target emitter.
     let storage = PostgresStorage::new(pool.clone());
-    let receipt = storage.get(id).await.expect("get").expect("exists");
-    assert_eq!(receipt.processing_state, ProcessingState::EmitFailed);
+    let deliveries = storage
+        .get_deliveries_for_receipt(ReceiptId(receipt_id))
+        .await
+        .expect("get_deliveries_for_receipt");
+    assert_eq!(deliveries.len(), 1, "one delivery row should exist");
+    assert_eq!(deliveries[0].emitter_name, "test-emitter");
+}
+
+#[tokio::test]
+async fn replay_single_without_emitter_bails_without_history() {
+    let pool = setup_pool().await;
+    let receipt_id = ingest_receipt(&pool, "test-provider").await;
+
+    // No pre-existing delivery rows + no --emitter: handler must bail.
+    let cmd = replay::ReplayCommand::Id {
+        database_url: database_url(),
+        config: write_test_config(),
+        receipt_id,
+        emitter: None,
+    };
+    let result = replay::run(cmd).await;
+    assert!(
+        result.is_err(),
+        "replay id without --emitter should fail when no deliveries exist"
+    );
 }
 
 #[tokio::test]
@@ -332,7 +399,9 @@ async fn replay_single_nonexistent() {
 
     let cmd = replay::ReplayCommand::Id {
         database_url: database_url(),
+        config: write_test_config(),
         receipt_id: random_id,
+        emitter: None,
     };
     let result = replay::run(cmd).await;
     assert!(
@@ -440,23 +509,38 @@ async fn receipts_search_with_results() {
         .expect("receipts search with results should succeed");
 }
 
-/// Test that `dlq list` with dead-lettered receipts logs each entry (covers dlq.rs:80).
+/// Test that `dlq list` with dead-lettered deliveries logs each entry (covers dlq.rs:80).
 #[tokio::test]
 async fn dlq_list_with_results() {
     let pool = setup_pool().await;
-    let id = ingest_receipt(&pool, "test-provider").await;
+    let receipt_id = ingest_receipt(&pool, "test-provider").await;
+
+    // Create a dead-lettered delivery row scoped to a unique emitter name so
+    // the assertion below is deterministic regardless of other test data.
+    let emitter_name = format!("test-emitter-{}", Uuid::new_v4());
     let storage = PostgresStorage::new(pool.clone());
-    storage
-        .update_state(id, ProcessingState::DeadLettered, Some("test"))
+    let delivery_id = storage
+        .insert_replay(ReceiptId(receipt_id), &emitter_name)
         .await
-        .expect("set dead-lettered");
+        .expect("insert delivery row");
+    force_dead_lettered(&pool, delivery_id.0, "test").await;
 
     let cmd = dlq::DlqCommand::List {
         database_url: database_url(),
-        provider: None,
+        emitter: Some(emitter_name.clone()),
         limit: 20,
+        offset: 0,
     };
     dlq::run(cmd)
         .await
         .expect("dlq list with results should succeed");
+
+    // The list handler only logs; assert the underlying storage call also
+    // returns the row we just inserted.
+    let rows = storage
+        .list_dlq(Some(&emitter_name), 20, 0)
+        .await
+        .expect("list_dlq");
+    assert_eq!(rows.len(), 1, "one dead-lettered delivery should be listed");
+    assert_eq!(rows[0].0.delivery_id, delivery_id);
 }

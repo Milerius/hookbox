@@ -36,6 +36,16 @@ enum Commands {
         #[command(subcommand)]
         command: commands::dlq::DlqCommand,
     },
+    /// Inspect configured emitters and their DB queue counts.
+    Emitters {
+        #[command(subcommand)]
+        command: commands::emitters::EmittersCommand,
+    },
+    /// Config-related utilities (validate, etc.).
+    Config {
+        #[command(subcommand)]
+        command: commands::config::ConfigCommand,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -52,6 +62,8 @@ fn main() -> anyhow::Result<()> {
                 Commands::Receipts { command } => rt.block_on(commands::receipts::run(command)),
                 Commands::Replay { command } => rt.block_on(commands::replay::run(command)),
                 Commands::Dlq { command } => rt.block_on(commands::dlq::run(command)),
+                Commands::Emitters { command } => rt.block_on(commands::emitters::run(command)),
+                Commands::Config { command } => rt.block_on(commands::config::run(command)),
                 Commands::Serve => unreachable!(),
             }
         }

@@ -15,6 +15,7 @@ Tracking next steps after the MVP and MVP gaps milestones.
 - [x] **PR #14 — Redis Streams emitter + emitter test coverage**: `hookbox-emitter-redis` (XADD, optional MAXLEN, configurable timeout), round-trip integration tests for all four emitters (Kafka, NATS, SQS, Redis) using `testcontainers-rs`, dedicated Linux-only `test-emitters` CI job, legacy `emitter_smoke_test.rs` deleted
 - [x] **PR #16 — `async-trait` policy clarified**: CLAUDE.md updated to explain why the four core extension traits keep `#[async_trait]` (native `async fn` in traits is not dyn-compatible in stable Rust, and the architecture relies on `Arc<dyn Emitter + Send + Sync>` for runtime emitter selection). Issue #15 closed `wontfix` with the full rationale.
 - [x] **PR #17 — Emitter factory + selection coverage**: extracted the kafka/nats/sqs/redis/channel selection match out of `serve` into `hookbox_server::emitter_factory::build_emitter`, returning a `BuiltEmitter` enum. Six new unit tests cover every validation arm without Docker. `serve.rs` shrinks from ~75 lines of match to 9 lines and the four emitter crates moved from `hookbox-cli` deps into `hookbox-server` deps.
+- [x] **PR #18 — Emitter fan-out**: receipt/delivery lifecycle split with `webhook_deliveries` table, `DeliveryId` newtype, per-delivery `DeliveryState`, and `[[emitters]]` array config. Each receipt fans out to every configured emitter as an independent delivery row with its own retry policy, concurrency, and lease. Legacy `[emitter]` section is still accepted and rewritten to a single `"default"` entry with a deprecation warning. Per-emitter retry policies (`initial_backoff_seconds`, `max_backoff_seconds`, `backoff_multiplier`, `jitter`) replace the global `[retry]` worker defaults on a per-emitter basis. Added `hookbox-scenarios` BDD crate with in-memory fan-out/backoff/derived-state scenarios and Kani proofs for `compute_backoff` and `receipt_aggregate_state`.
 
 ---
 
@@ -58,8 +59,13 @@ Remaining emitter work:
 - AWS Kinesis
 
 **Future emitter architecture improvements:**
-- Fan-out to multiple emitters (`[[emitters]]` array)
-- Per-emitter retry policies
+- ~~Fan-out to multiple emitters (`[[emitters]]` array)~~ ✅ (PR #18)
+- ~~Per-emitter retry policies~~ ✅ (PR #18)
+- Per-emitter routing filters (event type, provider name, header predicates)
+- DLQ alerting hooks (webhook/email notification when a delivery dead-letters)
+- Distributed worker leader election (multi-instance retry coordination)
+- Bulk DLQ replay (replay all dead-lettered deliveries for an emitter)
+- Drop the legacy single-emitter `processing_state` fallback once no tenants rely on the deprecation warning
 - Emitter health reporting to `/readyz`
 - Emitter-level metrics
 - Dead-letter per emitter

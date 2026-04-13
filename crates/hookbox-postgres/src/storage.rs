@@ -1,5 +1,7 @@
 //! `PostgreSQL`-backed implementation of the [`Storage`] trait.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Serialize, de::DeserializeOwned};
@@ -7,7 +9,10 @@ use sqlx::{PgPool, Row as _};
 use uuid::Uuid;
 
 use hookbox::error::StorageError;
-use hookbox::state::{ProcessingState, ReceiptId, StoreResult, VerificationStatus};
+use hookbox::state::{
+    DeliveryId, DeliveryState, ProcessingState, ReceiptId, StoreResult, VerificationStatus,
+    WebhookDelivery,
+};
 use hookbox::traits::Storage;
 use hookbox::types::{ReceiptFilter, WebhookReceipt};
 
@@ -244,6 +249,111 @@ impl Storage for PostgresStorage {
         Ok(StoreResult::Duplicate {
             existing_id: ReceiptId(existing),
         })
+    }
+
+    /// Atomically insert the receipt and one pending delivery row per emitter
+    /// name, all within a single transaction.
+    ///
+    /// If the receipt already exists (duplicate `dedupe_key`), the transaction
+    /// is rolled back and [`StoreResult::Duplicate`] is returned without
+    /// inserting any delivery rows.
+    async fn store_with_deliveries(
+        &self,
+        receipt: &WebhookReceipt,
+        emitter_names: &[String],
+    ) -> Result<StoreResult, StorageError> {
+        let processing_state = serialize_enum(&receipt.processing_state)?;
+        let verification_status = serialize_enum(&receipt.verification_status)?;
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        // Insert the receipt (same logic as `store`, but against the transaction).
+        let inserted: Option<Uuid> = sqlx::query_scalar(
+            r"
+            INSERT INTO webhook_receipts (
+                receipt_id, provider_name, provider_event_id, external_reference,
+                dedupe_key, payload_hash, raw_body, parsed_payload, raw_headers,
+                normalized_event_type, verification_status, verification_reason,
+                processing_state, emit_count, last_error, received_at, processed_at,
+                metadata
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                $13, $14, $15, $16, $17, $18
+            )
+            ON CONFLICT (dedupe_key) DO NOTHING
+            RETURNING receipt_id
+            ",
+        )
+        .bind(receipt.receipt_id.0)
+        .bind(&receipt.provider_name)
+        .bind(&receipt.provider_event_id)
+        .bind(&receipt.external_reference)
+        .bind(&receipt.dedupe_key)
+        .bind(&receipt.payload_hash)
+        .bind(&receipt.raw_body)
+        .bind(&receipt.parsed_payload)
+        .bind(&receipt.raw_headers)
+        .bind(&receipt.normalized_event_type)
+        .bind(&verification_status)
+        .bind(&receipt.verification_reason)
+        .bind(&processing_state)
+        .bind(receipt.emit_count)
+        .bind(&receipt.last_error)
+        .bind(receipt.received_at)
+        .bind(receipt.processed_at)
+        .bind(&receipt.metadata)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        if inserted.is_none() {
+            // Conflict — fetch the existing id and roll back (nothing to undo,
+            // but explicit rollback keeps the connection state clean).
+            tx.rollback()
+                .await
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+            let existing: Uuid =
+                sqlx::query_scalar("SELECT receipt_id FROM webhook_receipts WHERE dedupe_key = $1")
+                    .bind(&receipt.dedupe_key)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+            return Ok(StoreResult::Duplicate {
+                existing_id: ReceiptId(existing),
+            });
+        }
+
+        // Insert one pending delivery row per emitter name. Queue timestamps
+        // use the database clock so newly inserted rows are immediately
+        // eligible under `claim_pending()`'s `next_attempt_at <= now()`
+        // predicate even when app and DB clocks drift.
+        for name in emitter_names {
+            sqlx::query(
+                r"
+                INSERT INTO webhook_deliveries
+                    (delivery_id, receipt_id, emitter_name, state, next_attempt_at, created_at)
+                VALUES
+                    (gen_random_uuid(), $1, $2, 'pending', now(), now())
+                ",
+            )
+            .bind(receipt.receipt_id.0)
+            .bind(name)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        Ok(StoreResult::Stored)
     }
 
     /// Retrieve a single [`WebhookReceipt`] by its [`Uuid`].
@@ -495,5 +605,625 @@ impl PostgresStorage {
         rows.iter()
             .map(|r| pg_row_to_receipt_row(r).and_then(receipt_from_row))
             .collect()
+    }
+}
+
+/// Raw database row returned by `SELECT *` on `webhook_deliveries`.
+struct DeliveryRow {
+    delivery_id: Uuid,
+    receipt_id: Uuid,
+    emitter_name: String,
+    state: String,
+    attempt_count: i32,
+    last_error: Option<String>,
+    last_attempt_at: Option<DateTime<Utc>>,
+    next_attempt_at: DateTime<Utc>,
+    emitted_at: Option<DateTime<Utc>>,
+    immutable: bool,
+    created_at: DateTime<Utc>,
+}
+
+/// Map a raw `sqlx` [`sqlx::postgres::PgRow`] into a [`DeliveryRow`].
+fn pg_row_to_delivery_row(r: &sqlx::postgres::PgRow) -> Result<DeliveryRow, StorageError> {
+    Ok(DeliveryRow {
+        delivery_id: r
+            .try_get("delivery_id")
+            .map_err(|e| StorageError::Internal(e.to_string()))?,
+        receipt_id: r
+            .try_get("receipt_id")
+            .map_err(|e| StorageError::Internal(e.to_string()))?,
+        emitter_name: r
+            .try_get("emitter_name")
+            .map_err(|e| StorageError::Internal(e.to_string()))?,
+        state: r
+            .try_get("state")
+            .map_err(|e| StorageError::Internal(e.to_string()))?,
+        attempt_count: r
+            .try_get("attempt_count")
+            .map_err(|e| StorageError::Internal(e.to_string()))?,
+        last_error: r
+            .try_get("last_error")
+            .map_err(|e| StorageError::Internal(e.to_string()))?,
+        last_attempt_at: r
+            .try_get("last_attempt_at")
+            .map_err(|e| StorageError::Internal(e.to_string()))?,
+        next_attempt_at: r
+            .try_get("next_attempt_at")
+            .map_err(|e| StorageError::Internal(e.to_string()))?,
+        emitted_at: r
+            .try_get("emitted_at")
+            .map_err(|e| StorageError::Internal(e.to_string()))?,
+        immutable: r
+            .try_get("immutable")
+            .map_err(|e| StorageError::Internal(e.to_string()))?,
+        created_at: r
+            .try_get("created_at")
+            .map_err(|e| StorageError::Internal(e.to_string()))?,
+    })
+}
+
+/// Convert a [`DeliveryRow`] (raw DB row) into a [`WebhookDelivery`].
+fn delivery_from_row(row: DeliveryRow) -> Result<WebhookDelivery, StorageError> {
+    let state: DeliveryState = deserialize_enum(&row.state)?;
+    Ok(WebhookDelivery {
+        delivery_id: DeliveryId(row.delivery_id),
+        receipt_id: ReceiptId(row.receipt_id),
+        emitter_name: row.emitter_name,
+        state,
+        attempt_count: row.attempt_count,
+        last_error: row.last_error,
+        last_attempt_at: row.last_attempt_at,
+        next_attempt_at: row.next_attempt_at,
+        emitted_at: row.emitted_at,
+        immutable: row.immutable,
+        created_at: row.created_at,
+    })
+}
+
+/// SELECT query used by delivery storage helpers.
+const SELECT_DELIVERY_COLUMNS: &str = r"
+    SELECT delivery_id, receipt_id, emitter_name, state, attempt_count,
+           last_error, last_attempt_at, next_attempt_at, emitted_at,
+           immutable, created_at
+    FROM webhook_deliveries
+";
+
+/// Storage operations for the per-emitter background dispatch workers.
+///
+/// All methods are scoped to a single `emitter_name` to keep each worker
+/// independent and to keep query plans tight on the partial indexes.
+#[async_trait]
+pub trait DeliveryStorage: Send + Sync {
+    /// Error type returned by all delivery storage operations.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Claim up to `batch_size` rows that are ready for dispatch:
+    /// state IN ('pending', 'failed') AND `next_attempt_at` <= `now()` AND immutable = FALSE.
+    /// Uses FOR UPDATE SKIP LOCKED so concurrent workers claim disjoint batches.
+    async fn claim_pending(
+        &self,
+        emitter_name: &str,
+        batch_size: i64,
+    ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error>;
+
+    /// Reclaim orphaned in-flight rows whose lease has expired.
+    /// Returns the number of rows reclaimed (for metrics).
+    async fn reclaim_expired(
+        &self,
+        emitter_name: &str,
+        lease_duration: Duration,
+    ) -> Result<u64, Self::Error>;
+
+    /// Mark a delivery as successfully emitted.
+    async fn mark_emitted(&self, delivery_id: DeliveryId) -> Result<(), Self::Error>;
+
+    /// Mark a delivery as failed with updated attempt count and backoff target.
+    async fn mark_failed(
+        &self,
+        delivery_id: DeliveryId,
+        attempt_count: i32,
+        next_attempt_at: DateTime<Utc>,
+        last_error: &str,
+    ) -> Result<(), Self::Error>;
+
+    /// Mark a delivery as dead-lettered (terminal failure).
+    async fn mark_dead_lettered(
+        &self,
+        delivery_id: DeliveryId,
+        last_error: &str,
+    ) -> Result<(), Self::Error>;
+
+    /// Count dead-lettered rows for a given emitter (DLQ depth gauge).
+    async fn count_dlq(&self, emitter_name: &str) -> Result<u64, Self::Error>;
+
+    /// Count pending + failed rows ready to dispatch (pending gauge).
+    async fn count_pending(&self, emitter_name: &str) -> Result<u64, Self::Error>;
+
+    /// Count in-flight rows (in-flight gauge).
+    async fn count_in_flight(&self, emitter_name: &str) -> Result<u64, Self::Error>;
+
+    /// Insert a new pending delivery row for replay.
+    /// Caller must verify `emitter_name` is currently configured before calling.
+    async fn insert_replay(
+        &self,
+        receipt_id: ReceiptId,
+        emitter_name: &str,
+    ) -> Result<DeliveryId, Self::Error>;
+
+    /// Insert replay rows for every name in `emitter_names`, atomically where
+    /// the backend supports transactions. The production Postgres impl wraps
+    /// the batch in a single `BEGIN/COMMIT` so a mid-batch failure leaves no
+    /// partial replays behind; the default implementation is a non-atomic
+    /// sequential fallback suitable for in-memory test doubles.
+    async fn insert_replays(
+        &self,
+        receipt_id: ReceiptId,
+        emitter_names: &[String],
+    ) -> Result<Vec<DeliveryId>, Self::Error> {
+        let mut ids = Vec::with_capacity(emitter_names.len());
+        for name in emitter_names {
+            ids.push(self.insert_replay(receipt_id, name).await?);
+        }
+        Ok(ids)
+    }
+
+    /// Fetch a single delivery row plus its parent receipt.
+    async fn get_delivery(
+        &self,
+        delivery_id: DeliveryId,
+    ) -> Result<Option<(WebhookDelivery, WebhookReceipt)>, Self::Error>;
+
+    /// Fetch all delivery rows for a receipt, ordered by `created_at` ASC.
+    async fn get_deliveries_for_receipt(
+        &self,
+        receipt_id: ReceiptId,
+    ) -> Result<Vec<WebhookDelivery>, Self::Error>;
+
+    /// List dead-lettered deliveries, optionally filtered by emitter.
+    async fn list_dlq(
+        &self,
+        emitter_name: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error>;
+}
+
+#[async_trait]
+impl DeliveryStorage for PostgresStorage {
+    type Error = StorageError;
+
+    async fn claim_pending(
+        &self,
+        emitter_name: &str,
+        batch_size: i64,
+    ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
+        let sql = r"
+            WITH claimed AS (
+                SELECT delivery_id
+                FROM webhook_deliveries
+                WHERE emitter_name = $1
+                  AND state IN ('pending', 'failed')
+                  AND next_attempt_at <= now()
+                  AND immutable = FALSE
+                ORDER BY next_attempt_at
+                LIMIT $2
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE webhook_deliveries d
+            SET state = 'in_flight',
+                last_attempt_at = now()
+            FROM claimed
+            WHERE d.delivery_id = claimed.delivery_id
+            RETURNING
+                d.delivery_id, d.receipt_id, d.emitter_name, d.state,
+                d.attempt_count, d.last_error, d.last_attempt_at,
+                d.next_attempt_at, d.emitted_at, d.immutable, d.created_at
+            ";
+
+        let rows = sqlx::query(sql)
+            .bind(emitter_name)
+            .bind(batch_size)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        let mut result = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let delivery_row = pg_row_to_delivery_row(row)?;
+            let receipt_id_uuid = delivery_row.receipt_id;
+            let delivery = delivery_from_row(delivery_row)?;
+            let receipt = self.get(receipt_id_uuid).await?.ok_or_else(|| {
+                StorageError::Internal("delivery references missing receipt".to_string())
+            })?;
+            result.push((delivery, receipt));
+        }
+        Ok(result)
+    }
+
+    async fn reclaim_expired(
+        &self,
+        emitter_name: &str,
+        lease_duration: Duration,
+    ) -> Result<u64, Self::Error> {
+        let lease_secs = lease_duration.as_secs_f64();
+        let result = sqlx::query(
+            r"
+            UPDATE webhook_deliveries
+            SET state = 'failed',
+                last_error = COALESCE(last_error || ' ', '') || '[reclaimed: lease expired]',
+                next_attempt_at = now()
+            WHERE emitter_name = $1
+              AND state = 'in_flight'
+              AND last_attempt_at < now() - make_interval(secs => $2)
+              AND immutable = FALSE
+            ",
+        )
+        .bind(emitter_name)
+        .bind(lease_secs)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn mark_emitted(&self, delivery_id: DeliveryId) -> Result<(), Self::Error> {
+        // Lease guard: only flip in_flight → emitted. If a concurrent
+        // `reclaim_expired` has already moved this row back to 'failed'
+        // (or another final state) the UPDATE matches 0 rows and we log
+        // it as a stale lease rather than clobbering the reclaim.
+        let result = sqlx::query(
+            r"
+            UPDATE webhook_deliveries
+            SET state = 'emitted', emitted_at = now(), last_error = NULL
+            WHERE delivery_id = $1 AND state = 'in_flight'
+            ",
+        )
+        .bind(delivery_id.0)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            tracing::warn!(
+                delivery_id = %delivery_id.0,
+                "mark_emitted affected 0 rows — stale lease, row already reclaimed or moved"
+            );
+        }
+        Ok(())
+    }
+
+    async fn mark_failed(
+        &self,
+        delivery_id: DeliveryId,
+        attempt_count: i32,
+        next_attempt_at: DateTime<Utc>,
+        last_error: &str,
+    ) -> Result<(), Self::Error> {
+        let result = sqlx::query(
+            r"
+            UPDATE webhook_deliveries
+            SET state = 'failed',
+                attempt_count = $2,
+                next_attempt_at = $3,
+                last_error = $4
+            WHERE delivery_id = $1 AND state = 'in_flight'
+            ",
+        )
+        .bind(delivery_id.0)
+        .bind(attempt_count)
+        .bind(next_attempt_at)
+        .bind(last_error)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            tracing::warn!(
+                delivery_id = %delivery_id.0,
+                "mark_failed affected 0 rows — stale lease, row already reclaimed or moved"
+            );
+        }
+        Ok(())
+    }
+
+    async fn mark_dead_lettered(
+        &self,
+        delivery_id: DeliveryId,
+        last_error: &str,
+    ) -> Result<(), Self::Error> {
+        let result = sqlx::query(
+            r"
+            UPDATE webhook_deliveries
+            SET state = 'dead_lettered', last_error = $2
+            WHERE delivery_id = $1 AND state = 'in_flight'
+            ",
+        )
+        .bind(delivery_id.0)
+        .bind(last_error)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            tracing::warn!(
+                delivery_id = %delivery_id.0,
+                "mark_dead_lettered affected 0 rows — stale lease, row already reclaimed or moved"
+            );
+        }
+        Ok(())
+    }
+
+    async fn count_dlq(&self, emitter_name: &str) -> Result<u64, Self::Error> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM webhook_deliveries WHERE emitter_name = $1 AND state = 'dead_lettered'",
+        )
+        .bind(emitter_name)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+        u64::try_from(count).map_err(|e| StorageError::Internal(e.to_string()))
+    }
+
+    async fn count_pending(&self, emitter_name: &str) -> Result<u64, Self::Error> {
+        // Mirror `claim_pending`'s predicate: count only rows that are actually
+        // dispatchable *right now*, not backed-off retries waiting for their
+        // next_attempt_at to expire. Otherwise the pending gauge overstates
+        // real queue depth and triggers spurious backlog alerts.
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM webhook_deliveries \
+             WHERE emitter_name = $1 \
+               AND state IN ('pending', 'failed') \
+               AND next_attempt_at <= now() \
+               AND immutable = FALSE",
+        )
+        .bind(emitter_name)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+        u64::try_from(count).map_err(|e| StorageError::Internal(e.to_string()))
+    }
+
+    async fn count_in_flight(&self, emitter_name: &str) -> Result<u64, Self::Error> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM webhook_deliveries WHERE emitter_name = $1 AND state = 'in_flight' AND immutable = FALSE",
+        )
+        .bind(emitter_name)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+        u64::try_from(count).map_err(|e| StorageError::Internal(e.to_string()))
+    }
+
+    async fn insert_replay(
+        &self,
+        receipt_id: ReceiptId,
+        emitter_name: &str,
+    ) -> Result<DeliveryId, Self::Error> {
+        let delivery_id: Uuid = sqlx::query_scalar(
+            r"
+            INSERT INTO webhook_deliveries (delivery_id, receipt_id, emitter_name, state, next_attempt_at)
+            VALUES (gen_random_uuid(), $1, $2, 'pending', now())
+            RETURNING delivery_id
+            ",
+        )
+        .bind(receipt_id.0)
+        .bind(emitter_name)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+        Ok(DeliveryId(delivery_id))
+    }
+
+    async fn insert_replays(
+        &self,
+        receipt_id: ReceiptId,
+        emitter_names: &[String],
+    ) -> Result<Vec<DeliveryId>, Self::Error> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        let mut ids = Vec::with_capacity(emitter_names.len());
+        for emitter_name in emitter_names {
+            let delivery_id: Uuid = sqlx::query_scalar(
+                r"
+                INSERT INTO webhook_deliveries (delivery_id, receipt_id, emitter_name, state, next_attempt_at)
+                VALUES (gen_random_uuid(), $1, $2, 'pending', now())
+                RETURNING delivery_id
+                ",
+            )
+            .bind(receipt_id.0)
+            .bind(emitter_name)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+            ids.push(DeliveryId(delivery_id));
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        Ok(ids)
+    }
+
+    async fn get_delivery(
+        &self,
+        delivery_id: DeliveryId,
+    ) -> Result<Option<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
+        let sql = format!("{SELECT_DELIVERY_COLUMNS} WHERE delivery_id = $1");
+        let row = sqlx::query(&sql)
+            .bind(delivery_id.0)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let delivery_row = pg_row_to_delivery_row(&row)?;
+        let receipt_id_uuid = delivery_row.receipt_id;
+        let delivery = delivery_from_row(delivery_row)?;
+        let receipt = self.get(receipt_id_uuid).await?.ok_or_else(|| {
+            StorageError::Internal("delivery references missing receipt".to_string())
+        })?;
+        Ok(Some((delivery, receipt)))
+    }
+
+    async fn get_deliveries_for_receipt(
+        &self,
+        receipt_id: ReceiptId,
+    ) -> Result<Vec<WebhookDelivery>, Self::Error> {
+        let sql =
+            format!("{SELECT_DELIVERY_COLUMNS} WHERE receipt_id = $1 ORDER BY created_at ASC");
+        let rows = sqlx::query(&sql)
+            .bind(receipt_id.0)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        rows.iter()
+            .map(|r| pg_row_to_delivery_row(r).and_then(delivery_from_row))
+            .collect()
+    }
+
+    async fn list_dlq(
+        &self,
+        emitter_name: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
+        let rows = if let Some(name) = emitter_name {
+            let sql = format!(
+                "{SELECT_DELIVERY_COLUMNS} WHERE state = 'dead_lettered' AND emitter_name = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+            );
+            sqlx::query(&sql)
+                .bind(name)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::Internal(e.to_string()))?
+        } else {
+            let sql = format!(
+                "{SELECT_DELIVERY_COLUMNS} WHERE state = 'dead_lettered' ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+            );
+            sqlx::query(&sql)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| StorageError::Internal(e.to_string()))?
+        };
+
+        let mut result = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let delivery_row = pg_row_to_delivery_row(row)?;
+            let receipt_id_uuid = delivery_row.receipt_id;
+            let delivery = delivery_from_row(delivery_row)?;
+            let receipt = self.get(receipt_id_uuid).await?.ok_or_else(|| {
+                StorageError::Internal("delivery references missing receipt".to_string())
+            })?;
+            result.push((delivery, receipt));
+        }
+        Ok(result)
+    }
+}
+
+/// Blanket `DeliveryStorage` impl for `Arc<T>` so workers can hold a
+/// reference-counted storage handle without losing the trait bound.
+#[async_trait]
+impl<T: DeliveryStorage + ?Sized> DeliveryStorage for std::sync::Arc<T> {
+    type Error = T::Error;
+
+    async fn claim_pending(
+        &self,
+        emitter_name: &str,
+        batch_size: i64,
+    ) -> Result<Vec<(WebhookDelivery, hookbox::types::WebhookReceipt)>, Self::Error> {
+        (**self).claim_pending(emitter_name, batch_size).await
+    }
+
+    async fn reclaim_expired(
+        &self,
+        emitter_name: &str,
+        lease_duration: Duration,
+    ) -> Result<u64, Self::Error> {
+        (**self).reclaim_expired(emitter_name, lease_duration).await
+    }
+
+    async fn mark_emitted(&self, delivery_id: DeliveryId) -> Result<(), Self::Error> {
+        (**self).mark_emitted(delivery_id).await
+    }
+
+    async fn mark_failed(
+        &self,
+        delivery_id: DeliveryId,
+        attempt_count: i32,
+        next_attempt_at: DateTime<Utc>,
+        last_error: &str,
+    ) -> Result<(), Self::Error> {
+        (**self)
+            .mark_failed(delivery_id, attempt_count, next_attempt_at, last_error)
+            .await
+    }
+
+    async fn mark_dead_lettered(
+        &self,
+        delivery_id: DeliveryId,
+        last_error: &str,
+    ) -> Result<(), Self::Error> {
+        (**self).mark_dead_lettered(delivery_id, last_error).await
+    }
+
+    async fn count_dlq(&self, emitter_name: &str) -> Result<u64, Self::Error> {
+        (**self).count_dlq(emitter_name).await
+    }
+
+    async fn count_pending(&self, emitter_name: &str) -> Result<u64, Self::Error> {
+        (**self).count_pending(emitter_name).await
+    }
+
+    async fn count_in_flight(&self, emitter_name: &str) -> Result<u64, Self::Error> {
+        (**self).count_in_flight(emitter_name).await
+    }
+
+    async fn insert_replay(
+        &self,
+        receipt_id: ReceiptId,
+        emitter_name: &str,
+    ) -> Result<DeliveryId, Self::Error> {
+        (**self).insert_replay(receipt_id, emitter_name).await
+    }
+
+    async fn insert_replays(
+        &self,
+        receipt_id: ReceiptId,
+        emitter_names: &[String],
+    ) -> Result<Vec<DeliveryId>, Self::Error> {
+        (**self).insert_replays(receipt_id, emitter_names).await
+    }
+
+    async fn get_delivery(
+        &self,
+        delivery_id: DeliveryId,
+    ) -> Result<Option<(WebhookDelivery, hookbox::types::WebhookReceipt)>, Self::Error> {
+        (**self).get_delivery(delivery_id).await
+    }
+
+    async fn get_deliveries_for_receipt(
+        &self,
+        receipt_id: ReceiptId,
+    ) -> Result<Vec<WebhookDelivery>, Self::Error> {
+        (**self).get_deliveries_for_receipt(receipt_id).await
+    }
+
+    async fn list_dlq(
+        &self,
+        emitter_name: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<(WebhookDelivery, hookbox::types::WebhookReceipt)>, Self::Error> {
+        (**self).list_dlq(emitter_name, limit, offset).await
     }
 }

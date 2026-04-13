@@ -12,7 +12,6 @@ use bytes::Bytes;
 use chrono::Utc;
 use hookbox::HookboxPipeline;
 use hookbox::dedupe::InMemoryRecentDedupe;
-use hookbox::emitter::ChannelEmitter;
 use hookbox::state::{IngestResult, ProcessingState};
 use hookbox::traits::Storage as _;
 use hookbox::types::ReceiptFilter;
@@ -48,12 +47,11 @@ async fn ingest_stores_and_deduplicates() {
     let _guard = ingest_test_lock().lock().await;
     let pool = setup_pool().await;
     let storage = PostgresStorage::new(pool.clone());
-    let (emitter, mut rx) = ChannelEmitter::new(16);
 
     let pipeline = HookboxPipeline::builder()
         .storage(storage)
         .dedupe(InMemoryRecentDedupe::new(100))
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
 
     // First ingest — should be accepted
@@ -63,10 +61,6 @@ async fn ingest_stores_and_deduplicates() {
         .await
         .expect("ingest should not error");
     assert!(matches!(result, IngestResult::Accepted { .. }));
-
-    // Should have emitted an event
-    let event = rx.try_recv().expect("expected emitted event");
-    assert_eq!(event.provider_name, "test");
 
     // Second ingest with same body — should be duplicate
     let result2 = pipeline
@@ -83,12 +77,11 @@ async fn query_failed_since_returns_failed_receipts() {
     let pool = setup_pool().await;
     let storage = PostgresStorage::new(pool.clone());
 
-    // Ingest a receipt — it starts Stored/Emitted.
-    let (emitter, mut rx) = ChannelEmitter::new(16);
+    // Ingest a receipt — it starts Stored.
     let pipeline = HookboxPipeline::builder()
         .storage(PostgresStorage::new(pool.clone()))
         .dedupe(InMemoryRecentDedupe::new(100))
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
 
     let body = Bytes::from(format!(
@@ -99,7 +92,6 @@ async fn query_failed_since_returns_failed_receipts() {
         .ingest("stripe", HeaderMap::new(), body)
         .await
         .expect("ingest should not error");
-    let _ = rx.try_recv();
 
     let hookbox::IngestResult::Accepted { receipt_id } = result else {
         panic!("expected Accepted")
@@ -156,11 +148,10 @@ async fn query_with_provider_event_id_filter() {
     let storage = PostgresStorage::new(pool.clone());
 
     // Ingest a unique receipt.
-    let (emitter, mut rx) = ChannelEmitter::new(16);
     let pipeline = HookboxPipeline::builder()
         .storage(PostgresStorage::new(pool.clone()))
         .dedupe(InMemoryRecentDedupe::new(100))
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
 
     let unique_id = Uuid::new_v4().to_string();
@@ -169,7 +160,6 @@ async fn query_with_provider_event_id_filter() {
         .ingest("stripe", HeaderMap::new(), body)
         .await
         .expect("ingest should not error");
-    let _ = rx.try_recv();
     assert!(matches!(result, IngestResult::Accepted { .. }));
 
     // Query with a provider_event_id filter that matches nothing.

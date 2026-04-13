@@ -16,7 +16,6 @@ use async_trait::async_trait;
 use axum::body::Body;
 use hookbox::HookboxPipeline;
 use hookbox::dedupe::{InMemoryRecentDedupe, LayeredDedupe};
-use hookbox::emitter::ChannelEmitter;
 use hookbox::state::{VerificationResult, VerificationStatus};
 use hookbox::traits::SignatureVerifier;
 use hookbox_postgres::{PostgresStorage, StorageDedupe};
@@ -67,18 +66,12 @@ async fn setup_pool() -> PgPool {
     pool
 }
 
-async fn drain(mut rx: tokio::sync::mpsc::Receiver<hookbox::NormalizedEvent>) {
-    while rx.recv().await.is_some() {}
-}
-
 #[tokio::test]
 async fn full_http_flow() {
     let _guard = http_test_lock().lock().await;
     // Setup
     let pool = setup_pool().await;
     let storage = PostgresStorage::new(pool.clone());
-    let (emitter, rx) = ChannelEmitter::new(16);
-    tokio::spawn(drain(rx));
 
     let dedupe = LayeredDedupe::new(
         InMemoryRecentDedupe::new(100),
@@ -93,7 +86,7 @@ async fn full_http_flow() {
     let pipeline = HookboxPipeline::builder()
         .storage(storage)
         .dedupe(dedupe)
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
 
     let state = Arc::new(AppState {
@@ -101,6 +94,7 @@ async fn full_http_flow() {
         pool: Some(pool),
         admin_token: None,
         prometheus,
+        emitter_health: std::collections::BTreeMap::new(),
     });
 
     let app = build_router(state, 1_048_576);
@@ -169,15 +163,25 @@ async fn full_http_flow() {
     let resp = client.get(format!("{base}/api/dlq")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
 
-    // Test 9: POST /api/receipts/:id/replay → 200 replayed
+    // Test 9: POST /api/receipts/:id/replay → 202 Accepted with delivery_ids
+    // New fan-out semantics: replay inserts pending delivery rows for
+    // `EmitterWorker` to pick up, rather than flipping a receipt state.
     let resp = client
         .post(format!("{base}/api/receipts/{receipt_id}/replay"))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200, "replay should succeed");
+    assert_eq!(resp.status(), 202, "replay should be accepted");
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "replayed");
+    assert!(
+        body["delivery_ids"].is_array(),
+        "replay response must include delivery_ids array, got: {body}"
+    );
+    assert_eq!(
+        body["delivery_ids"],
+        serde_json::json!([]),
+        "replay must not enqueue deliveries when no emitters are configured"
+    );
 
     // Test 10: GET /api/receipts/:id → found (non-existent → 404)
     let fake_id = Uuid::new_v4();
@@ -197,8 +201,6 @@ async fn full_http_flow() {
 async fn admin_auth_token_enforcement() {
     let pool = setup_pool_no_delete().await;
     let storage = PostgresStorage::new(pool.clone());
-    let (emitter, rx) = ChannelEmitter::new(16);
-    tokio::spawn(drain(rx));
 
     let dedupe = LayeredDedupe::new(
         InMemoryRecentDedupe::new(100),
@@ -212,7 +214,7 @@ async fn admin_auth_token_enforcement() {
     let pipeline = HookboxPipeline::builder()
         .storage(storage)
         .dedupe(dedupe)
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
 
     let state = Arc::new(AppState {
@@ -220,6 +222,7 @@ async fn admin_auth_token_enforcement() {
         pool: Some(pool),
         admin_token: Some("secret-token".to_owned()),
         prometheus,
+        emitter_health: std::collections::BTreeMap::new(),
     });
 
     let app = build_router(state, 1_048_576);
@@ -265,8 +268,6 @@ async fn admin_auth_token_enforcement() {
 async fn admin_auth_non_ascii_header_rejected() {
     let pool = setup_pool_no_delete().await;
     let storage = PostgresStorage::new(pool.clone());
-    let (emitter, rx) = ChannelEmitter::new(16);
-    tokio::spawn(drain(rx));
 
     let dedupe = LayeredDedupe::new(
         InMemoryRecentDedupe::new(100),
@@ -280,7 +281,7 @@ async fn admin_auth_non_ascii_header_rejected() {
     let pipeline = HookboxPipeline::builder()
         .storage(storage)
         .dedupe(dedupe)
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
 
     let state = Arc::new(AppState {
@@ -288,6 +289,7 @@ async fn admin_auth_non_ascii_header_rejected() {
         pool: Some(pool),
         admin_token: Some("secret".to_owned()),
         prometheus,
+        emitter_health: std::collections::BTreeMap::new(),
     });
 
     let app = build_router(state, 1_048_576);
@@ -319,8 +321,6 @@ async fn admin_auth_non_ascii_header_rejected() {
 async fn ingest_verification_failed_returns_401() {
     let pool = setup_pool_no_delete().await;
     let storage = PostgresStorage::new(pool.clone());
-    let (emitter, rx) = ChannelEmitter::new(16);
-    tokio::spawn(drain(rx));
 
     let dedupe = LayeredDedupe::new(
         InMemoryRecentDedupe::new(100),
@@ -334,7 +334,7 @@ async fn ingest_verification_failed_returns_401() {
     let pipeline = HookboxPipeline::builder()
         .storage(storage)
         .dedupe(dedupe)
-        .emitter(emitter)
+        .emitter_names(vec![])
         .verifier(AlwaysFailVerifier)
         .build();
 
@@ -343,6 +343,7 @@ async fn ingest_verification_failed_returns_401() {
         pool: Some(pool),
         admin_token: None,
         prometheus,
+        emitter_health: std::collections::BTreeMap::new(),
     });
 
     let app = build_router(state, 1_048_576);
@@ -373,8 +374,6 @@ async fn ingest_verification_failed_returns_401() {
 async fn metrics_no_recorder_returns_fallback_message() {
     let pool = setup_pool_no_delete().await;
     let storage = PostgresStorage::new(pool.clone());
-    let (emitter, rx) = ChannelEmitter::new(16);
-    tokio::spawn(drain(rx));
 
     let dedupe = LayeredDedupe::new(
         InMemoryRecentDedupe::new(100),
@@ -384,7 +383,7 @@ async fn metrics_no_recorder_returns_fallback_message() {
     let pipeline = HookboxPipeline::builder()
         .storage(storage)
         .dedupe(dedupe)
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
 
     // Explicitly set prometheus to None — do NOT install a recorder.
@@ -393,6 +392,7 @@ async fn metrics_no_recorder_returns_fallback_message() {
         pool: Some(pool),
         admin_token: None,
         prometheus: None,
+        emitter_health: std::collections::BTreeMap::new(),
     });
 
     let app = build_router(state, 1_048_576);
@@ -420,8 +420,6 @@ async fn metrics_no_recorder_returns_fallback_message() {
 async fn readyz_no_pool_returns_503() {
     let pool = setup_pool_no_delete().await;
     let storage = PostgresStorage::new(pool.clone());
-    let (emitter, rx) = ChannelEmitter::new(16);
-    tokio::spawn(drain(rx));
 
     let dedupe = LayeredDedupe::new(
         InMemoryRecentDedupe::new(100),
@@ -431,7 +429,7 @@ async fn readyz_no_pool_returns_503() {
     let pipeline = HookboxPipeline::builder()
         .storage(storage)
         .dedupe(dedupe)
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
 
     // Explicitly set pool to None — readyz should return 503.
@@ -440,6 +438,7 @@ async fn readyz_no_pool_returns_503() {
         pool: None,
         admin_token: None,
         prometheus: None,
+        emitter_health: std::collections::BTreeMap::new(),
     });
 
     let app = build_router(state, 1_048_576);

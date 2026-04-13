@@ -97,6 +97,26 @@ pub struct NormalizedEvent {
     pub metadata: serde_json::Value,
 }
 
+impl NormalizedEvent {
+    /// Construct a [`NormalizedEvent`] from a stored [`WebhookReceipt`].
+    ///
+    /// Copies the fields that downstream consumers need, leaving raw bytes
+    /// and provider-internal fields behind.
+    #[must_use]
+    pub fn from_receipt(receipt: &WebhookReceipt) -> Self {
+        Self {
+            receipt_id: receipt.receipt_id,
+            provider_name: receipt.provider_name.clone(),
+            event_type: receipt.normalized_event_type.clone(),
+            external_reference: receipt.external_reference.clone(),
+            parsed_payload: receipt.parsed_payload.clone(),
+            payload_hash: receipt.payload_hash.clone(),
+            received_at: receipt.received_at,
+            metadata: receipt.metadata.clone(),
+        }
+    }
+}
+
 /// Filter parameters for querying stored webhook receipts.
 ///
 /// All fields are optional; omitting a field means "no constraint on that

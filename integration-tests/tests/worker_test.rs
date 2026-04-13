@@ -15,7 +15,6 @@ use std::time::Duration;
 use bytes::Bytes;
 use hookbox::HookboxPipeline;
 use hookbox::dedupe::InMemoryRecentDedupe;
-use hookbox::emitter::ChannelEmitter;
 use hookbox::state::ProcessingState;
 use hookbox::traits::Storage;
 use hookbox_postgres::PostgresStorage;
@@ -49,12 +48,11 @@ async fn setup_pool() -> PgPool {
 /// Helper: ingest a single unique event and return the receipt UUID.
 async fn ingest_one(pool: &PgPool) -> Uuid {
     let storage = PostgresStorage::new(pool.clone());
-    let (emitter, mut rx) = ChannelEmitter::new(16);
 
     let pipeline = HookboxPipeline::builder()
         .storage(storage)
         .dedupe(InMemoryRecentDedupe::new(100))
-        .emitter(emitter)
+        .emitter_names(vec![])
         .build();
 
     let unique_body = Bytes::from(format!(
@@ -65,9 +63,6 @@ async fn ingest_one(pool: &PgPool) -> Uuid {
         .ingest("test", HeaderMap::new(), unique_body)
         .await
         .expect("ingest should not error");
-
-    // Drain the channel so the emit count doesn't accumulate
-    let _ = rx.try_recv();
 
     let hookbox::IngestResult::Accepted { receipt_id } = result else {
         unreachable!("expected Accepted result")
@@ -82,31 +77,17 @@ async fn worker_retries_emit_failed_receipt() {
     let pool = setup_pool().await;
     let storage = PostgresStorage::new(pool.clone());
 
-    // --- Step 1: ingest with a dropped receiver so emit fails ---
-    let unique_body = Bytes::from(format!(
-        r#"{{"event":"payment.completed","id":"{}"}}"#,
-        Uuid::new_v4()
-    ));
+    // --- Step 1: ingest normally then manually set EmitFailed ---
+    // After the Phase 6 fan-out refactor, the pipeline no longer emits inline,
+    // so we can't trigger EmitFailed via a dropped channel receiver anymore.
+    // Instead we ingest normally and then force the state to EmitFailed
+    // to test that the RetryWorker can recover it.
+    let id = ingest_one(&pool).await;
 
-    // Create emitter whose receiver is immediately dropped → emit will fail
-    let (failing_emitter, rx_drop) = ChannelEmitter::new(1);
-    drop(rx_drop); // receiver gone → send returns Err → EmitFailed
-
-    let pipeline = HookboxPipeline::builder()
-        .storage(PostgresStorage::new(pool.clone()))
-        .dedupe(InMemoryRecentDedupe::new(100))
-        .emitter(failing_emitter)
-        .build();
-
-    let result = pipeline
-        .ingest("test", HeaderMap::new(), unique_body)
+    storage
+        .update_state(id, ProcessingState::EmitFailed, Some("forced for test"))
         .await
-        .expect("ingest should not error");
-
-    let hookbox::IngestResult::Accepted { receipt_id } = result else {
-        unreachable!("expected Accepted result")
-    };
-    let id = receipt_id.0;
+        .expect("update_state to EmitFailed should succeed");
 
     // --- Step 2: verify receipt is in EmitFailed ---
     let receipt = storage
@@ -117,11 +98,11 @@ async fn worker_retries_emit_failed_receipt() {
     assert_eq!(
         receipt.processing_state,
         ProcessingState::EmitFailed,
-        "receipt should be in EmitFailed state after dropped receiver"
+        "receipt should be in EmitFailed state"
     );
 
     // --- Step 3: create a working emitter (keep receiver alive via drain task) ---
-    let (good_emitter, good_rx) = ChannelEmitter::new(16);
+    let (good_emitter, good_rx) = hookbox::emitter::ChannelEmitter::new(16);
     tokio::spawn(async move {
         let mut rx = good_rx;
         while rx.recv().await.is_some() {}
@@ -203,7 +184,7 @@ async fn worker_promotes_to_dlq_after_max_attempts() {
     );
 
     // --- Step 4: create failing emitter (dropped receiver) ---
-    let (failing_emitter, rx_drop) = ChannelEmitter::new(1);
+    let (failing_emitter, rx_drop) = hookbox::emitter::ChannelEmitter::new(1);
     drop(rx_drop);
 
     // --- Step 5: spawn RetryWorker with 100ms interval, max_attempts=5 ---

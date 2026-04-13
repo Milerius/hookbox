@@ -2,149 +2,198 @@
 
 Standalone Axum HTTP server for hookbox.
 
-Wires together `hookbox` core, `hookbox-postgres`, and `hookbox-providers` into a ready-to-deploy webhook ingestion service with admin API, health endpoints, and Prometheus metrics.
+Wires together `hookbox` core, `hookbox-postgres`, `hookbox-providers`, and the emitter-backend crates into a ready-to-deploy webhook ingestion service with admin API, per-emitter health, and Prometheus metrics.
 
 ## Endpoints
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  hookbox-server                                         │
-│                                                         │
-│  Webhook Ingest                                         │
-│  ─────────────                                          │
-│  POST /webhooks/:provider    Ingest a webhook           │
-│                                                         │
-│  Health & Observability                                 │
-│  ─────────────────────                                  │
-│  GET  /healthz               Liveness probe             │
-│  GET  /readyz                Readiness probe (DB check) │
-│  GET  /metrics               Prometheus scrape endpoint │
-│                                                         │
-│  Admin API                                              │
-│  ─────────                                              │
-│  GET  /api/receipts          List / filter receipts     │
-│  GET  /api/receipts/:id      Inspect one receipt        │
-│  POST /api/receipts/:id/replay  Re-emit a receipt       │
-│  GET  /api/dlq               List dead-lettered items   │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  hookbox-server                                                 │
+│                                                                 │
+│  Webhook Ingest                                                 │
+│  ──────────────                                                 │
+│  POST /webhooks/{provider}            Ingest a webhook          │
+│                                                                 │
+│  Health & Observability                                         │
+│  ──────────────────────                                         │
+│  GET  /healthz                        Liveness                  │
+│  GET  /readyz                         DB + per-emitter health   │
+│  GET  /metrics                        Prometheus scrape         │
+│                                                                 │
+│  Admin API — Receipts                                           │
+│  ─────────────────────                                          │
+│  GET  /api/receipts                   List / filter receipts    │
+│  GET  /api/receipts/{id}              Inspect one receipt       │
+│  POST /api/receipts/{id}/replay       Enqueue replay for all    │
+│                                       configured emitters       │
+│                                                                 │
+│  Admin API — Deliveries                                         │
+│  ───────────────────────                                        │
+│  GET  /api/deliveries/{id}            Inspect one delivery row  │
+│  POST /api/deliveries/{id}/replay     Enqueue replay of one     │
+│                                       emitter's delivery        │
+│                                                                 │
+│  Admin API — Emitters & DLQ                                     │
+│  ───────────────────────────                                    │
+│  GET  /api/emitters                   List configured emitters  │
+│                                       with queue depths         │
+│  GET  /api/dlq                        List dead-lettered rows   │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+All `/api/*` endpoints honour the optional admin bearer token; `/webhooks/*`, `/healthz`, `/readyz`, and `/metrics` are always public.
+
+### `GET /readyz`
+
+Returns structured JSON aggregating the DB ping and every `[[emitters]]` entry's last snapshot:
+
+```json
+{
+  "status": "healthy",
+  "database": { "status": "healthy" },
+  "emitters": {
+    "kafka": {
+      "status": "healthy",
+      "last_success_at": "2026-04-13T05:00:00Z",
+      "last_failure_at": null,
+      "consecutive_failures": 0,
+      "dlq_depth": 0,
+      "pending_count": 0
+    }
+  }
+}
+```
+
+Returns `503 Service Unavailable` if the database is unreachable **or** any emitter is `unhealthy`; `200 OK` (with `status: "degraded"`) when any emitter is degraded but none unhealthy. Configured emitters whose worker never registered a snapshot are synthesised as `unhealthy`, so a missing worker always trips readiness.
 
 ## Request Flow
 
 ```
-Provider (Stripe, BVNK, ...)
+Provider (Stripe, BVNK, Adyen, …)
     │
     │  POST /webhooks/stripe
     ▼
-┌─────────┐     ┌───────────────────┐     ┌──────────────┐
-│  Axum   │────►│  HookboxPipeline  │────►│  PostgreSQL   │
-│  Router │     │  verify → dedupe  │     │  (durable     │
-│         │◄────│  → store → emit   │     │   inbox)      │
-│  200 OK │     └───────────────────┘     └──────────────┘
-└─────────┘              │
-                         │  NormalizedEvent
-                         ▼
-                  Downstream consumer
-                  (callback / channel)
+┌─────────┐     ┌───────────────────────┐     ┌─────────────────┐
+│  Axum   │────►│  HookboxPipeline      │────►│  PostgreSQL     │
+│ Router  │     │  verify → dedupe →    │     │  webhook_       │
+│         │◄────│  store receipt + fan- │     │  receipts +     │
+│  200 OK │     │  out delivery rows    │     │  deliveries     │
+└─────────┘     └───────────────────────┘     └─────────────────┘
+                                                       ▲
+                                                       │ claim / mark
+                                                       │
+                                              ┌────────┴────────┐
+                                              │ EmitterWorker   │
+                                              │ (one per emitter│
+                                              │  in config)     │
+                                              └────────┬────────┘
+                                                       │ emit
+                                                       ▼
+                                              Kafka / NATS / SQS /
+                                              Redis Streams
 ```
+
+Inline emission was removed. Ingest stores one `pending` delivery row per configured emitter name inside the receipt transaction and returns. Background `EmitterWorker` tasks claim pending rows with `SELECT ... FOR UPDATE SKIP LOCKED`, dispatch to their backend, and drive each row through `Emitted` or `DeadLettered`.
 
 ## Configuration
 
-The server reads from `hookbox.toml`:
+`hookbox.toml`:
 
 ```toml
 [server]
 host = "0.0.0.0"
 port = 8080
+body_limit = 1048576          # max ingest body size, bytes
 
 [database]
 url = "postgres://localhost/hookbox"
 max_connections = 10
+
+[dedupe]
+lru_capacity = 10000
+
+[admin]
+bearer_token = "..."          # optional; when set, /api/* requires Bearer
 
 [providers.stripe]
 type = "stripe"
 secret = "whsec_..."
 tolerance_seconds = 300
 
-[providers.bvnk]
-type = "bvnk"
-secret = "..."
-
 [providers.adyen]
 type = "adyen"
-# Hex-encoded HMAC key from the Adyen Customer Area
-secret = "abc123..."
-
-[providers.triplea_fiat]
-type = "triplea-fiat"
-# RSA public key in PEM format
-public_key = """
------BEGIN PUBLIC KEY-----
-...
------END PUBLIC KEY-----
-"""
-
-[providers.triplea_crypto]
-type = "triplea-crypto"
-# notify_secret from the Triple-A developer portal
-secret = "..."
-tolerance_seconds = 300
+secret = "abc123..."          # hex-encoded HMAC from the Customer Area
 
 [providers.walapay]
 type = "walapay"
-# whsec_<base64> format secret from the Walapay dashboard
 secret = "whsec_..."
 tolerance_seconds = 300
-
-[dedupe]
-lru_capacity = 10000
-
-[admin]
-bearer_token = "..."
-
-# Emitter backend (default: "channel")
-# Options: "channel", "kafka", "nats", "sqs"
-[emitter]
-type = "channel"
 ```
 
-### Kafka emitter
+### Emitters (`[[emitters]]`)
+
+Each `[[emitters]]` entry spawns one `EmitterWorker`. `name` is the string you pass to `HookboxPipeline::emitter_names` and what shows up as the `emitter` label on metrics and in `/readyz`.
 
 ```toml
-[emitter]
+[[emitters]]
+name = "kafka"                # unique per process, used in metrics + /readyz
 type = "kafka"
+poll_interval_seconds = 1     # how often to claim a new batch
+concurrency = 8               # max in-flight deliveries
+lease_duration_seconds = 60   # optional; reclaim stuck in_flight rows after
 
-[emitter.kafka]
+[emitters.kafka]
 brokers = "localhost:9092"
 topic = "hookbox-events"
-client_id = "hookbox"       # optional, default: "hookbox"
-acks = "all"                # optional, default: "all"
-timeout_ms = 5000           # optional, default: 5000
-```
+client_id = "hookbox"
+acks = "all"
+timeout_ms = 5000
 
-### NATS emitter
+[emitters.retry]              # per-emitter retry policy
+max_attempts = 8
+initial_backoff_seconds = 2
+max_backoff_seconds = 600
+backoff_multiplier = 2.0
+jitter = 0.2
 
-```toml
-[emitter]
+[[emitters]]
+name = "sqs-us-east"
+type = "sqs"
+poll_interval_seconds = 1
+concurrency = 16
+
+[emitters.sqs]
+queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/hookbox-events"
+region = "us-east-1"
+fifo = false
+
+[emitters.retry]
+max_attempts = 5
+initial_backoff_seconds = 5
+max_backoff_seconds = 300
+backoff_multiplier = 2.0
+jitter = 0.1
+
+[[emitters]]
+name = "nats"
 type = "nats"
 
-[emitter.nats]
+[emitters.nats]
 url = "nats://localhost:4222"
 subject = "hookbox.events"
+
+[[emitters]]
+name = "redis"
+type = "redis"
+
+[emitters.redis]
+url = "redis://localhost:6379"
+stream = "hookbox-events"
+maxlen = 1000000
+timeout_ms = 5000
 ```
 
-### SQS emitter
-
-```toml
-[emitter]
-type = "sqs"
-
-[emitter.sqs]
-queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/hookbox-events"
-region = "us-east-1"   # optional
-fifo = false           # set true for FIFO queues
-```
+`type` is one of `"kafka" | "nats" | "sqs" | "redis"`. Unknown fields in any emitter entry are rejected at startup (`deny_unknown_fields`), and `poll_interval_seconds = 0` is a hard validation error to prevent busy-looping against Postgres.
 
 ## Metrics
 
@@ -154,28 +203,28 @@ Prometheus metrics exposed at `/metrics`:
 |--------|------|--------|
 | `hookbox_webhooks_received_total` | Counter | `provider` |
 | `hookbox_ingest_results_total` | Counter | `provider`, `result` |
-| `hookbox_verification_results_total` | Counter | `provider`, `status` |
+| `hookbox_verification_results_total` | Counter | `provider`, `status`, `reason` |
 | `hookbox_dedupe_checks_total` | Counter | `provider`, `result` |
-| `hookbox_emit_results_total` | Counter | `provider`, `result` |
-| `hookbox_ingest_duration_seconds` | Histogram | |
-| `hookbox_store_duration_seconds` | Histogram | |
-| `hookbox_emit_duration_seconds` | Histogram | |
-| `hookbox_dlq_depth` | Gauge | `provider` |
-| `hookbox_inflight_count` | Gauge | |
+| `hookbox_ingest_duration_seconds` | Histogram | — |
+| `hookbox_store_duration_seconds` | Histogram | — |
+| `hookbox_emit_results_total` | Counter | `emitter`, `result` |
+| `hookbox_emit_duration_seconds` | Histogram | `emitter` |
+| `hookbox_emit_attempt_count` | Histogram | `emitter` |
+| `hookbox_emit_reclaimed_total` | Counter | `emitter` |
+| `hookbox_emit_pending` | Gauge | `emitter` |
+| `hookbox_emit_in_flight` | Gauge | `emitter` |
+| `hookbox_dlq_depth` | Gauge | `emitter` |
 
-## Retry Worker
+Note: `hookbox_emit_results_total` now fires once **per delivery attempt** (not per ingest), so per-receipt fan-out and retries are both visible. Reclaim counter > 0 indicates worker crashes or a too-tight lease duration.
 
-A background task periodically retries receipts stuck in `EmitFailed` state.
+## Background Workers
 
-Configuration via `hookbox.toml`:
+`hookbox serve` spawns:
 
-```toml
-[retry]
-interval_seconds = 30
-max_attempts = 5
-```
+- **One `EmitterWorker` per `[[emitters]]` entry.** Each worker claims pending deliveries for its own `name`, dispatches them to the configured backend with the entry's retry policy, and publishes an `EmitterHealth` snapshot into `AppState.emitter_health` that `/readyz` reads. Each worker also runs a drain task that refreshes the queue-depth gauges and reclaims expired `in_flight` rows.
+- **Graceful shutdown** waits for each worker + drain task to finish; any panicking task is logged with its name and returned as an aggregated startup error.
 
-After `max_attempts` failed retries, receipts are atomically promoted to `DeadLettered`.
+Legacy receipt-level retry (`RetryWorker`, `[retry]` in config) still compiles but is no longer spawned — fan-out with per-emitter retry policies replaces it.
 
 ## License
 

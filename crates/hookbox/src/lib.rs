@@ -20,4 +20,5 @@ pub use hash::compute_payload_hash;
 pub use pipeline::{HookboxPipeline, HookboxPipelineBuilder};
 pub use state::*;
 pub use traits::*;
+pub use transitions::{compute_backoff, receipt_aggregate_state, receipt_deliveries_summary};
 pub use types::*;

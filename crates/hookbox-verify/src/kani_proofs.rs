@@ -136,4 +136,74 @@ mod proofs {
         let (new_count, new_state) = reset_state();
         assert!(is_findable_by_worker(new_count, new_state, max_attempts));
     }
+
+    /// Map a u8 to a `DeliveryState` variant.
+    fn any_delivery_state() -> hookbox::state::DeliveryState {
+        let n: u8 = kani::any();
+        kani::assume(n < 5);
+        match n {
+            0 => hookbox::state::DeliveryState::Pending,
+            1 => hookbox::state::DeliveryState::InFlight,
+            2 => hookbox::state::DeliveryState::Emitted,
+            3 => hookbox::state::DeliveryState::Failed,
+            _ => hookbox::state::DeliveryState::DeadLettered,
+        }
+    }
+
+    /// `compute_backoff` must not panic or overflow for any bounded attempt
+    /// and `RetryPolicy` shape. Bounds are chosen to keep the proof tractable
+    /// while still covering realistic production ranges.
+    #[kani::proof]
+    fn proof_backoff_no_overflow() {
+        use hookbox::state::RetryPolicy;
+        use std::time::Duration;
+
+        let attempt: i32 = kani::any();
+        kani::assume(attempt >= 1 && attempt <= 30);
+        let initial_secs: u64 = kani::any();
+        kani::assume(initial_secs >= 1 && initial_secs <= 3600);
+        let max_secs: u64 = kani::any();
+        kani::assume(max_secs >= initial_secs && max_secs <= 86_400);
+
+        let policy = RetryPolicy {
+            max_attempts: 10,
+            initial_backoff: Duration::from_secs(initial_secs),
+            max_backoff: Duration::from_secs(max_secs),
+            backoff_multiplier: 2.0,
+            jitter: 0.0,
+        };
+
+        let _ = hookbox::transitions::compute_backoff(attempt, &policy);
+    }
+
+    /// `receipt_aggregate_state` must be total over every combination of two
+    /// delivery states. Uses a fixed two-element delivery slice for
+    /// tractability; the function's structure is invariant over slice length.
+    #[kani::proof]
+    fn proof_aggregate_state_total() {
+        use chrono::Utc;
+        use hookbox::state::{DeliveryId, ProcessingState, ReceiptId, WebhookDelivery};
+        use uuid::Uuid;
+
+        let s1 = any_delivery_state();
+        let s2 = any_delivery_state();
+
+        let make = |emitter: &str, state| WebhookDelivery {
+            delivery_id: DeliveryId(Uuid::nil()),
+            receipt_id: ReceiptId(Uuid::nil()),
+            emitter_name: emitter.to_owned(),
+            state,
+            attempt_count: 0,
+            last_error: None,
+            last_attempt_at: None,
+            next_attempt_at: Utc::now(),
+            emitted_at: None,
+            immutable: false,
+            created_at: Utc::now(),
+        };
+
+        let deliveries = vec![make("a", s1), make("b", s2)];
+
+        let _ = hookbox::transitions::receipt_aggregate_state(&deliveries, ProcessingState::Stored);
+    }
 }
