@@ -107,7 +107,7 @@ Every incoming webhook passes through a four-stage ingest pipeline and is then f
 
 🛠️ **CLI tooling** — inspect receipts, search by external reference, replay failures, manage the DLQ
 
-🧪 **Verification rigor** — unit + integration + BDD scenarios + property tests (Bolero) + Kani proofs + fuzz targets + mutation testing
+🧪 **Verification rigor** — unit · integration (12 testcontainer suites) · smoke · BDD scenarios (Cucumber, core + server) · property tests (Bolero, 8 modules) · Kani proofs · 4 fuzz targets · criterion benchmarks · mutation testing · `cargo careful` · `cargo deny`
 
 ---
 
@@ -257,20 +257,22 @@ topic   = "events"
 <details>
 <summary><h2>🧪 Verification Tiers</h2></summary>
 
-| Tier | Tool                          | Cadence       | What it catches                                          |
-|------|-------------------------------|---------------|-----------------------------------------------------------|
-| 1    | Unit tests                    | Every PR      | Per-module behavior                                       |
-| 2    | Integration tests (Postgres)  | Every PR      | Full pipeline against a real testcontainer DB             |
-| 3    | BDD scenarios (Cucumber)      | Every PR      | End-to-end product behavior, both core and server modes   |
-| 4    | Property tests (Bolero)       | Every PR      | Pipeline invariants under generated input                 |
-| 5    | `cargo deny`                  | Every PR      | License + advisory + dependency hygiene                   |
-| 6    | `cargo careful`               | Every PR      | Extra UB detection beyond standard tests                  |
-| 7    | Coverage (`cargo llvm-cov`)   | Every PR      | Branch + line coverage tracked via Codecov                |
-| 8    | Kani proofs                   | Nightly       | Bounded model checking of state-machine invariants        |
-| 9    | Fuzz targets                  | Nightly       | Crash bugs in parsing + signature verification            |
-| 10   | Mutation testing              | Nightly       | Test-suite quality regression detection                   |
+| Tier | Tool                                | Cadence       | What it catches                                                       |
+|------|-------------------------------------|---------------|------------------------------------------------------------------------|
+| 1    | Unit tests                          | Every PR      | Per-module behavior, co-located with source                            |
+| 2    | Integration tests (Postgres)        | Every PR      | 12 testcontainer suites: ingest, fan-out, admin API, CLI, migrations, fault injection |
+| 3    | Smoke test (`serve_smoke`)          | Every PR      | End-to-end `hookbox serve` boot + ingest + emit on a real port         |
+| 4    | BDD scenarios (Cucumber)            | Every PR      | Product behavior in two modes — core in-memory and server testcontainer |
+| 5    | Property tests (Bolero, 8 modules)  | Every PR      | Pipeline invariants: dedupe, retry, backoff, hash, state, metrics, providers, emitter |
+| 6    | Criterion benchmarks                | Local / opt-in | Ingest path throughput + regression detection                         |
+| 7    | `cargo deny`                        | Every PR      | License + advisory + dependency hygiene                                |
+| 8    | `cargo careful`                     | Every PR      | Extra UB detection beyond standard tests                               |
+| 9    | Coverage (`cargo llvm-cov`)         | Every PR      | Branch + line coverage tracked via Codecov                             |
+| 10   | Kani proofs                         | Nightly       | Bounded model checking of state-machine invariants                     |
+| 11   | Fuzz targets (4 total)              | Nightly       | Crash bugs in payload hashing, signature verification, receipt serde, config normalization |
+| 12   | Mutation testing (`cargo-mutants`)  | Nightly       | Test-suite quality regression detection                                |
 
-Every PR runs: fmt → clippy (pedantic, `-D warnings`) → test → integration → BDD → property → coverage → deny → doc.
+Every PR runs: fmt → clippy (pedantic, `-D warnings`) → test → integration → smoke → BDD (core + server) → property → coverage → deny → careful → doc.
 
 </details>
 
