@@ -3,8 +3,6 @@
 //! Only compiled when the `bdd-server` feature is enabled.
 //! Run with: `cargo test -p hookbox-scenarios --test server_bdd --features bdd-server`
 
-#![allow(missing_docs, reason = "test entrypoint")]
-
 #[cfg(feature = "bdd-server")]
 #[tokio::main]
 async fn main() {

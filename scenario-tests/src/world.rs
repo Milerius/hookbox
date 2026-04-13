@@ -4,7 +4,8 @@
 //! always-on `core_bdd` test binary, and the `#[cfg(feature = "bdd-server")]`
 //! gated [`ServerWorld`] for HTTP-level scenarios.
 
-use std::sync::Mutex;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -15,9 +16,13 @@ use uuid::Uuid;
 use hookbox::dedupe::InMemoryRecentDedupe;
 use hookbox::error::StorageError;
 use hookbox::pipeline::HookboxPipeline;
-use hookbox::state::{IngestResult, ProcessingState, StoreResult, VerificationResult, VerificationStatus};
+use hookbox::state::{
+    IngestResult, ProcessingState, StoreResult, VerificationResult, VerificationStatus,
+};
 use hookbox::traits::{SignatureVerifier, Storage};
 use hookbox::types::{ReceiptFilter, WebhookReceipt};
+
+use crate::fake_emitter::FakeEmitter;
 
 // ── MemoryStorage ────────────────────────────────────────────────────────
 
@@ -168,6 +173,9 @@ pub struct IngestWorld {
     pipeline: Option<PipelineBox>,
     /// Results from each `ingest` call in the current scenario.
     pub results: Vec<IngestResult>,
+    /// Registry of fake emitters keyed by logical name, so step definitions can
+    /// assert per-emitter received counts after fan-out.
+    pub emitters: BTreeMap<String, Arc<FakeEmitter>>,
 }
 
 impl IngestWorld {
@@ -177,6 +185,7 @@ impl IngestWorld {
         Self {
             pipeline: None,
             results: Vec::new(),
+            emitters: BTreeMap::new(),
         }
     }
 
@@ -185,13 +194,27 @@ impl IngestWorld {
         self.pipeline = Some(PipelineBox(Box::new(pipeline)));
     }
 
+    /// Register a fake emitter under `name` so step definitions can look it up.
+    pub fn register_emitter(&mut self, name: impl Into<String>, emitter: Arc<FakeEmitter>) {
+        self.emitters.insert(name.into(), emitter);
+    }
+
+    /// Look up a registered fake emitter by name.
+    #[must_use]
+    pub fn emitter(&self, name: &str) -> Option<&Arc<FakeEmitter>> {
+        self.emitters.get(name)
+    }
+
     /// Borrow the installed pipeline.
     ///
     /// # Panics
     ///
     /// Panics if no pipeline has been installed via [`Self::set_pipeline`].
     #[must_use]
-    #[expect(clippy::expect_used, reason = "panics by design when called before set_pipeline")]
+    #[expect(
+        clippy::expect_used,
+        reason = "panics by design when called before set_pipeline"
+    )]
     pub fn pipeline(&self) -> &ScenarioPipeline {
         self.pipeline
             .as_ref()

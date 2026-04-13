@@ -2,8 +2,6 @@
 //!
 //! Run with: `cargo test -p hookbox-scenarios --test core_bdd`
 
-#![allow(missing_docs, reason = "test entrypoint")]
-
 use cucumber::World as _;
 
 #[tokio::main]

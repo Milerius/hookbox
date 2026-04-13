@@ -70,10 +70,7 @@ impl FakeEmitter {
     /// a panic in another thread).
     #[must_use]
     pub fn received_count(&self) -> usize {
-        self.received
-            .lock()
-            .map(|g| g.len())
-            .unwrap_or(0)
+        self.received.lock().map(|g| g.len()).unwrap_or(0)
     }
 
     /// Returns a clone of all events received so far.
@@ -83,10 +80,7 @@ impl FakeEmitter {
     /// Panics if the internal mutex is poisoned.
     #[must_use]
     pub fn received_events(&self) -> Vec<NormalizedEvent> {
-        self.received
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_default()
+        self.received.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
     /// Change the behavior at runtime (useful for "recover after N failures" tests).
@@ -97,7 +91,9 @@ impl FakeEmitter {
     pub fn set_behavior(&self, behavior: EmitterBehavior) -> Result<(), String> {
         self.behavior
             .lock()
-            .map(|mut g| { *g = behavior; })
+            .map(|mut g| {
+                *g = behavior;
+            })
             .map_err(|e| e.to_string())
     }
 }
@@ -165,10 +161,7 @@ impl Emitter for FakeEmitter {
                         .fail_start
                         .lock()
                         .map_err(|e| EmitError::Downstream(format!("mutex poisoned: {e}")))?;
-                    if guard.is_none() {
-                        *guard = Some(tokio::time::Instant::now());
-                    }
-                    guard.unwrap()
+                    *guard.get_or_insert_with(tokio::time::Instant::now)
                 };
 
                 if start.elapsed() < duration {
