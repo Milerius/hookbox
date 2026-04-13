@@ -175,6 +175,27 @@ mod tests {
         assert!(received.is_ok());
     }
 
+    /// `Box<T>` delegation must actually forward the emit call to the inner
+    /// emitter.  A mutation that replaces the body with `Ok(())` would silently
+    /// drop the event; the receiver would have nothing in its channel.
+    #[tokio::test]
+    async fn box_emitter_delegates_to_inner() {
+        let (emitter, mut rx) = ChannelEmitter::new(16);
+        let box_emitter: Box<dyn Emitter + Send + Sync> = Box::new(emitter);
+        let event = test_event();
+        let result = box_emitter.emit(&event).await;
+        assert!(result.is_ok(), "box emitter emit should succeed");
+        let received = rx.try_recv();
+        assert!(
+            received.is_ok(),
+            "box emitter must have forwarded the event to the inner ChannelEmitter"
+        );
+        if let Ok(recv_event) = received {
+            assert_eq!(recv_event.receipt_id, event.receipt_id);
+            assert_eq!(recv_event.payload_hash, event.payload_hash);
+        }
+    }
+
     #[tokio::test]
     async fn channel_emitter_sends_event() {
         let (emitter, mut receiver) = ChannelEmitter::new(8);

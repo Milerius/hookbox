@@ -369,4 +369,38 @@ mod tests {
         let verifier = StripeVerifier::new("stripe-prod".to_owned(), "secret".to_owned());
         assert_eq!(verifier.provider_name(), "stripe-prod");
     }
+
+    /// Mutant: `replace > with >= in StripeVerifier::verify` (line 113).
+    ///
+    /// The tolerance check is `now.abs_diff(timestamp) > tolerance_secs`.
+    /// - Original (`>`):  delta == tolerance is ACCEPTED (not expired).
+    /// - Mutant (`>=`):   delta == tolerance is REJECTED (expired).
+    ///
+    /// We set a custom tolerance of exactly `T` seconds and use a timestamp
+    /// exactly `T` seconds in the past.  The original must accept; the mutant rejects.
+    #[tokio::test]
+    async fn timestamp_exactly_at_tolerance_boundary_is_accepted() {
+        let secret = "whsec_test_secret";
+        let body = b"{\"type\":\"payment_intent.created\"}";
+        let tolerance_secs = 120_u64;
+        // Timestamp exactly `tolerance_secs` in the past.
+        let ts = now_secs().saturating_sub(tolerance_secs);
+        let sig = compute_stripe_sig(secret, ts, body);
+        let header_str = format!("t={ts},v1={sig}");
+        let header_val = HeaderValue::from_str(&header_str).expect("valid header value");
+
+        let verifier = StripeVerifier::new("stripe".to_owned(), secret.to_owned())
+            .with_tolerance(Duration::from_secs(tolerance_secs));
+
+        let mut headers = HeaderMap::new();
+        headers.insert("Stripe-Signature", header_val);
+
+        let result = verifier.verify(&headers, body).await;
+        // abs_diff == tolerance → NOT > tolerance → should be Verified.
+        assert_eq!(
+            result.status,
+            VerificationStatus::Verified,
+            "timestamp exactly at tolerance boundary must be accepted (uses strict >)"
+        );
+    }
 }

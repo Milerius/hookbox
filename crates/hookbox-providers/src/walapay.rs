@@ -158,6 +158,8 @@ impl SignatureVerifier for WalapayVerifier {
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "expect is acceptable in test code")]
 mod tests {
+    use std::time::Duration;
+
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD;
     use hmac::{Hmac, KeyInit, Mac};
@@ -360,5 +362,45 @@ mod tests {
     async fn provider_name_returns_configured_name() {
         let verifier = WalapayVerifier::new("walapay-prod", TEST_SECRET).expect("valid");
         assert_eq!(verifier.provider_name(), "walapay-prod");
+    }
+
+    /// Mutant: `replace > with >= in WalapayVerifier::verify` (line 117).
+    ///
+    /// The tolerance check is `now.abs_diff(timestamp) > tolerance_secs`.
+    /// - Original (`>`):  delta == tolerance is ACCEPTED.
+    /// - Mutant (`>=`):   delta == tolerance is REJECTED.
+    ///
+    /// We use a timestamp exactly `T` seconds in the past with a custom tolerance
+    /// of `T`.  The original accepts; the mutant rejects.
+    #[tokio::test]
+    async fn timestamp_exactly_at_tolerance_boundary_is_accepted() {
+        let body = b"{\"event\":\"payment.completed\"}";
+        let tolerance_secs = 120_u64;
+        let ts = now_secs().saturating_sub(tolerance_secs);
+        let msg_id = "msg_boundary_test";
+        let sig = compute_sig(TEST_KEY, msg_id, ts, body);
+        let header_sig = format!("v1,{sig}");
+
+        let verifier = WalapayVerifier::new("walapay", TEST_SECRET)
+            .expect("valid secret format")
+            .with_tolerance(Duration::from_secs(tolerance_secs));
+        let mut headers = HeaderMap::new();
+        headers.insert("svix-id", HeaderValue::from_str(msg_id).expect("valid"));
+        headers.insert(
+            "svix-timestamp",
+            HeaderValue::from_str(&ts.to_string()).expect("valid"),
+        );
+        headers.insert(
+            "svix-signature",
+            HeaderValue::from_str(&header_sig).expect("valid"),
+        );
+
+        let result = verifier.verify(&headers, body).await;
+        // abs_diff == tolerance → NOT > tolerance → should be Verified.
+        assert_eq!(
+            result.status,
+            VerificationStatus::Verified,
+            "timestamp exactly at tolerance boundary must be accepted (uses strict >)"
+        );
     }
 }

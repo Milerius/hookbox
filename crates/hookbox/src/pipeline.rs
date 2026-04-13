@@ -889,6 +889,76 @@ mod tests {
         );
     }
 
+    /// `emitter_names()` must return a slice with exactly the names that were
+    /// provided to the builder.  Mutations that replace the body with an empty
+    /// slice or a slice of dummy strings are distinguished by checking both
+    /// the length and the exact contents.
+    #[tokio::test]
+    async fn emitter_names_returns_configured_names() {
+        let names = vec!["alpha".to_owned(), "beta".to_owned()];
+        let pipeline = HookboxPipeline::builder()
+            .storage(MemoryStorage::new())
+            .dedupe(InMemoryRecentDedupe::new(10))
+            .emitter_names(names.clone())
+            .build();
+
+        let returned = pipeline.emitter_names();
+        assert_eq!(returned.len(), 2, "should return exactly 2 emitter names");
+        assert_eq!(returned[0], "alpha");
+        assert_eq!(returned[1], "beta");
+        assert_eq!(returned, names.as_slice());
+    }
+
+    /// `headers_to_json` must produce a JSON object whose fields match the
+    /// header map.  The mutation `replace headers_to_json -> … with Default::default()`
+    /// returns `serde_json::Value::Null` (the default), which is not an object;
+    /// asserting `.is_object()` and specific field values catches it.
+    #[test]
+    fn headers_to_json_produces_correct_object() {
+        use http::header::{CONTENT_TYPE, HeaderName};
+        let mut map = http::HeaderMap::new();
+        map.insert(CONTENT_TYPE, "application/json".parse().unwrap());
+        map.insert(
+            HeaderName::from_static("x-custom-header"),
+            "my-value".parse().unwrap(),
+        );
+
+        let value = headers_to_json(&map);
+
+        assert!(
+            value.is_object(),
+            "headers_to_json must return a JSON object"
+        );
+        let obj = value.as_object().unwrap();
+        assert_eq!(
+            obj.get("content-type").and_then(|v| v.as_str()),
+            Some("application/json"),
+            "content-type field must match"
+        );
+        assert_eq!(
+            obj.get("x-custom-header").and_then(|v| v.as_str()),
+            Some("my-value"),
+            "custom header field must match"
+        );
+    }
+
+    /// `headers_to_json` with an empty map must return an empty JSON object,
+    /// not Null or any other value.
+    #[test]
+    fn headers_to_json_empty_map_returns_empty_object() {
+        let map = http::HeaderMap::new();
+        let value = headers_to_json(&map);
+        assert!(
+            value.is_object(),
+            "empty map must still produce a JSON object"
+        );
+        assert_eq!(
+            value.as_object().unwrap().len(),
+            0,
+            "object from empty map must have no keys"
+        );
+    }
+
     /// Backends that do not override `store_with_deliveries` must reject any
     /// call that carries a non-empty `emitter_names` slice. Silently falling
     /// back to `store()` in that case would drop fan-out rows and make newly
