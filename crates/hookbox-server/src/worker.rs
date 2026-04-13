@@ -836,4 +836,83 @@ mod tests {
         assert_eq!(derive_status(10, Some(recent)), HealthStatus::Unhealthy);
         assert_eq!(derive_status(99, None), HealthStatus::Unhealthy);
     }
+
+    /// Drive every [`DeliveryStorage`] method the worker's main loop never
+    /// calls against the in-memory stub so the trait impls are covered as a
+    /// behavioural unit. The admin API and replay paths call these in
+    /// production; this test pins the test-double shape so later additions
+    /// can't silently break the mock without failing compilation or tests.
+    #[tokio::test]
+    async fn mem_delivery_storage_stubs_are_callable() {
+        let delivery_id = Uuid::new_v4();
+        let receipt_id = Uuid::new_v4();
+        let storage = MemDeliveryStorage::with_in_flight(delivery_id, receipt_id, 0);
+
+        // Claim/reclaim stubs return empty / zero but their bodies must still run.
+        assert!(
+            storage
+                .claim_pending("anything", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            storage
+                .reclaim_expired("anything", Duration::from_secs(30))
+                .await
+                .unwrap(),
+            0
+        );
+
+        // Counters always report zero in the fake, but cover each body.
+        assert_eq!(storage.count_dlq("anything").await.unwrap(), 0);
+        assert_eq!(storage.count_pending("anything").await.unwrap(), 0);
+        assert_eq!(storage.count_in_flight("anything").await.unwrap(), 0);
+
+        // insert_replay returns a fresh delivery id; insert_replays hits the
+        // default trait implementation which loops over insert_replay.
+        let replay = storage
+            .insert_replay(ReceiptId(receipt_id), "anything")
+            .await
+            .unwrap();
+        assert_ne!(replay.0, delivery_id, "replay should mint a new id");
+        let batch = storage
+            .insert_replays(ReceiptId(receipt_id), &["a".to_owned(), "b".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(batch.len(), 2);
+
+        // get_delivery returns the seeded row...
+        let found = storage
+            .get_delivery(DeliveryId(delivery_id))
+            .await
+            .unwrap()
+            .expect("seeded delivery must be present");
+        assert_eq!(found.0.delivery_id.0, delivery_id);
+        // ...and None for an unknown id.
+        assert!(
+            storage
+                .get_delivery(DeliveryId(Uuid::new_v4()))
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // The remaining read stubs return empty vecs but their bodies must run.
+        assert!(
+            storage
+                .get_deliveries_for_receipt(ReceiptId(receipt_id))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            storage
+                .list_dlq(Some("anything"), 10, 0)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(storage.list_dlq(None, 10, 0).await.unwrap().is_empty());
+    }
 }

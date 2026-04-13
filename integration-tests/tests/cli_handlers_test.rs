@@ -463,6 +463,205 @@ async fn replay_failed_replays_emit_failed_receipts() {
         .expect("replay failed should succeed");
 }
 
+/// Write a hookbox config with an explicit list of channel-type emitter
+/// names. Used by the replay tests that need to seed deliveries for one
+/// set of emitters and then ensure the handler walks the historical set.
+fn write_test_config_with_emitters(emitters: &[&str]) -> String {
+    use std::fmt::Write as _;
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("hookbox-cli-test-{}.toml", Uuid::new_v4()));
+    let mut body = String::from(
+        "
+[database]
+url = \"postgres://localhost/hookbox_test\"
+",
+    );
+    for name in emitters {
+        write!(
+            body,
+            "\n[[emitters]]\nname = \"{name}\"\ntype = \"channel\"\n"
+        )
+        .expect("write to String never fails");
+    }
+    std::fs::write(&path, body).expect("write test config");
+    path.to_string_lossy().into_owned()
+}
+
+/// `--emitter` names an emitter that is not present in the config file:
+/// the handler must refuse and produce an error whose message mentions
+/// both the requested emitter name and the receipt id.
+#[tokio::test]
+async fn replay_single_explicit_emitter_not_in_config_errors() {
+    let pool = setup_pool().await;
+    let receipt_id = ingest_receipt(&pool, "test-provider").await;
+
+    let cmd = replay::ReplayCommand::Id {
+        database_url: database_url(),
+        config: write_test_config(),
+        receipt_id,
+        emitter: Some("ghost-emitter".to_owned()),
+    };
+    let err = replay::run(cmd)
+        .await
+        .expect_err("stale --emitter must error");
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("ghost-emitter") && rendered.contains(&receipt_id.to_string()),
+        "unexpected error message: {rendered}"
+    );
+}
+
+/// Without `--emitter`, the handler infers the emitter set from
+/// historical delivery rows. If any historical emitter is no longer in
+/// the config file, it must refuse rather than silently skip them.
+#[tokio::test]
+async fn replay_single_historical_emitters_stale_errors() {
+    let pool = setup_pool().await;
+    let storage = PostgresStorage::new(pool.clone());
+    let receipt_id = Uuid::new_v4();
+    let now = chrono::Utc::now();
+    let receipt = hookbox::types::WebhookReceipt {
+        receipt_id: ReceiptId(receipt_id),
+        provider_name: "test-provider".to_owned(),
+        provider_event_id: None,
+        external_reference: None,
+        dedupe_key: format!("replay-stale:{receipt_id}"),
+        payload_hash: format!("sha256:{receipt_id}"),
+        raw_body: b"{}".to_vec(),
+        parsed_payload: None,
+        raw_headers: serde_json::json!({}),
+        normalized_event_type: None,
+        verification_status: hookbox::state::VerificationStatus::Skipped,
+        verification_reason: None,
+        processing_state: ProcessingState::Stored,
+        emit_count: 0,
+        last_error: None,
+        received_at: now,
+        processed_at: None,
+        metadata: serde_json::json!({}),
+    };
+    storage
+        .store_with_deliveries(&receipt, &["legacy-emitter".to_owned()])
+        .await
+        .expect("seed receipt + legacy delivery");
+
+    // Config only knows "test-emitter" — the historical "legacy-emitter"
+    // row is stale and the handler must refuse the replay.
+    let cmd = replay::ReplayCommand::Id {
+        database_url: database_url(),
+        config: write_test_config(),
+        receipt_id,
+        emitter: None,
+    };
+    let err = replay::run(cmd)
+        .await
+        .expect_err("stale historical emitter must error");
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("legacy-emitter"),
+        "unexpected error message: {rendered}"
+    );
+}
+
+/// Without `--emitter` and with every historical emitter still
+/// configured, the handler must fan out one new pending delivery row per
+/// historical emitter via `insert_replays`.
+#[tokio::test]
+async fn replay_single_fans_out_across_historical_emitters() {
+    let pool = setup_pool().await;
+    let storage = PostgresStorage::new(pool.clone());
+    let receipt_id = Uuid::new_v4();
+    let now = chrono::Utc::now();
+    let receipt = hookbox::types::WebhookReceipt {
+        receipt_id: ReceiptId(receipt_id),
+        provider_name: "test-provider".to_owned(),
+        provider_event_id: None,
+        external_reference: None,
+        dedupe_key: format!("replay-fanout:{receipt_id}"),
+        payload_hash: format!("sha256:{receipt_id}"),
+        raw_body: b"{}".to_vec(),
+        parsed_payload: None,
+        raw_headers: serde_json::json!({}),
+        normalized_event_type: None,
+        verification_status: hookbox::state::VerificationStatus::Skipped,
+        verification_reason: None,
+        processing_state: ProcessingState::Stored,
+        emit_count: 0,
+        last_error: None,
+        received_at: now,
+        processed_at: None,
+        metadata: serde_json::json!({}),
+    };
+    storage
+        .store_with_deliveries(&receipt, &["emitter-a".to_owned(), "emitter-b".to_owned()])
+        .await
+        .expect("seed receipt + two deliveries");
+
+    let config = write_test_config_with_emitters(&["emitter-a", "emitter-b"]);
+    let cmd = replay::ReplayCommand::Id {
+        database_url: database_url(),
+        config,
+        receipt_id,
+        emitter: None,
+    };
+    replay::run(cmd)
+        .await
+        .expect("fan-out replay should succeed");
+
+    // After replay, each historical emitter should have 2 rows (the
+    // original + the freshly inserted replay).
+    let deliveries = storage
+        .get_deliveries_for_receipt(ReceiptId(receipt_id))
+        .await
+        .expect("get_deliveries_for_receipt");
+    let a_count = deliveries
+        .iter()
+        .filter(|d| d.emitter_name == "emitter-a")
+        .count();
+    let b_count = deliveries
+        .iter()
+        .filter(|d| d.emitter_name == "emitter-b")
+        .count();
+    assert_eq!(a_count, 2, "expected 2 rows for emitter-a, got {a_count}");
+    assert_eq!(b_count, 2, "expected 2 rows for emitter-b, got {b_count}");
+}
+
+/// Configs that use the legacy singular `[emitter]` block still parse but
+/// emit a deprecation warning. `run_replay_id` writes each warning to
+/// stderr before continuing — this test pins that the warning-write path
+/// is exercised without blowing up.
+#[tokio::test]
+async fn replay_single_explicit_emitter_writes_legacy_warning() {
+    let pool = setup_pool().await;
+    let receipt_id = ingest_receipt(&pool, "test-provider").await;
+
+    // Legacy `[emitter]` singular form normalises to a single emitter
+    // named "default" and produces a deprecation warning.
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("hookbox-cli-legacy-{}.toml", Uuid::new_v4()));
+    let body = r#"
+[database]
+url = "postgres://localhost/hookbox_test"
+
+[emitter]
+type = "channel"
+"#;
+    std::fs::write(&path, body).expect("write legacy config");
+    let config = path.to_string_lossy().into_owned();
+
+    let cmd = replay::ReplayCommand::Id {
+        database_url: database_url(),
+        config: config.clone(),
+        receipt_id,
+        emitter: Some("default".to_owned()),
+    };
+    replay::run(cmd)
+        .await
+        .expect("legacy-config replay should still succeed");
+
+    std::fs::remove_file(&path).ok();
+}
+
 /// Ingest a receipt with a specific `external_reference`.
 async fn ingest_receipt_with_ref(pool: &PgPool, provider: &str, external_ref: &str) -> Uuid {
     let storage = PostgresStorage::new(pool.clone());

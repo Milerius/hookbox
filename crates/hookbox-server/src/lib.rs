@@ -7,6 +7,7 @@ pub mod bootstrap;
 pub mod config;
 pub mod emitter_factory;
 pub mod routes;
+pub mod serve;
 pub mod shutdown;
 pub mod worker;
 
