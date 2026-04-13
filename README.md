@@ -27,22 +27,30 @@ Hookbox provides that boundary so your application can focus on business logic i
 
 ## How it works
 
-Every incoming webhook passes through a five-stage pipeline:
+Every incoming webhook passes through a four-stage ingest pipeline and is then
+fanned out to one background worker per configured emitter:
 
 ```text
 Provider webhook
-    → Receive (assign receipt ID)
-    → Verify (signature check via provider adapter)
-    → Dedupe (fast in-memory path + authoritative Postgres)
-    → Store durably (ACK provider only after this succeeds)
-    → Emit downstream (callback, channel, or message broker)
+    → Receive  (assign receipt ID)
+    → Verify   (signature check via provider adapter)
+    → Dedupe   (fast in-memory path + authoritative Postgres)
+    → Store    (receipt + one pending delivery row per [[emitters]] entry,
+                all in a single transaction; ACK provider on success)
+
+                  │
+                  ▼
+         EmitterWorker(s): claim pending delivery rows,
+         dispatch to Kafka / NATS / SQS / Redis, retry per
+         the emitter's policy, and DLQ on exhausted attempts.
 ```
 
 A few important rules:
 
 - **verification failure** → receipt is stored, but not forwarded
 - **duplicate receipt** → stored and marked, but not processed twice
-- **emit failure** → receipt remains accepted and enters retry / DLQ flow
+- **fan-out is atomic** → the receipt and every pending delivery row commit in one transaction; no partial ACKs
+- **emit failure** → only the affected delivery is retried / DLQ-ed; the receipt stays accepted and sibling emitters are unaffected
 - **raw body is preserved immutably** → replay and re-verification stay possible
 
 The result is a durable, replayable, auditable inbox between external webhook traffic and your internal systems.
@@ -142,8 +150,10 @@ topic = "events"
 - **Dead-letter queue support**  
   Failed emissions are captured, inspectable, and retryable.
 
-- **Retry worker**  
-  Background retries with configurable interval and max attempts.
+- **Per-emitter retry workers**  
+  Every `[[emitters]]` entry runs its own background worker with its own retry
+  policy (max attempts, exponential backoff, jitter). Exhausted attempts land
+  the delivery in the DLQ for that emitter only, leaving the rest untouched.
 
 - **Emitter fan-out**  
   Configure one or many downstream emitters with `[[emitters]]`. Each entry is an independently retried delivery row per receipt — partial failures don't block healthy emitters. Built-in channel emitter plus Kafka, NATS, SQS, and Redis Streams adapters for production message broker integration.
@@ -181,7 +191,8 @@ hookbox/
 │   ├── hookbox-emitter-nats/   # NATS emitter adapter (async-nats)
 │   ├── hookbox-emitter-sqs/    # AWS SQS emitter adapter
 │   └── hookbox-emitter-redis/  # Redis Streams emitter adapter (XADD)
-├── integration-tests/
+├── scenario-tests/             # Cucumber BDD suite (core + server feature gate)
+├── integration-tests/          # Full-stack Postgres integration tests
 ├── examples/
 └── docs/
 ```
@@ -264,4 +275,4 @@ Early development. The design spec is in [`docs/`](docs/).
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE) at your option.
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT) at your option.

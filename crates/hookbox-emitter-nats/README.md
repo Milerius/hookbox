@@ -9,17 +9,29 @@ Each event is serialized as JSON and published to the configured subject.
 In `hookbox.toml`:
 
 ```toml
-[emitter]
+[[emitters]]
+name = "nats"                  # used as the `emitter` label on metrics and /readyz
 type = "nats"
+poll_interval_seconds = 1
+concurrency = 8
 
-[emitter.nats]
+[emitters.nats]
 url = "nats://localhost:4222"
 subject = "hookbox.events"
+
+[emitters.retry]
+max_attempts = 8
+initial_backoff_seconds = 2
+max_backoff_seconds = 600
+backoff_multiplier = 2.0
+jitter = 0.2
 ```
+
+Multiple `[[emitters]]` blocks with `type = "nats"` are allowed — each runs an independent worker with its own `name`, poll interval, concurrency, and retry policy.
 
 ## Usage
 
-The adapter is wired automatically by `hookbox-server` when `emitter.type = "nats"` is set in the configuration. No application code changes are needed.
+The adapter is wired automatically by `hookbox-server` for every `[[emitters]]` entry with `type = "nats"`. No application code changes are needed.
 
 For embedded usage:
 

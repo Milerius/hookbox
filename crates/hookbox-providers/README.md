@@ -61,24 +61,32 @@ All signature comparisons use **constant-time comparison** via the `subtle` crat
 ## Usage
 
 ```rust
-use hookbox_providers::{StripeVerifier, GenericHmacVerifier};
+use std::time::Duration;
+use hookbox_providers::{GenericHmacVerifier, StripeVerifier};
 
 // Stripe: verifies Stripe-Signature header with timestamp tolerance
 let stripe = StripeVerifier::new("stripe".to_owned(), stripe_webhook_secret)
     .with_tolerance(Duration::from_secs(300));
 
-// Generic HMAC: works with most providers
-let bvnk = GenericHmacVerifier::builder("bvnk")
-    .header("X-Webhook-Signature")
-    .algorithm(HmacAlgorithm::Sha256)
-    .secret(bvnk_secret)
-    .build();
+// Generic HMAC-SHA256 over the raw body, signature read from a custom header
+let custom = GenericHmacVerifier::new(
+    "my-provider",
+    custom_secret_bytes,
+    "X-Webhook-Signature".to_owned(),
+);
 
-// Register with pipeline
-pipeline.builder()
+// Register with the pipeline. HookboxPipeline accepts one verifier; in the
+// server binary, providers are multiplexed by matching the URL path segment
+// against the provider name the verifier reports.
+let pipeline = HookboxPipeline::builder()
+    .storage(storage)
+    .dedupe(dedupe)
+    .emitter_names(vec!["kafka".to_owned()])
     .verifier(stripe)
-    .verifier(bvnk);
+    .build();
 ```
+
+`hookbox-server` builds its own provider router from `[providers.*]` entries in `hookbox.toml` — use embedded construction only when you need to drive the pipeline without the server binary.
 
 ## Adding a New Provider
 

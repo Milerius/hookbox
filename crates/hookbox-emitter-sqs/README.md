@@ -9,31 +9,45 @@ Supports both standard and FIFO queues. When FIFO mode is enabled, the emitter s
 In `hookbox.toml`:
 
 ```toml
-[emitter]
+[[emitters]]
+name = "sqs"                 # used as the `emitter` label on metrics and /readyz
 type = "sqs"
+poll_interval_seconds = 1
+concurrency = 16
 
-[emitter.sqs]
+[emitters.sqs]
 queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/hookbox-events"
-region = "us-east-1"       # optional, uses default AWS region chain if omitted
-fifo = false               # optional, default: false
-endpoint_url = "..."       # optional, override for LocalStack or SQS-compatible services
+region = "us-east-1"         # optional, uses default AWS region chain if omitted
+fifo = false                 # optional, default: false
+endpoint_url = "..."         # optional, override for LocalStack or SQS-compatible services
+
+[emitters.retry]
+max_attempts = 5
+initial_backoff_seconds = 5
+max_backoff_seconds = 300
+backoff_multiplier = 2.0
+jitter = 0.1
 ```
 
 For FIFO queues:
 
 ```toml
-[emitter]
+[[emitters]]
+name = "sqs-fifo"
 type = "sqs"
+concurrency = 1              # FIFO is ordered — keep concurrency low
 
-[emitter.sqs]
+[emitters.sqs]
 queue_url = "https://sqs.us-east-1.amazonaws.com/123456789012/hookbox-events.fifo"
 region = "us-east-1"
 fifo = true
 ```
 
+Multiple `[[emitters]]` blocks with `type = "sqs"` are allowed — each runs an independent worker with its own `name`, poll interval, concurrency, and retry policy.
+
 ## Usage
 
-The adapter is wired automatically by `hookbox-server` when `emitter.type = "sqs"` is set in the configuration. No application code changes are needed.
+The adapter is wired automatically by `hookbox-server` for every `[[emitters]]` entry with `type = "sqs"`. No application code changes are needed.
 
 For embedded usage:
 
