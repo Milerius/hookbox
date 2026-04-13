@@ -11,7 +11,7 @@ pub enum StorageError {
     /// Serialization/deserialization failure.
     #[error("serialization error: {0}")]
     Serialization(String),
-    /// The default [`Storage::store_with_deliveries`] implementation was
+    /// The default [`crate::traits::Storage::store_with_deliveries`] implementation was
     /// invoked with a non-empty `emitter_names` slice, but this backend did
     /// not override it. Production backends must override the method to
     /// transactionally insert one delivery row per emitter; the default impl
