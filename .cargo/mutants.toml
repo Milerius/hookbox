@@ -1,6 +1,79 @@
-# Mutation testing configuration
-# Exclude non-application crates from mutation testing.
-# cargo-mutants config uses top-level keys (no [filter] section).
+# Mutation testing configuration.
+#
+# Scope mutation testing to the two crates that contain pure business logic
+# without external-service dependencies:
+#
+#   - hookbox            core pipeline, state machine, transitions
+#   - hookbox-providers  signature verifiers
+#
+# Other crates are excluded because mutation testing against them is either
+# meaningless or unreachable without integration infrastructure:
+#
+#   - hookbox-cli                application code, tested via CLI smoke tests
+#   - hookbox-postgres           requires Postgres testcontainer
+#   - hookbox-server             requires Postgres + Redis testcontainer
+#   - hookbox-emitter-*          require Kafka/NATS/Redis/SQS testcontainers
+#   - hookbox-verify             IS the test crate (Bolero/Kani)
+#   - hookbox-scenarios          IS the BDD test crate
+#   - hookbox-integration-tests  IS the integration test crate
+#
+# Config uses top-level keys (no [filter] section).
+examine_globs = [
+    "crates/hookbox/src/**/*.rs",
+    "crates/hookbox-providers/src/**/*.rs",
+]
+
+# Exclude log-only / equivalent mutants that cannot be caught by observable
+# behaviour without intrusive test plumbing or because the mutation is
+# semantically equivalent for all valid inputs.
+
+# pipeline.rs:194 — `replace == with != in HookboxPipeline<S,D>::ingest`
+#   Context: `if advisory == DedupeDecision::Duplicate { tracing::info!(…); }`
+#   The condition gates a single `tracing::info!` call.  The pipeline proceeds
+#   identically regardless of the outcome — this is a pure logging side-effect.
+#   Capturing structured tracing output in unit tests would require wiring up a
+#   `tracing-subscriber` test layer (not present in this crate) and asserting on
+#   the emitted span fields.  The observable return value of `ingest()` is
+#   identical whether the log fires or not, making this a true equivalent mutant
+#   from a behaviour standpoint.
+
+# transitions.rs:158:47 — `replace || with && in compute_backoff`
+#   Context: `if !policy.backoff_multiplier.is_finite() || policy.backoff_multiplier <= 0.0`
+#   The mutation changes `||` to `&&`.  In debug builds, the `debug_assert!` above
+#   fires first for any input that would distinguish the two operators (NaN,
+#   negative, or infinite multiplier), so the debug_assert panic is identical for
+#   both the original and the mutant — the test cannot distinguish them.  In release
+#   builds the mutant would fall through to Duration::from_secs_f64(NaN) and panic,
+#   but cargo-mutants runs with `--profile dev` (debug), meaning debug_assert is
+#   active and masks the mutation. The existing `invalid_backoff_multiplier_does_not_panic_in_release`
+#   test covers this guard in release mode; the mutation is structurally tested but
+#   not distinguishable by cargo-mutants in the dev profile it uses.
+
+# transitions.rs:171:42 — `replace > with >= in compute_backoff`
+#   Context: `if policy.jitter > 0.0`
+#   This mutation is semantically equivalent for all valid inputs:
+#   - With jitter=0.0:  the if branch computes `mul_add(2*0.0, -0.0)` = 0.0,
+#     so jitter_factor = 1.0+0.0 = 1.0 regardless of which branch is taken.
+#     The result is identical for original and mutant.
+#   - With jitter>0.0:  both original and mutant take the if branch (same code path).
+#   There is no input in [0.0, 1.0] for which the original and mutant produce
+#   observably different results.  This is a provably equivalent mutation.
+
+# transitions.rs:172:13 — `replace + with - in compute_backoff`
+#   Context: `1.0 + fastrand::f64().mul_add(2.0 * policy.jitter, -policy.jitter)`
+#   The mutation changes `+` to `-`.  fastrand::f64() returns f in [0,1).
+#   mul_add gives f*2j - j ∈ [-j, +j).  Both `1 + x` and `1 - x` for a
+#   uniformly random x in [-j,+j) produce the same distribution (the distribution
+#   is symmetric around 1.0 in both cases).  The two expressions differ only for
+#   a specific concrete random sample, and cargo-mutants does not control the PRNG
+#   seed.  Without deterministic seeding of fastrand across the test/mutant boundary
+#   this mutation cannot be reliably distinguished from the original by any
+#   distribution-agnostic test.  The functional correctness of positive jitter is
+#   verified by `jitter_within_bounds` and `jittered_delay_never_exceeds_max_backoff`;
+#   the arithmetic sign mutation is an equivalent-in-distribution mutant.
 exclude_re = [
-    "hookbox-cli::.*",
+    "pipeline\\.rs:194:21: replace == with != in HookboxPipeline.*::ingest",
+    "transitions\\.rs:158:47: replace \\|\\| with && in compute_backoff",
+    "transitions\\.rs:171:42: replace > with >= in compute_backoff",
+    "transitions\\.rs:172:13: replace \\+ with - in compute_backoff",
 ]
