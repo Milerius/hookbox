@@ -93,6 +93,27 @@ fn build_test_router(pool: sqlx::PgPool) -> axum::Router {
     build_router(state, 1_048_576)
 }
 
+/// Variant that installs an admin bearer token, used to exercise the
+/// auth-failure branches of `check_auth`.
+fn build_test_router_with_token(pool: sqlx::PgPool, token: &str) -> axum::Router {
+    let storage = PostgresStorage::new(pool.clone());
+    let pipeline = HookboxPipeline::builder()
+        .storage(storage)
+        .dedupe(InMemoryRecentDedupe::new(100))
+        .emitter_names(vec!["a".to_owned()])
+        .build();
+
+    let state = Arc::new(AppState {
+        pipeline,
+        pool: Some(pool),
+        admin_token: Some(token.to_owned()),
+        prometheus: None,
+        emitter_health: BTreeMap::new(),
+    });
+
+    build_router(state, 1_048_576)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
@@ -640,4 +661,165 @@ async fn get_dlq_with_emitter_filter_returns_only_matching(pool: sqlx::PgPool) {
         receipt_id.to_string(),
         "receipt must be embedded"
     );
+}
+
+// ── Auth failure branches ────────────────────────────────────────────────────
+
+/// `GET /api/deliveries/:id` returns 401 when an admin token is configured
+/// but the client presents the wrong one. Covers the `check_auth` early-return
+/// branch in `get_delivery`.
+#[sqlx::test(migrations = "../crates/hookbox-postgres/migrations")]
+async fn get_delivery_wrong_token_returns_401(pool: sqlx::PgPool) {
+    let app = build_test_router_with_token(pool, "correct-token");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/deliveries/{}", Uuid::new_v4()))
+                .header("authorization", "Bearer wrong-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// `POST /api/deliveries/:id/replay` returns 401 when the admin token is
+/// missing. Covers the `check_auth` early-return branch in `replay_delivery`
+/// plus the "missing authorization header" branch of `check_auth`.
+#[sqlx::test(migrations = "../crates/hookbox-postgres/migrations")]
+async fn replay_delivery_missing_auth_header_returns_401(pool: sqlx::PgPool) {
+    let app = build_test_router_with_token(pool, "correct-token");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/deliveries/{}/replay", Uuid::new_v4()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// `GET /api/emitters` returns 401 when the authorization header contains
+/// bytes that are not valid UTF-8. Covers the `check_auth` early-return branch
+/// in `list_emitters` plus the "invalid authorization header" branch of
+/// `check_auth` (the `auth.to_str()` failure path).
+#[sqlx::test(migrations = "../crates/hookbox-postgres/migrations")]
+async fn list_emitters_non_ascii_auth_header_returns_401(pool: sqlx::PgPool) {
+    let app = build_test_router_with_token(pool, "correct-token");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/emitters")
+                .header("authorization", &[0xFFu8, 0xFEu8][..])
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ── Handler-level validation branches ────────────────────────────────────────
+
+/// `POST /api/receipts/:id/replay?emitter=bogus` returns 400 when the named
+/// emitter is not in the configured set. Covers the unconfigured-emitter
+/// rejection branch in `replay_receipt`.
+#[sqlx::test(migrations = "../crates/hookbox-postgres/migrations")]
+async fn replay_receipt_rejects_unconfigured_emitter(pool: sqlx::PgPool) {
+    let receipt_id = Uuid::new_v4();
+    seed_receipt(&pool, receipt_id).await;
+
+    // `build_test_router_with_token` configures emitter "a" only; ask to
+    // replay into "bogus" to trip the 400 path. Provide the correct token so
+    // we reach the emitter-set check instead of bailing out on auth.
+    let app = build_test_router_with_token(pool, "t");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/receipts/{receipt_id}/replay?emitter=bogus"))
+                .header("authorization", "Bearer t")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not currently configured"),
+        "expected 'not currently configured' in error, got: {body}"
+    );
+}
+
+/// `POST /api/deliveries/:id/replay` returns 404 when the delivery id does
+/// not exist in the database. Covers the `Ok(None)` branch in
+/// `replay_delivery`.
+#[sqlx::test(migrations = "../crates/hookbox-postgres/migrations")]
+async fn replay_delivery_unknown_id_returns_404(pool: sqlx::PgPool) {
+    let app = build_test_router(pool);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/deliveries/{}/replay", Uuid::new_v4()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = body_json(response).await;
+    assert_eq!(
+        body["error"].as_str(),
+        Some("delivery not found"),
+        "expected 'delivery not found' message"
+    );
+}
+
+/// `POST /api/receipts/:id/replay` returns 404 when the receipt does not
+/// exist. Covers the `Ok(None)` branch in `replay_receipt`.
+#[sqlx::test(migrations = "../crates/hookbox-postgres/migrations")]
+async fn replay_receipt_unknown_id_returns_404(pool: sqlx::PgPool) {
+    let app = build_test_router(pool);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/receipts/{}/replay", Uuid::new_v4()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = body_json(response).await;
+    assert_eq!(body["error"].as_str(), Some("receipt not found"));
+}
+
+/// `GET /api/receipts/:id` returns 404 for an unknown id. Covers the
+/// `Ok(None)` branch in `get_receipt`.
+#[sqlx::test(migrations = "../crates/hookbox-postgres/migrations")]
+async fn get_receipt_unknown_id_returns_404(pool: sqlx::PgPool) {
+    let app = build_test_router(pool);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/receipts/{}", Uuid::new_v4()))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
