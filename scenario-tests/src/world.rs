@@ -754,23 +754,70 @@ pub use server_world::ServerWorld;
 mod server_world {
     use cucumber::World;
 
+    use crate::server_harness::TestServer;
+
     /// Cucumber [`World`] for full-stack HTTP BDD scenarios.
     ///
-    /// Manages a live `hookbox-server` instance backed by a testcontainer
+    /// Wraps a live `hookbox-server` instance backed by a testcontainer
     /// Postgres database and a `reqwest` HTTP client for exercising the
-    /// `/webhook/:provider` endpoint end-to-end.
+    /// `/webhooks/{provider}` endpoint end-to-end.
     #[derive(Debug, Default, World)]
     #[world(init = Self::new)]
     pub struct ServerWorld {
-        /// Base URL of the running server (e.g. `http://127.0.0.1:PORT`).
-        pub base_url: Option<String>,
+        server: Option<TestServer>,
+        http: reqwest::Client,
+        /// HTTP status of the last response.
+        pub last_status: Option<u16>,
+        /// Body of the last response.
+        pub last_body: Option<String>,
     }
 
     impl ServerWorld {
         /// Create a fresh [`ServerWorld`].
         #[must_use]
         pub fn new() -> Self {
-            Self { base_url: None }
+            Self {
+                server: None,
+                http: reqwest::Client::new(),
+                last_status: None,
+                last_body: None,
+            }
+        }
+
+        /// Install the running test server.
+        pub fn install(&mut self, server: TestServer) {
+            self.server = Some(server);
+        }
+
+        /// Borrow the running test server.
+        ///
+        /// # Panics
+        ///
+        /// Panics if no server has been installed yet — steps must always
+        /// run `given a running hookbox server ...` before any `when`.
+        #[must_use]
+        #[expect(
+            clippy::expect_used,
+            reason = "step precondition; panic surfaces as scenario failure"
+        )]
+        pub fn server(&self) -> &TestServer {
+            self.server.as_ref().expect("server not installed")
+        }
+
+        /// Base URL of the running server.
+        ///
+        /// # Panics
+        ///
+        /// Panics if no server has been installed.
+        #[must_use]
+        pub fn base_url(&self) -> &str {
+            &self.server().base_url
+        }
+
+        /// Shared `reqwest` client.
+        #[must_use]
+        pub fn client(&self) -> &reqwest::Client {
+            &self.http
         }
     }
 }

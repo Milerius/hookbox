@@ -73,6 +73,13 @@ impl FakeEmitter {
         self.received.lock().map(|g| g.len()).unwrap_or(0)
     }
 
+    /// Returns the total number of `emit` attempts recorded (successes and
+    /// failures combined).
+    #[must_use]
+    pub fn attempt_count(&self) -> u32 {
+        self.attempt_count.lock().map(|g| *g).unwrap_or(0)
+    }
+
     /// Returns a clone of all events received so far.
     ///
     /// # Panics

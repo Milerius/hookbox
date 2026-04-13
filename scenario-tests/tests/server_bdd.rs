@@ -7,7 +7,8 @@
 #[tokio::main]
 async fn main() {
     use cucumber::World as _;
-    hookbox_scenarios::world::ServerWorld::run("scenario-tests/features/server").await;
+    let features = concat!(env!("CARGO_MANIFEST_DIR"), "/features/server");
+    hookbox_scenarios::world::ServerWorld::run(features).await;
 }
 
 #[cfg(not(feature = "bdd-server"))]

@@ -12,15 +12,22 @@ workspace = true
 default = []
 bdd-server = [
     "dep:testcontainers",
+    "dep:testcontainers-modules",
     "dep:reqwest",
     "dep:hookbox-server",
     "dep:hookbox-postgres",
+    "dep:hookbox-providers",
+    "dep:sqlx",
+    "dep:arc-swap",
+    "dep:axum",
+    "dep:futures",
 ]
 
 [dependencies]
 hookbox.workspace = true
 hookbox-server = { workspace = true, optional = true }
 hookbox-postgres = { workspace = true, optional = true }
+anyhow.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 chrono.workspace = true
@@ -31,7 +38,13 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "ti
 tracing.workspace = true
 uuid.workspace = true
 testcontainers = { workspace = true, optional = true }
+testcontainers-modules = { workspace = true, optional = true, features = ["postgres"] }
 reqwest = { workspace = true, optional = true }
+hookbox-providers = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
+arc-swap = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 
 [[test]]
 name = "core_bdd"
