@@ -338,6 +338,17 @@ where
         self
     }
 
+    /// Register an already-boxed verifier.
+    ///
+    /// Useful when a caller builds a heterogeneous vector of verifiers from
+    /// runtime configuration and cannot monomorphise over the concrete types
+    /// at each call site (e.g. the server bootstrap path).
+    #[must_use]
+    pub fn verifier_boxed(mut self, v: Box<dyn SignatureVerifier>) -> Self {
+        self.verifiers.insert(v.provider_name().to_owned(), v);
+        self
+    }
+
     /// Build the pipeline.
     ///
     /// # Panics
