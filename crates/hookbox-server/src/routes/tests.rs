@@ -57,6 +57,18 @@ impl Storage for MemoryStorage {
         Ok(StoreResult::Stored)
     }
 
+    // Override the default `store_with_deliveries` so the in-memory test
+    // double accepts non-empty `emitter_names` (needed to exercise the
+    // fan-out replay path in routes tests). Delivery rows are tracked by the
+    // `DeliveryStorage` impl, so here we just persist the receipt.
+    async fn store_with_deliveries(
+        &self,
+        receipt: &WebhookReceipt,
+        _emitter_names: &[String],
+    ) -> Result<StoreResult, StorageError> {
+        self.store(receipt).await
+    }
+
     async fn get(&self, id: Uuid) -> Result<Option<WebhookReceipt>, StorageError> {
         let receipts = self
             .receipts
@@ -622,9 +634,68 @@ async fn replay_receipt_returns_200() {
     // emitters are configured in the test pipeline).
     assert_eq!(replay_resp.status(), StatusCode::ACCEPTED);
     let replay_json = body_json(replay_resp).await;
-    assert!(
-        replay_json["delivery_ids"].is_array(),
-        "replay_receipt must return delivery_ids array"
+    assert_eq!(
+        replay_json["delivery_ids"],
+        serde_json::json!([]),
+        "replay must not enqueue deliveries when no emitters are configured",
+    );
+}
+
+#[tokio::test]
+async fn replay_receipt_with_configured_emitters_returns_delivery_ids() {
+    // Build a pipeline configured with two emitters to exercise the atomic
+    // `insert_replays` fan-out path. Uses the noop `DeliveryStorage` impl
+    // on `MemoryStorage`, which inherits the default trait implementation
+    // of `insert_replays` (sequential `insert_replay` calls).
+    let pipeline = HookboxPipeline::<MemoryStorage, InMemoryRecentDedupe>::builder()
+        .storage(MemoryStorage::new())
+        .dedupe(InMemoryRecentDedupe::new(1000))
+        .emitter_names(vec!["kafka".to_owned(), "sqs".to_owned()])
+        .build();
+    let state = Arc::new(AppState {
+        pipeline,
+        pool: None,
+        admin_token: None,
+        prometheus: None,
+        emitter_health: BTreeMap::new(),
+    });
+    let app: Router = crate::build_router(state, 1024 * 1024);
+
+    let ingest_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/webhooks/test")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"event":"fan-out-replay","id":"fan-out-replay-1"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ingest_resp.status(), StatusCode::OK);
+    let ingest_json = body_json(ingest_resp).await;
+    let receipt_id = ingest_json["receipt_id"].as_str().unwrap().to_owned();
+
+    let replay_resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/receipts/{receipt_id}/replay"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay_resp.status(), StatusCode::ACCEPTED);
+    let replay_json = body_json(replay_resp).await;
+    let ids = replay_json["delivery_ids"].as_array().unwrap();
+    assert_eq!(
+        ids.len(),
+        2,
+        "fan-out replay must produce one delivery per configured emitter, got: {replay_json}",
     );
 }
 

@@ -801,4 +801,33 @@ mod tests {
             "success must reset consecutive_failures"
         );
     }
+
+    #[test]
+    fn derive_status_healthy_with_no_failures() {
+        assert_eq!(derive_status(0, None), HealthStatus::Healthy);
+    }
+
+    #[test]
+    fn derive_status_degraded_within_window() {
+        // A failure that happened a few seconds ago is still Degraded.
+        let recent = Utc::now() - chrono::Duration::seconds(10);
+        assert_eq!(derive_status(1, Some(recent)), HealthStatus::Degraded);
+    }
+
+    #[test]
+    fn derive_status_ages_back_to_healthy_after_window() {
+        // Once the failure is more than 60s old and consecutive_failures is
+        // below the Unhealthy threshold, `refresh_gauges` must age us back
+        // to Healthy even with a non-None `last_failure_at`.
+        let stale = Utc::now() - chrono::Duration::seconds(120);
+        assert_eq!(derive_status(1, Some(stale)), HealthStatus::Healthy);
+    }
+
+    #[test]
+    fn derive_status_unhealthy_at_threshold() {
+        // `consecutive_failures >= 10` trumps the window check.
+        let recent = Utc::now() - chrono::Duration::seconds(5);
+        assert_eq!(derive_status(10, Some(recent)), HealthStatus::Unhealthy);
+        assert_eq!(derive_status(99, None), HealthStatus::Unhealthy);
+    }
 }

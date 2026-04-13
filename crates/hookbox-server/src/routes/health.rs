@@ -49,6 +49,30 @@ pub(crate) struct ReadyzResponse {
     pub(crate) emitters: BTreeMap<String, EmitterHealthSnapshot>,
 }
 
+/// Fill in synthetic `Unhealthy` entries for every configured emitter name
+/// missing from `emitters`, mutating the map in place.
+///
+/// Called by `readyz` so a configured emitter whose worker never registered
+/// a snapshot (startup failure, dropped handle, etc.) still makes `/readyz`
+/// report `Unhealthy` instead of silently missing from the response.
+pub(crate) fn synthesize_missing_emitters(
+    emitters: &mut BTreeMap<String, EmitterHealthSnapshot>,
+    configured: &[String],
+) {
+    for name in configured {
+        emitters
+            .entry(name.clone())
+            .or_insert(EmitterHealthSnapshot {
+                status: HealthStatus::Unhealthy,
+                last_success_at: None,
+                last_failure_at: None,
+                consecutive_failures: 0,
+                dlq_depth: 0,
+                pending_count: 0,
+            });
+    }
+}
+
 /// Compute the aggregate [`HealthStatus`] from the database status and
 /// a map of emitter health snapshots.
 ///
@@ -124,23 +148,9 @@ pub async fn readyz<S: Storage, D: DedupeStrategy>(
         })
         .collect();
 
-    // Synthesize an Unhealthy snapshot for any configured emitter that has no
-    // registered worker handle. This happens when worker spawning failed at
-    // startup or the handle was never wired into `AppState::emitter_health`;
-    // without this guard `/readyz` would misreport a non-dispatching emitter
-    // as Healthy.
-    for name in state.pipeline.emitter_names() {
-        emitters
-            .entry(name.clone())
-            .or_insert(EmitterHealthSnapshot {
-                status: HealthStatus::Unhealthy,
-                last_success_at: None,
-                last_failure_at: None,
-                consecutive_failures: 0,
-                dlq_depth: 0,
-                pending_count: 0,
-            });
-    }
+    // Synthesize an Unhealthy snapshot for any configured emitter that has
+    // no registered worker handle — see `synthesize_missing_emitters`.
+    synthesize_missing_emitters(&mut emitters, state.pipeline.emitter_names());
 
     // ── Aggregate ──────────────────────────────────────────────────────────────
     let overall = compute_overall_status(db_status, &emitters);
@@ -248,6 +258,42 @@ mod tests {
 
         let result = compute_overall_status(HealthStatus::Unhealthy, &emitters);
         assert_eq!(result, HealthStatus::Unhealthy);
+    }
+
+    #[test]
+    fn synthesize_inserts_unhealthy_for_missing_emitter() {
+        let mut emitters = BTreeMap::new();
+        emitters.insert("kafka".to_owned(), healthy_snapshot());
+
+        synthesize_missing_emitters(
+            &mut emitters,
+            &["kafka".to_owned(), "sqs".to_owned(), "nats".to_owned()],
+        );
+
+        assert_eq!(emitters.len(), 3);
+        assert_eq!(emitters["kafka"].status, HealthStatus::Healthy);
+        assert_eq!(emitters["sqs"].status, HealthStatus::Unhealthy);
+        assert_eq!(emitters["nats"].status, HealthStatus::Unhealthy);
+
+        let overall = compute_overall_status(HealthStatus::Healthy, &emitters);
+        assert_eq!(
+            overall,
+            HealthStatus::Unhealthy,
+            "missing configured emitters must force the aggregate status Unhealthy"
+        );
+    }
+
+    #[test]
+    fn synthesize_is_idempotent_when_all_present() {
+        let mut emitters = BTreeMap::new();
+        emitters.insert("a".to_owned(), healthy_snapshot());
+        emitters.insert("b".to_owned(), degraded_snapshot());
+
+        synthesize_missing_emitters(&mut emitters, &["a".to_owned(), "b".to_owned()]);
+
+        assert_eq!(emitters.len(), 2);
+        assert_eq!(emitters["a"].status, HealthStatus::Healthy);
+        assert_eq!(emitters["b"].status, HealthStatus::Degraded);
     }
 
     #[test]

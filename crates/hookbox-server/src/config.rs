@@ -1095,6 +1095,61 @@ secret = "checkout_secret"
     }
 
     #[test]
+    fn validate_poll_interval_zero_is_error() {
+        let entries = vec![EmitterEntry {
+            name: "a".into(),
+            emitter_type: "channel".into(),
+            poll_interval_seconds: 0,
+            ..Default::default()
+        }];
+        let err = validate_emitter_entries(&entries)
+            .expect_err("poll_interval_seconds = 0 must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("poll_interval_seconds"),
+            "expected error mentioning 'poll_interval_seconds', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn emitter_entry_rejects_unknown_fields() {
+        // Typo on `concurrency` must fail to deserialize rather than
+        // silently deserializing to the default value.
+        let toml = r#"
+            [[emitters]]
+            name = "a"
+            type = "channel"
+            concurency = 4
+        "#;
+        let err = toml::from_str::<HookboxConfig>(toml)
+            .expect_err("unknown field `concurency` must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("concurency") || msg.contains("unknown field"),
+            "expected error mentioning 'concurency' / 'unknown field', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn retry_policy_rejects_unknown_fields() {
+        let toml = r#"
+            [[emitters]]
+            name = "a"
+            type = "channel"
+
+            [emitters.retry]
+            jittr = 0.1
+        "#;
+        let err = toml::from_str::<HookboxConfig>(toml)
+            .expect_err("unknown field `jittr` in [emitters.retry] must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("jittr") || msg.contains("unknown field"),
+            "expected error mentioning 'jittr' / 'unknown field', got: {msg}"
+        );
+    }
+
+    #[test]
     fn validate_jitter_outside_range_is_error() {
         let entries = vec![EmitterEntry {
             name: "a".into(),
