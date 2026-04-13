@@ -1395,3 +1395,396 @@ async fn replay_with_update_fail_storage_returns_202() {
     let json = body_json(replay_resp).await;
     assert!(json["delivery_ids"].is_array());
 }
+
+// ── DeliveryFailingStorage tests (500 branches in delivery admin routes) ───
+
+/// Storage whose `Storage` trait delegates to an inner [`MemoryStorage`]
+/// (so ingest and `get` succeed), but whose `DeliveryStorage` trait methods
+/// always fail. An optional `canned_delivery` field lets a test return a
+/// fake delivery from `get_delivery` — needed for the `replay_delivery`
+/// "fetch ok, `insert_replay` fails" branch.
+struct DeliveryFailingStorage {
+    inner: MemoryStorage,
+    canned_delivery: Option<(WebhookDelivery, WebhookReceipt)>,
+}
+
+impl DeliveryFailingStorage {
+    fn new() -> Self {
+        Self {
+            inner: MemoryStorage::new(),
+            canned_delivery: None,
+        }
+    }
+
+    fn with_canned(delivery: WebhookDelivery, receipt: WebhookReceipt) -> Self {
+        Self {
+            inner: MemoryStorage::new(),
+            canned_delivery: Some((delivery, receipt)),
+        }
+    }
+}
+
+#[async_trait]
+impl Storage for DeliveryFailingStorage {
+    async fn store(&self, receipt: &WebhookReceipt) -> Result<StoreResult, StorageError> {
+        self.inner.store(receipt).await
+    }
+
+    async fn store_with_deliveries(
+        &self,
+        receipt: &WebhookReceipt,
+        emitter_names: &[String],
+    ) -> Result<StoreResult, StorageError> {
+        self.inner
+            .store_with_deliveries(receipt, emitter_names)
+            .await
+    }
+
+    async fn get(&self, id: Uuid) -> Result<Option<WebhookReceipt>, StorageError> {
+        self.inner.get(id).await
+    }
+
+    async fn update_state(
+        &self,
+        id: Uuid,
+        state: ProcessingState,
+        error: Option<&str>,
+    ) -> Result<(), StorageError> {
+        self.inner.update_state(id, state, error).await
+    }
+
+    async fn query(&self, filter: ReceiptFilter) -> Result<Vec<WebhookReceipt>, StorageError> {
+        self.inner.query(filter).await
+    }
+}
+
+#[async_trait]
+impl DeliveryStorage for DeliveryFailingStorage {
+    type Error = StorageError;
+
+    async fn claim_pending(
+        &self,
+        _emitter_name: &str,
+        _batch_size: i64,
+    ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
+        Err(StorageError::Internal("simulated claim failure".to_owned()))
+    }
+
+    async fn reclaim_expired(
+        &self,
+        _emitter_name: &str,
+        _lease_duration: std::time::Duration,
+    ) -> Result<u64, Self::Error> {
+        Err(StorageError::Internal(
+            "simulated reclaim failure".to_owned(),
+        ))
+    }
+
+    async fn mark_emitted(&self, _delivery_id: DeliveryId) -> Result<(), Self::Error> {
+        Err(StorageError::Internal(
+            "simulated mark_emitted failure".to_owned(),
+        ))
+    }
+
+    async fn mark_failed(
+        &self,
+        _delivery_id: DeliveryId,
+        _attempt_count: i32,
+        _next_attempt_at: chrono::DateTime<chrono::Utc>,
+        _last_error: &str,
+    ) -> Result<(), Self::Error> {
+        Err(StorageError::Internal(
+            "simulated mark_failed failure".to_owned(),
+        ))
+    }
+
+    async fn mark_dead_lettered(
+        &self,
+        _delivery_id: DeliveryId,
+        _last_error: &str,
+    ) -> Result<(), Self::Error> {
+        Err(StorageError::Internal(
+            "simulated mark_dlq failure".to_owned(),
+        ))
+    }
+
+    async fn count_dlq(&self, _emitter_name: &str) -> Result<u64, Self::Error> {
+        Err(StorageError::Internal("simulated count failure".to_owned()))
+    }
+
+    async fn count_pending(&self, _emitter_name: &str) -> Result<u64, Self::Error> {
+        Err(StorageError::Internal("simulated count failure".to_owned()))
+    }
+
+    async fn count_in_flight(&self, _emitter_name: &str) -> Result<u64, Self::Error> {
+        Err(StorageError::Internal("simulated count failure".to_owned()))
+    }
+
+    async fn insert_replay(
+        &self,
+        _receipt_id: ReceiptId,
+        _emitter_name: &str,
+    ) -> Result<DeliveryId, Self::Error> {
+        Err(StorageError::Internal(
+            "simulated insert_replay failure".to_owned(),
+        ))
+    }
+
+    async fn get_delivery(
+        &self,
+        _delivery_id: DeliveryId,
+    ) -> Result<Option<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
+        if let Some(pair) = &self.canned_delivery {
+            Ok(Some(pair.clone()))
+        } else {
+            Err(StorageError::Internal(
+                "simulated get_delivery failure".to_owned(),
+            ))
+        }
+    }
+
+    async fn get_deliveries_for_receipt(
+        &self,
+        _receipt_id: ReceiptId,
+    ) -> Result<Vec<WebhookDelivery>, Self::Error> {
+        Err(StorageError::Internal(
+            "simulated get_deliveries failure".to_owned(),
+        ))
+    }
+
+    async fn list_dlq(
+        &self,
+        _emitter_name: Option<&str>,
+        _limit: i64,
+        _offset: i64,
+    ) -> Result<Vec<(WebhookDelivery, WebhookReceipt)>, Self::Error> {
+        Err(StorageError::Internal(
+            "simulated list_dlq failure".to_owned(),
+        ))
+    }
+}
+
+/// Build a test app backed by [`DeliveryFailingStorage`].
+fn build_delivery_failing_app(
+    storage: DeliveryFailingStorage,
+    emitter_names: Vec<String>,
+) -> Router {
+    let pipeline = HookboxPipeline::<DeliveryFailingStorage, InMemoryRecentDedupe>::builder()
+        .storage(storage)
+        .dedupe(InMemoryRecentDedupe::new(1000))
+        .emitter_names(emitter_names)
+        .build();
+
+    let state = Arc::new(AppState {
+        pipeline,
+        pool: None,
+        admin_token: None,
+        prometheus: None,
+        emitter_health: BTreeMap::new(),
+    });
+
+    crate::build_router(state, 1024 * 1024)
+}
+
+/// Ingest one webhook and return its receipt id.
+async fn ingest_one(app: &Router, body: &'static str) -> String {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/webhooks/test")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    body_json(resp).await["receipt_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn list_receipts_get_deliveries_error_returns_500() {
+    let app = build_delivery_failing_app(DeliveryFailingStorage::new(), vec![]);
+    ingest_one(&app, r#"{"event":"list-recv-1"}"#).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/receipts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    assert!(json["error"].as_str().unwrap().contains("get_deliveries"));
+}
+
+#[tokio::test]
+async fn get_receipt_get_deliveries_error_returns_500() {
+    let app = build_delivery_failing_app(DeliveryFailingStorage::new(), vec![]);
+    let id = ingest_one(&app, r#"{"event":"get-recv-1"}"#).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/receipts/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    assert!(json["error"].as_str().unwrap().contains("get_deliveries"));
+}
+
+#[tokio::test]
+async fn replay_receipt_insert_replays_error_returns_500() {
+    let app = build_delivery_failing_app(
+        DeliveryFailingStorage::new(),
+        vec!["test-emitter".to_owned()],
+    );
+    let id = ingest_one(&app, r#"{"event":"replay-recv-1"}"#).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/receipts/{id}/replay"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    assert!(json["error"].as_str().unwrap().contains("insert_replay"));
+}
+
+#[tokio::test]
+async fn get_delivery_storage_error_returns_500() {
+    let app = build_delivery_failing_app(DeliveryFailingStorage::new(), vec![]);
+    let id = Uuid::new_v4();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/deliveries/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    assert!(json["error"].as_str().unwrap().contains("get_delivery"));
+}
+
+#[tokio::test]
+async fn replay_delivery_fetch_error_returns_500() {
+    let app = build_delivery_failing_app(DeliveryFailingStorage::new(), vec![]);
+    let id = Uuid::new_v4();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/deliveries/{id}/replay"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    assert!(json["error"].as_str().unwrap().contains("get_delivery"));
+}
+
+#[tokio::test]
+async fn replay_delivery_insert_error_returns_500() {
+    // `get_delivery` returns a canned delivery so we reach the insert_replay
+    // arm, and the emitter is registered so we pass the "not configured"
+    // guard. The canned delivery's emitter_name must be in `emitter_names`.
+    let receipt = WebhookReceipt {
+        receipt_id: ReceiptId::new(),
+        provider_name: "test".to_owned(),
+        provider_event_id: None,
+        external_reference: None,
+        dedupe_key: "dedupe".to_owned(),
+        payload_hash: "hash".to_owned(),
+        raw_body: b"{}".to_vec(),
+        parsed_payload: None,
+        raw_headers: serde_json::json!({}),
+        normalized_event_type: None,
+        verification_status: VerificationStatus::Verified,
+        verification_reason: None,
+        processing_state: ProcessingState::Stored,
+        emit_count: 0,
+        last_error: None,
+        received_at: chrono::Utc::now(),
+        processed_at: None,
+        metadata: serde_json::json!({}),
+    };
+    let delivery = WebhookDelivery {
+        delivery_id: DeliveryId::new(),
+        receipt_id: receipt.receipt_id,
+        emitter_name: "test-emitter".to_owned(),
+        state: hookbox::state::DeliveryState::Failed,
+        attempt_count: 1,
+        last_error: Some("prior".to_owned()),
+        last_attempt_at: Some(chrono::Utc::now()),
+        next_attempt_at: chrono::Utc::now(),
+        emitted_at: None,
+        immutable: false,
+        created_at: chrono::Utc::now(),
+    };
+    let delivery_id = delivery.delivery_id.0;
+    let storage = DeliveryFailingStorage::with_canned(delivery, receipt);
+    let app = build_delivery_failing_app(storage, vec!["test-emitter".to_owned()]);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/deliveries/{delivery_id}/replay"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    assert!(json["error"].as_str().unwrap().contains("insert_replay"));
+}
+
+#[tokio::test]
+async fn list_dlq_storage_error_returns_500() {
+    let app = build_delivery_failing_app(DeliveryFailingStorage::new(), vec![]);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/dlq")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    assert!(json["error"].as_str().unwrap().contains("list_dlq"));
+}
