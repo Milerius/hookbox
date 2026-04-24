@@ -129,6 +129,6 @@ reqwest = { version = "0.12", features = ["json"] }
 http-body-util = "0.1"
 bolero = "0.13"
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
-cucumber = "0.22"
+cucumber = "0.23"
 fastrand = "2"
 futures = "0.3"
