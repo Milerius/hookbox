@@ -106,7 +106,7 @@ toml = "0.8.23"
 
 # Emitter backends
 rdkafka = { version = "0.36", features = ["cmake-build"] }
-async-nats = "0.38"
+async-nats = "0.47"
 aws-sdk-sqs = "1"
 aws-config = { version = "1", features = ["behavior-version-latest", "credentials-login"] }
 
