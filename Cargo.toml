@@ -119,7 +119,7 @@ redis = { version = "0.27", features = ["tokio-comp", "streams", "connection-man
 aws-credential-types = "1"
 
 # Test containers (used by emitter round-trip integration tests)
-testcontainers = "0.23"
+testcontainers = "0.24"
 testcontainers-modules = "0.11"
 
 # Testing
