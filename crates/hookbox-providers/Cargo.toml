@@ -35,4 +35,4 @@ rsa = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-rand = "0.8"
+rand = "0.9"
