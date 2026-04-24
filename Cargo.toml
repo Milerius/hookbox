@@ -125,7 +125,7 @@ testcontainers-modules = "0.11"
 # Testing
 arc-swap = "1.7"
 async-trait = "0.1"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 http-body-util = "0.1"
 bolero = "0.13"
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
